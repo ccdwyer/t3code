@@ -312,22 +312,17 @@ interface SidebarThreadRowProps {
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
 }
 
-interface SidebarThreadPrStatusButtonProps {
+function SidebarThreadPrStatusButton({
+  thread,
+  openPrLink,
+}: {
   thread: SidebarThreadSummary;
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
-}
-
-const SidebarThreadPrStatusButton = memo(function SidebarThreadPrStatusButton(
-  props: SidebarThreadPrStatusButtonProps,
-) {
-  const { thread, openPrLink } = props;
+}) {
   const threadProjectCwd = useStore(
-    useMemo(
-      () => (state: import("../store").AppState) =>
-        selectProjectByRef(state, scopeProjectRef(thread.environmentId, thread.projectId))?.cwd ??
-        null,
-      [thread.environmentId, thread.projectId],
-    ),
+    (state: import("../store").AppState) =>
+      selectProjectByRef(state, scopeProjectRef(thread.environmentId, thread.projectId))?.cwd ??
+      null,
   );
   const gitCwd = thread.worktreePath ?? threadProjectCwd;
   const gitStatus = useGitStatus({
@@ -336,13 +331,6 @@ const SidebarThreadPrStatusButton = memo(function SidebarThreadPrStatusButton(
   });
   const pr = resolveThreadPr(thread.branch, gitStatus.data);
   const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
-  const handlePrClick = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      if (!prStatus) return;
-      openPrLink(event, prStatus.url);
-    },
-    [openPrLink, prStatus],
-  );
 
   if (!prStatus) {
     return null;
@@ -356,7 +344,7 @@ const SidebarThreadPrStatusButton = memo(function SidebarThreadPrStatusButton(
             type="button"
             aria-label={prStatus.tooltip}
             className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
-            onClick={handlePrClick}
+            onClick={(event) => openPrLink(event, prStatus.url)}
           >
             <ChangeRequestStatusIcon className="size-3" />
           </button>
@@ -365,7 +353,7 @@ const SidebarThreadPrStatusButton = memo(function SidebarThreadPrStatusButton(
       <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
     </Tooltip>
   );
-});
+}
 
 const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
   const {

@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import {
@@ -15,6 +16,7 @@ import {
   resolveMockUpdateServerUrl,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
+import { HostProcessArchitecture, HostProcessPlatform } from "./lib/build-target-arch.ts";
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
@@ -119,6 +121,43 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const exit = yield* Effect.exit(resolveMockUpdateServerPort(port));
         assert.equal(exit._tag, "Failure");
       }
+    }),
+  );
+
+  it.effect("resolves default platform and architecture from host references", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveBuildOptions({
+        platform: Option.none(),
+        target: Option.none(),
+        arch: Option.none(),
+        buildVersion: Option.none(),
+        outputDir: Option.none(),
+        skipBuild: Option.none(),
+        keepStage: Option.none(),
+        signed: Option.none(),
+        verbose: Option.none(),
+        mockUpdates: Option.none(),
+        mockUpdateServerPort: Option.none(),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(HostProcessPlatform, "win32"),
+            Layer.succeed(HostProcessArchitecture, "x64"),
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: {
+                  PROCESSOR_ARCHITECTURE: "AMD64",
+                  PROCESSOR_ARCHITEW6432: "ARM64",
+                },
+              }),
+            ),
+          ),
+        ),
+      );
+
+      assert.equal(resolved.platform, "win");
+      assert.equal(resolved.target, "nsis");
+      assert.equal(resolved.arch, "arm64");
     }),
   );
 

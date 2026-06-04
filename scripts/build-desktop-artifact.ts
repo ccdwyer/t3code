@@ -6,7 +6,7 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
-import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
+import { getDefaultBuildArch, HostProcessPlatform } from "./lib/build-target-arch.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -101,14 +101,14 @@ function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Typ
   return undefined;
 }
 
-function getDefaultArch(platform: typeof BuildPlatform.Type): typeof BuildArch.Type {
+const getDefaultArch = Effect.fn("getDefaultArch")(function* (platform: typeof BuildPlatform.Type) {
   const config = PLATFORM_CONFIG[platform];
   if (!config) {
     return "x64";
   }
 
-  return getDefaultBuildArch(platform, process.arch, process.env, config);
-}
+  return yield* getDefaultBuildArch(platform, config);
+});
 
 class BuildScriptError extends Data.TaggedError("BuildScriptError")<{
   readonly message: string;
@@ -352,21 +352,23 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
   const env = yield* BuildEnvConfig;
+  const hostPlatform = yield* HostProcessPlatform;
 
   const platform = mergeOptions(
     input.platform,
     env.platform,
-    detectHostBuildPlatform(process.platform),
+    detectHostBuildPlatform(hostPlatform),
   );
 
   if (!platform) {
     return yield* new BuildScriptError({
-      message: `Unsupported host platform '${process.platform}'.`,
+      message: `Unsupported host platform '${hostPlatform}'.`,
     });
   }
 
   const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
-  const arch = mergeOptions(input.arch, env.arch, getDefaultArch(platform));
+  const defaultArch = yield* getDefaultArch(platform);
+  const arch = mergeOptions(input.arch, env.arch, defaultArch);
   const version = mergeOptions(input.buildVersion, env.version, undefined);
   const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
     ? "release-mock"

@@ -40,12 +40,18 @@ function normalizeWindowsArch(value: string | undefined): BuildArch | undefined 
 const optionToUndefined = <A>(value: Option.Option<A>): A | undefined =>
   Option.getOrUndefined(value);
 
-export const resolveHostProcessArch = Effect.fn("resolveHostProcessArch")(function* () {
+export const resolveHostProcessArch = Effect.fn("resolveHostProcessArch")(function* (
+  buildPlatform?: BuildPlatform,
+) {
   const platform = yield* HostProcessPlatform;
   const processArch = yield* HostProcessArchitecture;
   if (processArch === "arm64") return "arm64";
   if (processArch === "x64") {
     if (platform !== "win32") return "x64";
+
+    // Only apply WoA heuristics when building for Windows (or when no build
+    // platform is specified, e.g. bare host-arch queries).
+    if (buildPlatform !== undefined && buildPlatform !== "win") return "x64";
 
     // On Windows-on-Arm, x64 Node/Bun can run under emulation while the host
     // still reports ARM64 via the processor environment variables.
@@ -63,7 +69,7 @@ export const getDefaultBuildArch = Effect.fn("getDefaultBuildArch")(function* (
   platform: BuildPlatform,
   platformConfig: PlatformConfig,
 ) {
-  const hostArch = yield* resolveHostProcessArch();
+  const hostArch = yield* resolveHostProcessArch(platform);
   if (hostArch && platformConfig.archChoices.includes(hostArch)) {
     return hostArch;
   }

@@ -83,7 +83,7 @@ describe("build-target-arch", () => {
   it.effect("does not apply Windows host env heuristics for non-Windows targets", () =>
     Effect.gen(function* () {
       const arch = yield* getDefaultBuildArch("linux", { archChoices: ["x64", "arm64"] }).pipe(
-        withHostRuntime("linux", "x64", {
+        withHostRuntime("win32", "x64", {
           PROCESSOR_ARCHITECTURE: "AMD64",
           PROCESSOR_ARCHITEW6432: "ARM64",
         }),

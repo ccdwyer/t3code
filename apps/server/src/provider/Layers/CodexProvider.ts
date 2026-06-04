@@ -22,6 +22,7 @@ import type {
 } from "@t3tools/contracts";
 import { ServerSettingsError } from "@t3tools/contracts";
 
+import { HostProcessEnv } from "@t3tools/shared/hostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -255,6 +256,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly customModels?: ReadonlyArray<string>;
   readonly environment?: NodeJS.ProcessEnv;
 }) {
+  const hostEnv = yield* HostProcessEnv;
   // `~` is not shell-expanded when env vars are set via `child_process.spawn`,
   // so `CODEX_HOME=~/.codex_work` would reach codex verbatim and trip
   // "CODEX_HOME points to '~/.codex_work', but that path does not exist".
@@ -266,7 +268,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       args: ["app-server"],
       cwd: input.cwd,
       env: {
-        ...(input.environment ?? process.env),
+        ...(input.environment ?? hostEnv),
         ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
       },
     }),
@@ -417,12 +419,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     CodexErrors.CodexAppServerError,
     ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
   > = probeCodexAppServerProvider,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
   ServerProviderDraft,
   ServerSettingsError,
   ChildProcessSpawner.ChildProcessSpawner
 > {
+  const hostEnv = yield* HostProcessEnv;
+  const resolvedEnvironment = environment ?? hostEnv;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const emptyModels = emptyCodexModelsFromSettings(codexSettings);
 
@@ -448,7 +452,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     homePath: codexSettings.homePath,
     cwd: process.cwd(),
     customModels: codexSettings.customModels,
-    environment,
+    environment: resolvedEnvironment,
   }).pipe(
     Effect.scoped,
     Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),

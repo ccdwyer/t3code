@@ -10,6 +10,7 @@ import {
   type TerminalSummary,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -310,10 +311,7 @@ function enqueueProcessEvent(
   return true;
 }
 
-function defaultShellResolver(
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
+function defaultShellResolver(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
   if (platform === "win32") {
     return "pwsh.exe";
   }
@@ -322,7 +320,7 @@ function defaultShellResolver(
 
 function normalizeShellCommand(
   value: string | undefined,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform,
 ): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -358,7 +356,7 @@ function joinWindowsPath(...parts: ReadonlyArray<string>): string {
 
 function shellCandidateFromCommand(
   command: string | null,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform,
 ): ShellCandidate | null {
   if (!command || command.length === 0) return null;
   const shellName = basenameForPlatform(command, platform).toLowerCase();
@@ -409,8 +407,8 @@ function uniqueShellCandidates(candidates: Array<ShellCandidate | null>): ShellC
 
 function resolveShellCandidates(
   shellResolver: () => string,
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
 ): ShellCandidate[] {
   const requested = shellCandidateFromCommand(
     normalizeShellCommand(shellResolver(), platform),
@@ -927,8 +925,6 @@ interface TerminalManagerOptions {
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
   shellResolver?: () => string;
-  platform?: NodeJS.Platform;
-  env?: NodeJS.ProcessEnv;
   subprocessInspector?: TerminalSubprocessInspector;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
@@ -953,8 +949,8 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
 
     const logsDir = options.logsDir;
     const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
-    const platform = options.platform ?? process.platform;
-    const baseEnv = options.env ?? process.env;
+    const platform = yield* HostProcessPlatform;
+    const baseEnv = yield* HostProcessEnv;
     const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
     const processRunner = yield* ProcessRunner.ProcessRunner;
     const subprocessInspector =

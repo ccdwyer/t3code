@@ -12,12 +12,12 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
-  isCommandAvailable,
+  isCommandAvailableForPlatform,
   launchBrowser,
   launchEditorProcess,
   resolveAvailableEditors,
   resolveBrowserLaunch,
-  resolveEditorLaunch,
+  resolveEditorLaunchForPlatform as resolveEditorLaunch,
 } from "./externalLauncher.ts";
 
 function encodeUtf16LeBase64(input: string): string {
@@ -516,9 +516,9 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
 it("resolveBrowserLaunch maps default browser launchers by platform", () => {
   const target = "https://example.com/some path?name=o'hara";
 
-  assert.deepEqual(resolveBrowserLaunch(target, "darwin").command, "open");
-  assert.deepEqual(resolveBrowserLaunch(target, "darwin").args, [target]);
-  assert.deepEqual(resolveBrowserLaunch(target, "darwin").options, {
+  assert.deepEqual(resolveBrowserLaunch(target, "darwin", {}).command, "open");
+  assert.deepEqual(resolveBrowserLaunch(target, "darwin", {}).args, [target]);
+  assert.deepEqual(resolveBrowserLaunch(target, "darwin", {}).options, {
     detached: true,
     stdin: "ignore",
     stdout: "ignore",
@@ -594,7 +594,11 @@ it.layer(NodeServices.layer)("launchBrowser", (it) => {
 
       assertSuccess(result, undefined);
       assert.ok(spawnedCommand);
-      const expectedLaunch = resolveBrowserLaunch("https://example.com");
+      const expectedLaunch = resolveBrowserLaunch(
+        "https://example.com",
+        process.platform,
+        process.env,
+      );
       assert.equal(spawnedCommand.command, expectedLaunch.command);
       assert.deepEqual(spawnedCommand.args, expectedLaunch.args);
       assert.deepEqual(spawnedCommand.options, expectedLaunch.options);
@@ -672,7 +676,7 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: dir,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("code", { platform: "win32", env }), true);
+      assert.equal(isCommandAvailableForPlatform("code", { platform: "win32", env }), true);
     }),
   );
 
@@ -681,7 +685,10 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
       PATH: "",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
     } satisfies NodeJS.ProcessEnv;
-    assert.equal(isCommandAvailable("definitely-not-installed", { platform: "win32", env }), false);
+    assert.equal(
+      isCommandAvailableForPlatform("definitely-not-installed", { platform: "win32", env }),
+      false,
+    );
   });
 
   it.effect("does not treat bare files without executable extension as available on win32", () =>
@@ -694,7 +701,7 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: dir,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("npm", { platform: "win32", env }), false);
+      assert.equal(isCommandAvailableForPlatform("npm", { platform: "win32", env }), false);
     }),
   );
 
@@ -708,7 +715,7 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: dir,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("my.tool", { platform: "win32", env }), true);
+      assert.equal(isCommandAvailableForPlatform("my.tool", { platform: "win32", env }), true);
     }),
   );
 
@@ -724,7 +731,7 @@ it.layer(NodeServices.layer)("isCommandAvailable", (it) => {
         PATH: `${firstDir};${secondDir}`,
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       } satisfies NodeJS.ProcessEnv;
-      assert.equal(isCommandAvailable("code", { platform: "win32", env }), true);
+      assert.equal(isCommandAvailableForPlatform("code", { platform: "win32", env }), true);
     }),
   );
 });

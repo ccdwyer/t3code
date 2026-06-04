@@ -112,7 +112,7 @@ const isFdReady = (fd: number) =>
 const makeBootstrapInputStream = (fd: number) =>
   Effect.try<Readable, BootstrapError>({
     try: () => {
-      const fdPath = resolveFdPath(fd);
+      const fdPath = resolveFdPath(fd, process.platform);
       if (fdPath === undefined) {
         return makeDirectBootstrapStream(fd);
       }
@@ -165,10 +165,7 @@ const isBootstrapFdPathDuplicationError = Predicate.compose(
   (_) => _.code === "ENXIO" || _.code === "EINVAL" || _.code === "EPERM",
 );
 
-export function resolveFdPath(
-  fd: number,
-  platform: NodeJS.Platform = process.platform,
-): string | undefined {
+export function resolveFdPath(fd: number, platform: NodeJS.Platform): string | undefined {
   if (platform === "linux") {
     return `/proc/self/fd/${fd}`;
   }

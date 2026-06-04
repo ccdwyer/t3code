@@ -31,6 +31,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@t3tools/shared/Net";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
@@ -276,13 +277,15 @@ function ensureRuntimeError(
 const makeOpenCodeRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const netService = yield* NetService.NetService;
+  const hostEnv = yield* HostProcessEnv;
+  const hostPlatform = yield* HostProcessPlatform;
 
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
       const child = yield* spawner.spawn(
         ChildProcess.make(input.binaryPath, [...input.args], {
-          shell: process.platform === "win32",
-          env: input.environment ?? process.env,
+          shell: hostPlatform === "win32",
+          env: input.environment ?? hostEnv,
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
@@ -338,10 +341,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const child = yield* spawner
         .spawn(
           ChildProcess.make(input.binaryPath, args, {
-            detached: process.platform !== "win32",
-            shell: process.platform === "win32",
+            detached: hostPlatform !== "win32",
+            shell: hostPlatform === "win32",
             env: {
-              ...(input.environment ?? process.env),
+              ...(input.environment ?? hostEnv),
               OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
             },
           }),
@@ -359,7 +362,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         );
 
       const killOpenCodeProcessGroup = (signal: NodeJS.Signals) =>
-        process.platform === "win32"
+        hostPlatform === "win32"
           ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
           : Effect.sync(() => {
               try {

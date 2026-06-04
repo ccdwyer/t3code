@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   extractPathFromShellOutput,
-  isCommandAvailable,
+  isCommandAvailableForPlatform,
   listLoginShellCandidates,
   mergePathEntries,
   mergePathValues,
@@ -10,7 +10,7 @@ import {
   readEnvironmentFromWindowsShell,
   readPathFromLaunchctl,
   readPathFromLoginShell,
-  resolveCommandPath,
+  resolveCommandPathForPlatform,
   resolveKnownWindowsCliDirs,
   resolveWindowsEnvironment,
 } from "./shell.ts";
@@ -325,7 +325,7 @@ describe("resolveKnownWindowsCliDirs", () => {
 describe("isCommandAvailable", () => {
   it("returns false when PATH is empty", () => {
     expect(
-      isCommandAvailable("definitely-not-installed", {
+      isCommandAvailableForPlatform("definitely-not-installed", {
         platform: "win32",
         env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
       }),
@@ -336,7 +336,7 @@ describe("isCommandAvailable", () => {
 describe("resolveCommandPath", () => {
   it("returns the first executable resolved from PATH", () => {
     expect(
-      resolveCommandPath("definitely-not-installed", {
+      resolveCommandPathForPlatform("definitely-not-installed", {
         platform: "win32",
         env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
       }),
@@ -383,9 +383,7 @@ describe("resolveWindowsEnvironment", () => {
     expect(readEnvironment).toHaveBeenCalledWith(["PATH"], { loadProfile: false });
     expect(commandAvailable).toHaveBeenCalledWith(
       "node",
-      expect.objectContaining({
-        platform: "win32",
-      }),
+      expect.objectContaining({ env: expect.any(Object) }),
     );
   });
 

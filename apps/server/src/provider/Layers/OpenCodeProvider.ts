@@ -9,6 +9,7 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
+import { HostProcessEnv } from "@t3tools/shared/hostProcess";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
@@ -301,9 +302,11 @@ export const makePendingOpenCodeProvider = (
 export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatus")(function* (
   openCodeSettings: OpenCodeSettings,
   cwd: string,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<ServerProviderDraft, never, OpenCodeRuntime> {
   const openCodeRuntime = yield* OpenCodeRuntime;
+  const hostEnv = yield* HostProcessEnv;
+  const resolvedEnvironment = environment ?? hostEnv;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const customModels = openCodeSettings.customModels;
   const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
@@ -364,7 +367,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         .runOpenCodeCommand({
           binaryPath: openCodeSettings.binaryPath,
           args: ["--version"],
-          environment,
+          environment: resolvedEnvironment,
         })
         .pipe(
           Effect.mapError(
@@ -413,7 +416,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
         const server = yield* openCodeRuntime.connectToOpenCodeServer({
           binaryPath: openCodeSettings.binaryPath,
           serverUrl: openCodeSettings.serverUrl,
-          environment,
+          environment: resolvedEnvironment,
         });
         return yield* openCodeRuntime.loadOpenCodeInventory(
           openCodeRuntime.createOpenCodeSdkClient({

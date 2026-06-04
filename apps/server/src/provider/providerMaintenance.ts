@@ -3,8 +3,9 @@ import {
   type ServerProvider,
   type ServerProviderVersionAdvisory,
 } from "@t3tools/contracts";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { compareSemverVersions } from "@t3tools/shared/semver";
-import { resolveCommandPath } from "@t3tools/shared/shell";
+import { resolveCommandPath, resolveCommandPathForPlatform } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -32,7 +33,7 @@ export interface ProviderMaintenanceCommandAction {
 export interface ProviderMaintenanceCapabilityResolutionOptions {
   readonly binaryPath?: string | null;
   readonly env?: NodeJS.ProcessEnv;
-  readonly platform?: NodeJS.Platform;
+  readonly resolvedCommandPath?: string | null;
   readonly realCommandPath?: string | null;
 }
 
@@ -251,10 +252,9 @@ export function resolvePackageManagedProviderMaintenance(
   }
 
   const resolvedCommandPath =
-    resolveCommandPath(binaryPath, {
-      ...(options?.platform ? { platform: options.platform } : {}),
-      ...(options?.env ? { env: options.env } : {}),
-    }) ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
+    options?.resolvedCommandPath ??
+    resolveCommandPath(binaryPath, options?.env ? { env: options.env } : {}) ??
+    (hasPathSeparator(binaryPath) ? binaryPath : null);
 
   if (resolvedCommandPath) {
     const commandPaths = [
@@ -335,10 +335,12 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
     return resolver.resolve(options);
   }
 
+  const platform = yield* HostProcessPlatform;
+  const env = options?.env ?? (yield* HostProcessEnv);
   const resolvedCommandPath =
-    resolveCommandPath(binaryPath, {
-      ...(options?.platform ? { platform: options.platform } : {}),
-      ...(options?.env ? { env: options.env } : {}),
+    resolveCommandPathForPlatform(binaryPath, {
+      platform,
+      env,
     }) ?? (hasPathSeparator(binaryPath) ? binaryPath : null);
   if (!resolvedCommandPath) {
     return resolver.resolve(options);
@@ -350,6 +352,8 @@ export const resolveProviderMaintenanceCapabilitiesEffect = Effect.fn(
     .pipe(Effect.catch(() => Effect.succeed(resolvedCommandPath)));
   return resolver.resolve({
     ...options,
+    env,
+    resolvedCommandPath,
     realCommandPath,
   });
 });

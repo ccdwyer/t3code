@@ -6,7 +6,11 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
-import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
+import {
+  getDefaultBuildArch,
+  HostProcessEnv,
+  HostProcessPlatform,
+} from "./lib/build-target-arch.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -101,14 +105,14 @@ function detectHostBuildPlatform(hostPlatform: string): typeof BuildPlatform.Typ
   return undefined;
 }
 
-function getDefaultArch(platform: typeof BuildPlatform.Type): typeof BuildArch.Type {
+const getDefaultArch = Effect.fn("getDefaultArch")(function* (platform: typeof BuildPlatform.Type) {
   const config = PLATFORM_CONFIG[platform];
   if (!config) {
     return "x64";
   }
 
-  return getDefaultBuildArch(platform, process.arch, process.env, config);
-}
+  return yield* getDefaultBuildArch(platform, config);
+});
 
 class BuildScriptError extends Data.TaggedError("BuildScriptError")<{
   readonly message: string;
@@ -200,13 +204,21 @@ const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRo
 const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const configured = process.env.npm_config_python ?? process.env.PYTHON;
+  const hostPlatform = yield* HostProcessPlatform;
+  const env = yield* Config.all({
+    configuredPython: Config.string("npm_config_python").pipe(
+      Config.orElse(() => Config.string("PYTHON")),
+      Config.option,
+    ),
+    localAppData: Config.string("LOCALAPPDATA").pipe(Config.option),
+  });
+  const configured = Option.getOrUndefined(env.configuredPython);
   if (configured && (yield* fs.exists(configured))) {
     return configured;
   }
 
-  if (process.platform === "win32") {
-    const localAppData = process.env.LOCALAPPDATA;
+  if (hostPlatform === "win32") {
+    const localAppData = Option.getOrUndefined(env.localAppData);
     if (localAppData) {
       for (const version of ["Python313", "Python312", "Python311", "Python310"]) {
         const candidate = path.join(localAppData, "Programs", "Python", version, "python.exe");
@@ -352,21 +364,23 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
   const env = yield* BuildEnvConfig;
+  const hostPlatform = yield* HostProcessPlatform;
 
   const platform = mergeOptions(
     input.platform,
     env.platform,
-    detectHostBuildPlatform(process.platform),
+    detectHostBuildPlatform(hostPlatform),
   );
 
   if (!platform) {
     return yield* new BuildScriptError({
-      message: `Unsupported host platform '${process.platform}'.`,
+      message: `Unsupported host platform '${hostPlatform}'.`,
     });
   }
 
   const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
-  const arch = mergeOptions(input.arch, env.arch, getDefaultArch(platform));
+  const defaultArch = yield* getDefaultArch(platform);
+  const arch = mergeOptions(input.arch, env.arch, defaultArch);
   const version = mergeOptions(input.buildVersion, env.version, undefined);
   const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
     ? "release-mock"
@@ -626,19 +640,18 @@ export function resolveDesktopRuntimeDependencies(
   return resolveCatalogDependencies(runtimeDependencies, catalog, "apps/desktop");
 }
 
-function resolveGitHubPublishConfig(updateChannel: "latest" | "nightly"):
-  | {
-      readonly provider: "github";
-      readonly owner: string;
-      readonly repo: string;
-      readonly releaseType: "release" | "prerelease";
-      readonly channel?: "nightly";
-    }
-  | undefined {
-  const rawRepo =
-    process.env.T3CODE_DESKTOP_UPDATE_REPOSITORY?.trim() ||
-    process.env.GITHUB_REPOSITORY?.trim() ||
-    "";
+export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
+  updateChannel: "latest" | "nightly",
+) {
+  const env = yield* Config.all({
+    updateRepository: Config.string("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
+    githubRepository: Config.string("GITHUB_REPOSITORY").pipe(Config.option),
+  });
+  const rawRepo = (
+    Option.getOrUndefined(env.updateRepository)?.trim() ||
+    Option.getOrUndefined(env.githubRepository)?.trim() ||
+    ""
+  ).trim();
   if (!rawRepo) return undefined;
 
   const [owner, repo, ...rest] = rawRepo.split("/");
@@ -651,7 +664,7 @@ function resolveGitHubPublishConfig(updateChannel: "latest" | "nightly"):
     releaseType: updateChannel === "nightly" ? "prerelease" : "release",
     ...(updateChannel === "nightly" ? { channel: "nightly" as const } : {}),
   };
-}
+});
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
@@ -700,7 +713,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     },
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  const publishConfig = resolveGitHubPublishConfig(updateChannel);
+  const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
   if (publishConfig) {
     buildConfig.publish = [publishConfig];
   } else if (mockUpdates) {
@@ -778,6 +791,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
+  const hostPlatform = yield* HostProcessPlatform;
+  const hostEnv = yield* HostProcessEnv;
+  const useWindowsShell = hostPlatform === "win32";
   const workspaceConfig = yield* readWorkspaceConfig();
   const workspaceCatalog = workspaceConfig.catalog ?? {};
   const workspaceOverrides = workspaceConfig.overrides ?? {};
@@ -848,7 +864,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ChildProcess.make({
         cwd: repoRoot,
         // Windows needs shell mode to resolve .cmd shims (e.g. vp.cmd).
-        shell: process.platform === "win32",
+        shell: useWindowsShell,
       })`vp run build:desktop`,
       { label: "vp run build:desktop", verbose: options.verbose },
     );
@@ -935,13 +951,13 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     ChildProcess.make({
       cwd: stageAppDir,
       // Windows needs shell mode to resolve .cmd shims (e.g. vp.cmd).
-      shell: process.platform === "win32",
+      shell: useWindowsShell,
     })`vp install --prod --no-optional`,
     { label: "vp install --prod --no-optional", verbose: options.verbose },
   );
 
   const buildEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...hostEnv,
   };
   for (const [key, value] of Object.entries(buildEnv)) {
     if (value === "") {
@@ -957,7 +973,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     delete buildEnv.APPLE_API_ISSUER;
   }
 
-  if (process.platform === "win32") {
+  if (hostPlatform === "win32") {
     const python = yield* resolvePythonForNodeGyp();
     if (python) {
       buildEnv.PYTHON = python;
@@ -981,7 +997,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       cwd: repoRoot,
       env: buildEnv,
       // Windows needs shell mode to resolve .cmd shims.
-      shell: process.platform === "win32",
+      shell: useWindowsShell,
     })`vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,
     {
       label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,

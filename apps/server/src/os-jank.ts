@@ -26,7 +26,6 @@ function logPathHydrationWarning(message: string, error?: unknown): void {
 export function fixPath(
   options: {
     env?: NodeJS.ProcessEnv;
-    platform?: NodeJS.Platform;
     readPath?: typeof readPathFromLoginShell;
     readWindowsEnvironment?: WindowsShellEnvironmentReader;
     isWindowsCommandAvailable?: WindowsCommandAvailabilityChecker;
@@ -35,7 +34,7 @@ export function fixPath(
     logWarning?: (message: string, error?: unknown) => void;
   } = {},
 ): void {
-  const platform = options.platform ?? process.platform;
+  const platform = process.platform;
   const env = options.env ?? process.env;
   const logWarning = options.logWarning ?? logPathHydrationWarning;
   const readPath = options.readPath ?? readPathFromLoginShell;

@@ -18,6 +18,7 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import {
   query as claudeQuery,
@@ -519,11 +520,12 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  */
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) => {
   const abort = new AbortController();
   return Effect.gen(function* () {
-    const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+    const hostEnv = yield* HostProcessEnv;
+    const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment ?? hostEnv);
     return yield* Effect.tryPromise(async () => {
       const q = claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
@@ -575,12 +577,14 @@ const probeClaudeCapabilities = (
 const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
   args: ReadonlyArray<string>,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) {
-  const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+  const hostEnv = yield* HostProcessEnv;
+  const hostPlatform = yield* HostProcessPlatform;
+  const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment ?? hostEnv);
   const command = ChildProcess.make(claudeSettings.binaryPath, [...args], {
     env: claudeEnvironment,
-    shell: process.platform === "win32",
+    shell: hostPlatform === "win32",
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
@@ -590,12 +594,14 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   resolveCapabilities?: (
     claudeSettings: ClaudeSettings,
   ) => Effect.Effect<ClaudeCapabilitiesProbe | undefined>,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
   ChildProcessSpawner.ChildProcessSpawner | Path.Path
 > {
+  const hostEnv = yield* HostProcessEnv;
+  const resolvedEnvironment = environment ?? hostEnv;
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const allModels = providerModelsFromSettings(
     BUILT_IN_MODELS,
@@ -620,10 +626,11 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   }
 
-  const versionProbe = yield* runClaudeCommand(claudeSettings, ["--version"], environment).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
-  );
+  const versionProbe = yield* runClaudeCommand(
+    claudeSettings,
+    ["--version"],
+    resolvedEnvironment,
+  ).pipe(Effect.timeoutOption(DEFAULT_TIMEOUT_MS), Effect.result);
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;

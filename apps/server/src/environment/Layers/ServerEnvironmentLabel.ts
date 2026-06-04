@@ -1,5 +1,6 @@
 import * as OS from "node:os";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -8,7 +9,6 @@ import { ProcessRunner } from "../../processRunner.ts";
 
 interface ResolveServerEnvironmentLabelInput {
   readonly cwdBaseName: string;
-  readonly platform?: NodeJS.Platform;
   readonly hostname?: string | null;
 }
 
@@ -54,12 +54,13 @@ const runFriendlyLabelCommand = Effect.fn("runFriendlyLabelCommand")(function* (
   args: readonly string[],
 ) {
   const processRunner = yield* ProcessRunner;
+  const hostPlatform = yield* HostProcessPlatform;
   const result = yield* processRunner
     .run({
       command,
       args,
       timeoutBehavior: "timedOutResult",
-      shell: process.platform === "win32",
+      shell: hostPlatform === "win32",
     })
     .pipe(Effect.option);
 
@@ -70,9 +71,8 @@ const runFriendlyLabelCommand = Effect.fn("runFriendlyLabelCommand")(function* (
   return normalizeLabel(result.value.stdout);
 });
 
-const resolveFriendlyHostLabel = Effect.fn("resolveFriendlyHostLabel")(function* (
-  platform: NodeJS.Platform,
-) {
+const resolveFriendlyHostLabel = Effect.fn("resolveFriendlyHostLabel")(function* () {
+  const platform = yield* HostProcessPlatform;
   if (platform === "darwin") {
     return yield* runFriendlyLabelCommand("scutil", ["--get", "ComputerName"]);
   }
@@ -95,8 +95,7 @@ const resolveFriendlyHostLabel = Effect.fn("resolveFriendlyHostLabel")(function*
 export const resolveServerEnvironmentLabel = Effect.fn("resolveServerEnvironmentLabel")(function* (
   input: ResolveServerEnvironmentLabelInput,
 ) {
-  const platform = input.platform ?? process.platform;
-  const friendlyHostLabel = yield* resolveFriendlyHostLabel(platform);
+  const friendlyHostLabel = yield* resolveFriendlyHostLabel();
   if (friendlyHostLabel) {
     return friendlyHostLabel;
   }

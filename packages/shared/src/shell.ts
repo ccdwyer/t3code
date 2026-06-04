@@ -18,9 +18,17 @@ type ExecFileSyncLike = (
 ) => string;
 
 export interface CommandAvailabilityOptions {
-  readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
 }
+
+export interface PlatformCommandAvailabilityOptions extends CommandAvailabilityOptions {
+  readonly platform: NodeJS.Platform;
+}
+
+export type CommandAvailabilityChecker = (
+  command: string,
+  options?: CommandAvailabilityOptions,
+) => boolean;
 
 export interface WindowsEnvironmentProbeOptions {
   readonly loadProfile?: boolean;
@@ -382,7 +390,17 @@ export function resolveCommandPath(
   command: string,
   options: CommandAvailabilityOptions = {},
 ): string | null {
-  const platform = options.platform ?? process.platform;
+  return resolveCommandPathForPlatform(command, {
+    platform: process.platform,
+    ...(options.env ? { env: options.env } : {}),
+  });
+}
+
+export function resolveCommandPathForPlatform(
+  command: string,
+  options: PlatformCommandAvailabilityOptions,
+): string | null {
+  const platform = options.platform;
   const env = options.env ?? process.env;
   const windowsPathExtensions = platform === "win32" ? resolveWindowsPathExtensions(env) : [];
   const commandCandidates = resolveCommandCandidates(command, platform, windowsPathExtensions);
@@ -424,6 +442,13 @@ export function isCommandAvailable(
   return resolveCommandPath(command, options) !== null;
 }
 
+export function isCommandAvailableForPlatform(
+  command: string,
+  options: PlatformCommandAvailabilityOptions,
+): boolean {
+  return resolveCommandPathForPlatform(command, options) !== null;
+}
+
 export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArray<string> {
   const appData = env.APPDATA?.trim();
   const localAppData = env.LOCALAPPDATA?.trim();
@@ -439,7 +464,7 @@ export function resolveKnownWindowsCliDirs(env: NodeJS.ProcessEnv): ReadonlyArra
 
 export interface WindowsEnvironmentResolverOptions {
   readonly readEnvironment?: WindowsShellEnvironmentReader;
-  readonly commandAvailable?: typeof isCommandAvailable;
+  readonly commandAvailable?: CommandAvailabilityChecker;
 }
 
 function readWindowsEnvironmentSafely(
@@ -472,7 +497,13 @@ export function resolveWindowsEnvironment(
   options: WindowsEnvironmentResolverOptions = {},
 ): Partial<NodeJS.ProcessEnv> {
   const readEnvironment = options.readEnvironment ?? readEnvironmentFromWindowsShell;
-  const commandAvailable = options.commandAvailable ?? isCommandAvailable;
+  const commandAvailable =
+    options.commandAvailable ??
+    ((command, commandOptions) =>
+      isCommandAvailableForPlatform(command, {
+        platform: "win32",
+        ...(commandOptions?.env ? { env: commandOptions.env } : {}),
+      }));
   const inheritedPath = readEnvPath(env);
   const shellPath = readWindowsEnvironmentSafely(readEnvironment, ["PATH"], {
     loadProfile: false,
@@ -483,7 +514,7 @@ export function resolveWindowsEnvironment(
   const baselinePatch: Partial<NodeJS.ProcessEnv> = baselinePath ? { PATH: baselinePath } : {};
   const baselineEnv = mergeWindowsEnv(env, baselinePatch);
 
-  if (commandAvailable("node", { platform: "win32", env: baselineEnv })) {
+  if (commandAvailable("node", { env: baselineEnv })) {
     return baselinePatch;
   }
 

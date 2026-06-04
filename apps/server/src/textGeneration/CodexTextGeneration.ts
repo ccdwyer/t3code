@@ -9,6 +9,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { type CodexSettings, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
@@ -46,12 +47,15 @@ const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
  */
 export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(function* (
   codexConfig: CodexSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* Effect.service(ServerConfig);
+  const hostEnv = yield* HostProcessEnv;
+  const hostPlatform = yield* HostProcessPlatform;
+  const resolvedEnvironment = environment ?? hostEnv;
 
   type MaterializedImageAttachments = {
     readonly imagePaths: ReadonlyArray<string>;
@@ -207,11 +211,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         ],
         {
           env: {
-            ...environment,
+            ...resolvedEnvironment,
             ...(codexConfig.homePath ? { CODEX_HOME: expandHomePath(codexConfig.homePath) } : {}),
           },
           cwd,
-          shell: process.platform === "win32",
+          shell: hostPlatform === "win32",
           stdin: {
             stream: Stream.encodeText(Stream.make(prompt)),
           },

@@ -12,6 +12,7 @@ import {
   type OpenCodeSettings,
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { HostProcessEnv } from "@t3tools/shared/hostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
@@ -99,10 +100,12 @@ interface SharedOpenCodeTextGenerationServerState {
 
 export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration")(function* (
   openCodeSettings: OpenCodeSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) {
   const serverConfig = yield* ServerConfig;
   const openCodeRuntime = yield* OpenCodeRuntime;
+  const hostEnv = yield* HostProcessEnv;
+  const resolvedEnvironment = environment ?? hostEnv;
   const idleFiberScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
     Scope.close(scope, Exit.void),
   );
@@ -208,7 +211,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
                 openCodeRuntime
                   .startOpenCodeServerProcess({
                     binaryPath: input.binaryPath,
-                    environment,
+                    environment: resolvedEnvironment,
                   })
                   .pipe(
                     Effect.provideService(Scope.Scope, serverScope),

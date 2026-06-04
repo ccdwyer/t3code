@@ -1,3 +1,4 @@
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -135,10 +136,11 @@ export const readTailscaleStatus: Effect.Effect<
 > = Effect.gen(function* () {
   const args = ["status", "--json"];
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hostPlatform = yield* HostProcessPlatform;
   const child = yield* spawner
     .spawn(
       ChildProcess.make("tailscale", args, {
-        shell: process.platform === "win32",
+        shell: hostPlatform === "win32",
       }),
     )
     .pipe(
@@ -214,10 +216,11 @@ const runTailscaleCommand = (
 ): Effect.Effect<void, TailscaleCommandError, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const hostPlatform = yield* HostProcessPlatform;
     const child = yield* spawner
       .spawn(
         ChildProcess.make("tailscale", args, {
-          shell: process.platform === "win32",
+          shell: hostPlatform === "win32",
         }),
       )
       .pipe(

@@ -1,6 +1,7 @@
 import * as Crypto from "node:crypto";
 
 import type { DesktopSshEnvironmentTarget, DesktopUpdateChannel } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -190,6 +191,7 @@ const runSshCommandInScope = Effect.fn("ssh/command.runSshCommand.inScope")(func
     ...(input.remoteCommandArgs ?? []),
   ];
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hostPlatform = yield* HostProcessPlatform;
   yield* Effect.logDebug("ssh.command.start", {
     ...sshTargetLogFields(target),
     command: ["ssh", ...args],
@@ -200,7 +202,7 @@ const runSshCommandInScope = Effect.fn("ssh/command.runSshCommand.inScope")(func
     .spawn(
       ChildProcess.make("ssh", args, {
         env: environment,
-        shell: process.platform === "win32",
+        shell: hostPlatform === "win32",
         stdin: {
           stream: stdinStream(input.stdin),
           endOnDone: true,

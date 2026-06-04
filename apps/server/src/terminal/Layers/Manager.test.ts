@@ -8,6 +8,7 @@ import {
   type TerminalOpenInput,
   type TerminalRestartInput,
 } from "@t3tools/contracts";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -199,8 +200,6 @@ const multiTerminalHistoryLogPath = (
 
 interface CreateManagerOptions {
   shellResolver?: () => string;
-  platform?: NodeJS.Platform;
-  env?: NodeJS.ProcessEnv;
   subprocessInspector?: (terminalPid: number) => Effect.Effect<{
     readonly hasRunningSubprocess: boolean;
     readonly childCommand: string | null;
@@ -239,8 +238,6 @@ const createManager = (
         historyLineLimit,
         ptyAdapter,
         ...(options.shellResolver !== undefined ? { shellResolver: options.shellResolver } : {}),
-        ...(options.platform !== undefined ? { platform: options.platform } : {}),
-        ...(options.env !== undefined ? { env: options.env } : {}),
         ...(options.subprocessInspector !== undefined
           ? { subprocessInspector: options.subprocessInspector }
           : {}),
@@ -267,6 +264,15 @@ const createManager = (
         getEvents: Ref.get(eventsRef),
       };
     }),
+  );
+
+const withHostProcess = (input: {
+  readonly platform: NodeJS.Platform;
+  readonly env?: NodeJS.ProcessEnv;
+}) =>
+  Layer.mergeAll(
+    Layer.succeed(HostProcessPlatform, input.platform),
+    Layer.succeed(HostProcessEnv, input.env ?? {}),
   );
 
 it.layer(
@@ -1114,14 +1120,18 @@ it.layer(
 
   it.effect("prefers PowerShell over ComSpec for Windows terminals", () =>
     Effect.gen(function* () {
-      const { manager, ptyAdapter } = yield* createManager(5, {
-        platform: "win32",
-        env: {
-          ComSpec: "C:\\Windows\\System32\\cmd.exe",
-          PATH: "C:\\Windows\\System32",
-          SystemRoot: "C:\\Windows",
-        },
-      });
+      const { manager, ptyAdapter } = yield* createManager(5).pipe(
+        Effect.provide(
+          withHostProcess({
+            platform: "win32",
+            env: {
+              ComSpec: "C:\\Windows\\System32\\cmd.exe",
+              PATH: "C:\\Windows\\System32",
+              SystemRoot: "C:\\Windows",
+            },
+          }),
+        ),
+      );
 
       yield* manager.open(openInput());
 
@@ -1136,15 +1146,22 @@ it.layer(
 
   it.effect("falls back to built-in PowerShell by absolute path on Windows", () =>
     Effect.gen(function* () {
-      const { manager, ptyAdapter } = yield* createManager(5, {
-        platform: "win32",
-        env: {
-          ComSpec: "C:\\Windows\\System32\\cmd.exe",
-          PATH: "C:\\Windows\\System32",
-          SystemRoot: "C:\\Windows",
-        },
+      const ptyAdapter = new FakePtyAdapter();
+      const { manager } = yield* createManager(5, {
+        ptyAdapter,
         shellResolver: () => "C:\\missing\\custom-shell.exe",
-      });
+      }).pipe(
+        Effect.provide(
+          withHostProcess({
+            platform: "win32",
+            env: {
+              ComSpec: "C:\\Windows\\System32\\cmd.exe",
+              PATH: "C:\\Windows\\System32",
+              SystemRoot: "C:\\Windows",
+            },
+          }),
+        ),
+      );
       ptyAdapter.spawnFailures.push(
         new Error("spawn custom-shell.exe ENOENT"),
         new Error("spawn pwsh.exe ENOENT"),

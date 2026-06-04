@@ -27,6 +27,7 @@ import {
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
 } from "@t3tools/shared/model";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
   buildBooleanOptionDescriptor,
@@ -394,10 +395,11 @@ function buildCursorDiscoveredModelsFromAvailableModelsResponse(
 
 const makeCursorAcpProbeRuntime = (
   cursorSettings: CursorSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const hostEnv = yield* HostProcessEnv;
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         spawn: {
@@ -407,7 +409,7 @@ const makeCursorAcpProbeRuntime = (
             "acp",
           ],
           cwd: process.cwd(),
-          env: environment,
+          env: environment ?? hostEnv,
         },
         cwd: process.cwd(),
         clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
@@ -421,7 +423,7 @@ const makeCursorAcpProbeRuntime = (
 const withCursorAcpProbeRuntime = <A, E, R>(
   cursorSettings: CursorSettings,
   useRuntime: (acp: AcpSessionRuntime["Service"]) => Effect.Effect<A, E, R>,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) =>
   makeCursorAcpProbeRuntime(cursorSettings, environment).pipe(
     Effect.flatMap(useRuntime),
@@ -542,7 +544,7 @@ export function resolveCursorAcpConfigUpdates(
 
 const discoverCursorModelsViaListAvailableModels = (
   cursorSettings: CursorSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) =>
   withCursorAcpProbeRuntime(
     cursorSettings,
@@ -558,7 +560,7 @@ const discoverCursorModelsViaListAvailableModels = (
 
 export const discoverCursorModelsViaAcp = (
   cursorSettings: CursorSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) => discoverCursorModelsViaListAvailableModels(cursorSettings, environment);
 
 export function getCursorFallbackModels(
@@ -927,13 +929,15 @@ export function parseCursorAboutOutput(result: CommandResult): CursorAboutResult
 const runCursorCommand = (
   cursorSettings: CursorSettings,
   args: ReadonlyArray<string>,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const hostEnv = yield* HostProcessEnv;
+    const hostPlatform = yield* HostProcessPlatform;
     const command = ChildProcess.make(cursorSettings.binaryPath, [...args], {
-      env: environment,
-      shell: process.platform === "win32",
+      env: environment ?? hostEnv,
+      shell: hostPlatform === "win32",
     });
 
     const child = yield* spawner.spawn(command);
@@ -949,10 +953,7 @@ const runCursorCommand = (
     return { stdout, stderr, code: exitCode } satisfies CommandResult;
   }).pipe(Effect.scoped);
 
-const runCursorAboutCommand = (
-  cursorSettings: CursorSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
+const runCursorAboutCommand = (cursorSettings: CursorSettings, environment?: NodeJS.ProcessEnv) =>
   Effect.gen(function* () {
     const jsonResult = yield* runCursorCommand(
       cursorSettings,
@@ -967,7 +968,7 @@ const runCursorAboutCommand = (
 
 export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(function* (
   cursorSettings: CursorSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,

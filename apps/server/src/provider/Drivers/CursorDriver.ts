@@ -39,7 +39,7 @@ import {
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { mergeProviderInstanceEnvironmentEffect } from "../ProviderInstanceEnvironment.ts";
 import {
   makeProviderMaintenanceCapabilities,
   makeStaticProviderMaintenanceResolver,
@@ -99,7 +99,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
       const path = yield* Path.Path;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
+      const processEnv = yield* mergeProviderInstanceEnvironmentEffect(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,

@@ -1,4 +1,5 @@
 import type { RepositoryIdentity } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -87,6 +88,7 @@ const resolveRepositoryIdentityCacheKey = Effect.fn("resolveRepositoryIdentityCa
   cwd: string,
 ) {
   const processRunner = yield* ProcessRunner.ProcessRunner;
+  const hostPlatform = yield* HostProcessPlatform;
   let cacheKey = cwd;
 
   const topLevelResult = yield* processRunner
@@ -94,7 +96,7 @@ const resolveRepositoryIdentityCacheKey = Effect.fn("resolveRepositoryIdentityCa
       command: "git",
       args: ["-C", cwd, "rev-parse", "--show-toplevel"],
       timeoutBehavior: "timedOutResult",
-      shell: process.platform === "win32",
+      shell: hostPlatform === "win32",
     })
     .pipe(Effect.option);
   if (topLevelResult._tag === "None" || topLevelResult.value.code !== 0) {
@@ -114,12 +116,13 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn("resolveRepositoryIdenti
     cacheKey: string,
   ): Effect.fn.Return<RepositoryIdentity | null, never, ProcessRunner.ProcessRunner> {
     const processRunner = yield* ProcessRunner.ProcessRunner;
+    const hostPlatform = yield* HostProcessPlatform;
     const remoteResult = yield* processRunner
       .run({
         command: "git",
         args: ["-C", cacheKey, "remote", "-v"],
         timeoutBehavior: "timedOutResult",
-        shell: process.platform === "win32",
+        shell: hostPlatform === "win32",
       })
       .pipe(Effect.option);
     if (remoteResult._tag === "None" || remoteResult.value.code !== 0) {

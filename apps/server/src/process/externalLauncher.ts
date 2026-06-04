@@ -12,7 +12,12 @@ import {
   type EditorId,
   type LaunchEditorInput,
 } from "@t3tools/contracts";
-import { isCommandAvailable, type CommandAvailabilityOptions } from "@t3tools/shared/shell";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import {
+  isCommandAvailable,
+  isCommandAvailableForPlatform,
+  type PlatformCommandAvailabilityOptions,
+} from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -26,7 +31,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 export { ExternalLauncherError };
 export type { LaunchEditorInput };
-export { isCommandAvailable } from "@t3tools/shared/shell";
+export { isCommandAvailable, isCommandAvailableForPlatform } from "@t3tools/shared/shell";
 
 interface EditorLaunch {
   readonly command: string;
@@ -111,10 +116,10 @@ function resolveEditorArgs(
 
 function resolveAvailableCommand(
   commands: ReadonlyArray<string>,
-  options: CommandAvailabilityOptions = {},
+  options: PlatformCommandAvailabilityOptions,
 ): Option.Option<string> {
   for (const command of commands) {
-    if (isCommandAvailable(command, options)) {
+    if (isCommandAvailableForPlatform(command, options)) {
       return Option.some(command);
     }
   }
@@ -186,8 +191,8 @@ function fileManagerCommandForPlatform(platform: NodeJS.Platform): string {
 
 export function resolveBrowserLaunch(
   target: string,
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv = {},
 ): ProcessLaunch {
   if (platform === "darwin") {
     return {
@@ -213,15 +218,15 @@ export function resolveBrowserLaunch(
 }
 
 export function resolveAvailableEditors(
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
 ): ReadonlyArray<EditorId> {
   const available: EditorId[] = [];
 
   for (const editor of EDITORS) {
     if (editor.commands === null) {
       const command = fileManagerCommandForPlatform(platform);
-      if (isCommandAvailable(command, { platform, env })) {
+      if (isCommandAvailableForPlatform(command, { platform, env })) {
         available.push(editor.id);
       }
       continue;
@@ -235,6 +240,12 @@ export function resolveAvailableEditors(
 
   return available;
 }
+
+export const getAvailableEditors = Effect.fn("externalLauncher.getAvailableEditors")(function* () {
+  const platform = yield* HostProcessPlatform;
+  const env = yield* HostProcessEnv;
+  return resolveAvailableEditors(platform, env);
+});
 
 /**
  * ExternalLauncherShape - Service API for browser and editor launch actions.
@@ -264,37 +275,47 @@ export class ExternalLauncher extends Context.Service<ExternalLauncher, External
 // Implementations
 // ==============================
 
+export const resolveEditorLaunchForPlatform = Effect.fn("resolveEditorLaunchForPlatform")(
+  function* (
+    input: LaunchEditorInput,
+    platform: NodeJS.Platform,
+    env: NodeJS.ProcessEnv = {},
+  ): Effect.fn.Return<EditorLaunch, ExternalLauncherError> {
+    yield* Effect.annotateCurrentSpan({
+      "externalLauncher.editor": input.editor,
+      "externalLauncher.cwd": input.cwd,
+      "externalLauncher.platform": platform,
+    });
+    const editorDef = EDITORS.find((editor) => editor.id === input.editor);
+    if (!editorDef) {
+      return yield* new ExternalLauncherError({ message: `Unknown editor: ${input.editor}` });
+    }
+
+    if (editorDef.commands) {
+      const command = Option.getOrElse(
+        resolveAvailableCommand(editorDef.commands, { platform, env }),
+        () => editorDef.commands[0],
+      );
+      return {
+        command,
+        args: resolveEditorArgs(editorDef, input.cwd),
+      };
+    }
+
+    if (editorDef.id !== "file-manager") {
+      return yield* new ExternalLauncherError({ message: `Unsupported editor: ${input.editor}` });
+    }
+
+    return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
+  },
+);
+
 export const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
   input: LaunchEditorInput,
-  platform: NodeJS.Platform = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<EditorLaunch, ExternalLauncherError> {
-  yield* Effect.annotateCurrentSpan({
-    "externalLauncher.editor": input.editor,
-    "externalLauncher.cwd": input.cwd,
-    "externalLauncher.platform": platform,
-  });
-  const editorDef = EDITORS.find((editor) => editor.id === input.editor);
-  if (!editorDef) {
-    return yield* new ExternalLauncherError({ message: `Unknown editor: ${input.editor}` });
-  }
-
-  if (editorDef.commands) {
-    const command = Option.getOrElse(
-      resolveAvailableCommand(editorDef.commands, { platform, env }),
-      () => editorDef.commands[0],
-    );
-    return {
-      command,
-      args: resolveEditorArgs(editorDef, input.cwd),
-    };
-  }
-
-  if (editorDef.id !== "file-manager") {
-    return yield* new ExternalLauncherError({ message: `Unsupported editor: ${input.editor}` });
-  }
-
-  return { command: fileManagerCommandForPlatform(platform), args: [input.cwd] };
+  const platform = yield* HostProcessPlatform;
+  const env = yield* HostProcessEnv;
+  return yield* resolveEditorLaunchForPlatform(input, platform, env);
 });
 
 const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
@@ -315,7 +336,12 @@ const launchAndUnref = Effect.fn("externalLauncher.launchAndUnref")(function* (
 export const launchBrowser = Effect.fn("externalLauncher.launchBrowser")(function* (
   target: string,
 ): Effect.fn.Return<void, ExternalLauncherError, ChildProcessSpawner.ChildProcessSpawner> {
-  return yield* launchAndUnref(resolveBrowserLaunch(target), "Browser auto-open failed");
+  const platform = yield* HostProcessPlatform;
+  const env = yield* HostProcessEnv;
+  return yield* launchAndUnref(
+    resolveBrowserLaunch(target, platform, env),
+    "Browser auto-open failed",
+  );
 });
 
 export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(function* (
@@ -327,7 +353,8 @@ export const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProce
     });
   }
 
-  const isWin32 = process.platform === "win32";
+  const platform = yield* HostProcessPlatform;
+  const isWin32 = platform === "win32";
   yield* launchAndUnref(
     {
       command: launch.command,

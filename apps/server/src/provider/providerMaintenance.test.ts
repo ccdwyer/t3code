@@ -147,7 +147,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect(
           packageToolUpdate.resolve({
             binaryPath: "package-tool",
-            platform: "darwin",
             env: {
               PATH: vitePlusBinDir,
             },
@@ -180,11 +179,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect(
           nativePackageToolUpdate.resolve({
             binaryPath: "native-package-tool",
-            platform: "win32",
-            env: {
-              PATH: bunBinDir,
-              PATHEXT: ".COM;.EXE;.BAT;.CMD",
-            },
+            resolvedCommandPath: path.join(bunBinDir, "native-package-tool.exe"),
           }),
         ).toEqual({
           provider: driver("nativePackageTool"),
@@ -216,7 +211,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect(
           scopedPackageToolUpdate.resolve({
             binaryPath: "scoped-package-tool",
-            platform: "darwin",
             env: {
               PATH: pnpmHomeDir,
             },
@@ -241,7 +235,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     expect(
       packageToolUpdate.resolve({
         binaryPath: "/opt/homebrew/bin/package-tool",
-        platform: "darwin",
         env: {
           PATH: "",
         },
@@ -275,7 +268,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect(
           nativePackageToolUpdate.resolve({
             binaryPath: "native-package-tool",
-            platform: "darwin",
             env: {
               PATH: nativeBinDir,
             },
@@ -310,7 +302,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect(
           scopedPackageToolUpdate.resolve({
             binaryPath: "scoped-package-tool",
-            platform: "darwin",
             env: {
               PATH: nativeBinDir,
             },
@@ -335,7 +326,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     expect(
       nativePackageToolUpdate.resolve({
         binaryPath: "/opt/homebrew/bin/native-package-tool",
-        platform: "darwin",
         env: {
           PATH: "",
         },
@@ -359,7 +349,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     expect(
       scopedPackageToolUpdate.resolve({
         binaryPath: "/opt/homebrew/bin/scoped-package-tool",
-        platform: "darwin",
         env: {
           PATH: "",
         },
@@ -401,7 +390,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
         binaryPath: symlinkPath,
-        platform: "darwin",
         env: {
           PATH: "",
         },
@@ -449,7 +437,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
         binaryPath: symlinkPath,
-        platform: "darwin",
         env: {
           PATH: "",
         },
@@ -475,7 +462,6 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     expect(
       packageToolUpdate.resolve({
         binaryPath: "C:\\Tools\\package-tool\\package-tool.exe",
-        platform: "win32",
         env: {
           PATH: "",
           PATHEXT: ".COM;.EXE;.BAT;.CMD",

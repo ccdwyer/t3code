@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
+import { HostProcessEnv, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Config from "effect/Config";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -414,9 +415,11 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       hasExplicitDevUrl: input.devUrl !== undefined,
     });
 
+    const hostEnv = yield* HostProcessEnv;
+    const hostPlatform = yield* HostProcessPlatform;
     const env = yield* createDevRunnerEnv({
       mode: input.mode,
-      baseEnv: process.env,
+      baseEnv: hostEnv,
       serverOffset,
       webOffset,
       t3Home: input.t3Home,
@@ -448,7 +451,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       env,
       extendEnv: false,
       // Windows needs shell mode to resolve .cmd shims (e.g. vp.cmd).
-      shell: process.platform === "win32",
+      shell: hostPlatform === "win32",
       // Keep Vite+ in the same process group so terminal signals (Ctrl+C)
       // reach it directly. Effect defaults to detached: true on non-Windows,
       // which would put the runner in a new group and require manual forwarding.

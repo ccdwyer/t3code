@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
+import { platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
@@ -27,6 +28,8 @@ export const desktopDir = resolve(__dirname, "..");
 const repoRoot = resolve(desktopDir, "..", "..");
 const defaultIconPath = join(desktopDir, "resources", "icon.icns");
 const developmentMacIconPngPath = join(repoRoot, "assets", "dev", "blueprint-macos-1024.png");
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher script has no Effect runtime.
+const hostPlatform = platform();
 
 function setPlistString(plistPath, key, value) {
   const replaceResult = spawnSync("plutil", ["-replace", key, "-string", value, plistPath], {
@@ -169,7 +172,7 @@ export function resolveElectronPath() {
   const require = createRequire(import.meta.url);
   const electronBinaryPath = require("electron");
 
-  if (process.platform !== "darwin") {
+  if (hostPlatform !== "darwin") {
     return electronBinaryPath;
   }
 

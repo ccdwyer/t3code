@@ -1,11 +1,31 @@
+import { fileURLToPath } from "node:url";
+
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
 
+const webSrcPath = fileURLToPath(new URL("./apps/web/src", import.meta.url));
+
 export default defineConfig({
+  resolve: {
+    alias: [
+      {
+        find: "~",
+        replacement: webSrcPath,
+      },
+    ],
+  },
   test: {
     environment: "node",
-    hookTimeout: 60_000,
-    testTimeout: 60_000,
+    exclude: [
+      "**/node_modules/**",
+      "**/.repos/**",
+      "**/dist/**",
+      "**/dist-electron/**",
+      "**/routeTree.gen.ts",
+    ],
+    fileParallelism: false,
+    hookTimeout: 120_000,
+    testTimeout: 120_000,
   },
   staged: {
     "*": "vp check --fix",

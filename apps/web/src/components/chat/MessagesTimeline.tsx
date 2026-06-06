@@ -33,7 +33,6 @@ import {
   EyeIcon,
   GlobeIcon,
   HammerIcon,
-  type LucideIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -102,6 +101,11 @@ interface TimelineRowSharedState {
 interface TimelineRowActivityState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
+}
+
+interface StableRowsSnapshot {
+  source: MessagesTimelineRow[];
+  state: StableMessagesTimelineRowsState;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -1008,19 +1012,34 @@ function UserMessageReviewCommentCard({ comment }: { comment: ReviewCommentConte
 // so LegendList (and React) can skip re-rendering unchanged items.
 // ---------------------------------------------------------------------------
 
+function createStableRowsSnapshot(
+  rows: MessagesTimelineRow[],
+  previous?: StableMessagesTimelineRowsState,
+): StableRowsSnapshot {
+  return {
+    source: rows,
+    state: computeStableMessagesTimelineRows(
+      rows,
+      previous ?? {
+        byId: new Map<string, MessagesTimelineRow>(),
+        result: [],
+      },
+    ),
+  };
+}
+
 /** Returns a structurally-shared copy of `rows`: for each row whose content
  *  hasn't changed since last call, the previous object reference is reused. */
 function useStableRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
-  const prevState = useRef<StableMessagesTimelineRowsState>({
-    byId: new Map<string, MessagesTimelineRow>(),
-    result: [],
-  });
+  const [snapshot, setSnapshot] = useState(() => createStableRowsSnapshot(rows));
 
-  return useMemo(() => {
-    const nextState = computeStableMessagesTimelineRows(rows, prevState.current);
-    prevState.current = nextState;
-    return nextState.result;
-  }, [rows]);
+  if (snapshot.source !== rows) {
+    const nextSnapshot = createStableRowsSnapshot(rows, snapshot.state);
+    setSnapshot(nextSnapshot);
+    return nextSnapshot.state.result;
+  }
+
+  return snapshot.state.result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,32 +1091,17 @@ function formatMessageMeta(
   return `${formatTimestamp(createdAt, timestampFormat)} • ${duration}`;
 }
 
-function workToneIcon(tone: TimelineWorkEntry["tone"]): {
-  icon: LucideIcon;
-  className: string;
-} {
+function workToneIconClass(tone: TimelineWorkEntry["tone"]): string {
   if (tone === "error") {
-    return {
-      icon: CircleAlertIcon,
-      className: "text-foreground/92",
-    };
+    return "text-foreground/92";
   }
   if (tone === "thinking") {
-    return {
-      icon: BotIcon,
-      className: "text-foreground/92",
-    };
+    return "text-foreground/92";
   }
   if (tone === "info") {
-    return {
-      icon: CheckIcon,
-      className: "text-foreground/92",
-    };
+    return "text-foreground/92";
   }
-  return {
-    icon: ZapIcon,
-    className: "text-foreground/92",
-  };
+  return "text-foreground/92";
 }
 
 function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
@@ -1132,29 +1136,36 @@ function workEntryRawCommand(
   return rawCommand === workEntry.command.trim() ? null : rawCommand;
 }
 
-function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
-  if (workEntry.requestKind === "command") return TerminalIcon;
-  if (workEntry.requestKind === "file-read") return EyeIcon;
-  if (workEntry.requestKind === "file-change") return SquarePenIcon;
+function WorkToneIconGlyph({ tone }: { tone: TimelineWorkEntry["tone"] }) {
+  if (tone === "error") return <CircleAlertIcon className="size-3" />;
+  if (tone === "thinking") return <BotIcon className="size-3" />;
+  if (tone === "info") return <CheckIcon className="size-3" />;
+  return <ZapIcon className="size-3" />;
+}
+
+function WorkEntryIconGlyph({ workEntry }: { workEntry: TimelineWorkEntry }) {
+  if (workEntry.requestKind === "command") return <TerminalIcon className="size-3" />;
+  if (workEntry.requestKind === "file-read") return <EyeIcon className="size-3" />;
+  if (workEntry.requestKind === "file-change") return <SquarePenIcon className="size-3" />;
 
   if (workEntry.itemType === "command_execution" || workEntry.command) {
-    return TerminalIcon;
+    return <TerminalIcon className="size-3" />;
   }
   if (workEntry.itemType === "file_change" || (workEntry.changedFiles?.length ?? 0) > 0) {
-    return SquarePenIcon;
+    return <SquarePenIcon className="size-3" />;
   }
-  if (workEntry.itemType === "web_search") return GlobeIcon;
-  if (workEntry.itemType === "image_view") return EyeIcon;
+  if (workEntry.itemType === "web_search") return <GlobeIcon className="size-3" />;
+  if (workEntry.itemType === "image_view") return <EyeIcon className="size-3" />;
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
-      return WrenchIcon;
+      return <WrenchIcon className="size-3" />;
     case "dynamic_tool_call":
     case "collab_agent_tool_call":
-      return HammerIcon;
+      return <HammerIcon className="size-3" />;
   }
 
-  return workToneIcon(workEntry.tone).icon;
+  return <WorkToneIconGlyph tone={workEntry.tone} />;
 }
 
 function capitalizePhrase(value: string): string {
@@ -1177,8 +1188,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workspaceRoot: string | undefined;
 }) {
   const { workEntry, workspaceRoot } = props;
-  const iconConfig = workToneIcon(workEntry.tone);
-  const EntryIcon = workEntryIcon(workEntry);
+  const iconClassName = workToneIconClass(workEntry.tone);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -1196,9 +1206,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     <div className="rounded-lg px-1 py-1">
       <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
         <span
-          className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
+          className={cn("flex size-5 shrink-0 items-center justify-center", iconClassName)}
         >
-          <EntryIcon className="size-3" />
+          <WorkEntryIconGlyph workEntry={workEntry} />
         </span>
         <div className="min-w-0 flex-1 overflow-hidden">
           {rawCommand ? (

@@ -1,5 +1,6 @@
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Socket from "effect/unstable/socket/Socket";
 
 import { remoteHttpClientLayer } from "@t3tools/client-runtime";
 
@@ -14,12 +15,15 @@ function configuredRelayUrl(): string {
 
 const mobileHttpClientLayer = remoteHttpClientLayer(fetch);
 
-export const mobileRuntime = ManagedRuntime.make(
-  mobileManagedRelayClientLayer(configuredRelayUrl()).pipe(
-    Layer.provideMerge(mobileCryptoLayer),
-    Layer.provideMerge(mobileHttpClientLayer),
-    Layer.provideMerge(mobileTracingLayer.pipe(Layer.provide(mobileHttpClientLayer))),
-  ),
+export const mobileRuntimeLayer = Layer.merge(
+  mobileManagedRelayClientLayer(configuredRelayUrl()),
+  Socket.layerWebSocketConstructorGlobal,
+).pipe(
+  Layer.provideMerge(mobileCryptoLayer),
+  Layer.provideMerge(mobileHttpClientLayer),
+  Layer.provideMerge(mobileTracingLayer.pipe(Layer.provide(mobileHttpClientLayer))),
 );
+
+export const mobileRuntime = ManagedRuntime.make(mobileRuntimeLayer);
 
 export const mobileRuntimeContextLayer = Layer.effectContext(mobileRuntime.contextEffect);

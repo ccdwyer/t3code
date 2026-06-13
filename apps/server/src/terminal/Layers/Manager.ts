@@ -3,6 +3,7 @@ import {
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
   type TerminalEvent,
+  type TerminalHistoryAttachStreamEvent,
   type TerminalMetadataStreamEvent,
   type TerminalOpenInput,
   type TerminalSessionSnapshot,
@@ -260,6 +261,23 @@ function terminalEventToAttachEvent(event: TerminalEvent): TerminalAttachStreamE
     case "restarted":
     case "activity":
       return event;
+  }
+}
+
+function terminalEventToHistoryAttachEvent(
+  event: TerminalEvent,
+): TerminalHistoryAttachStreamEvent | null {
+  switch (event.type) {
+    case "output":
+    case "exited":
+    case "closed":
+    case "error":
+    case "cleared":
+    case "activity":
+      return event;
+    case "started":
+    case "restarted":
+      return null;
   }
 }
 
@@ -2078,6 +2096,44 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
         Effect.map((session) => (Option.isSome(session) ? summary(session.value) : null)),
       );
 
+    const readHistorySnapshot = (input: {
+      readonly threadId: string;
+      readonly terminalId: string;
+    }) =>
+      withThreadLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const session = yield* getSession(input.threadId, input.terminalId);
+          if (Option.isSome(session)) {
+            return {
+              threadId: session.value.threadId,
+              terminalId: session.value.terminalId,
+              history: session.value.history,
+              status: session.value.status,
+              exitCode: session.value.exitCode,
+              exitSignal: session.value.exitSignal,
+              sequence: session.value.eventSequence,
+            };
+          }
+
+          yield* flushPersist(input.threadId, input.terminalId);
+          const history = yield* readHistory(input.threadId, input.terminalId);
+          return {
+            threadId: input.threadId,
+            terminalId: input.terminalId,
+            history,
+            status: null,
+            exitCode: null,
+            exitSignal: null,
+          };
+        }),
+      );
+
+    const getSnapshot: TerminalManagerShape["getSnapshot"] = (input) =>
+      getSession(input.threadId, input.terminalId).pipe(
+        Effect.map((session) => (Option.isSome(session) ? snapshot(session.value) : null)),
+      );
+
     const subscribe: TerminalManagerShape["subscribe"] = (listener) =>
       Effect.sync(() => {
         terminalEventListeners.add(listener);
@@ -2120,6 +2176,67 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           }
 
           const attachEvent = terminalEventToAttachEvent(event);
+          if (attachEvent) {
+            yield* listener(attachEvent);
+          }
+        }
+
+        deliverLive = true;
+        return () => {
+          unsubscribe?.();
+          unsubscribe = null;
+        };
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.flatMap(
+            Effect.sync(() => {
+              unsubscribe?.();
+              unsubscribe = null;
+            }),
+            () => Effect.failCause(cause),
+          ),
+        ),
+      );
+    };
+
+    const attachHistoryStream: TerminalManagerShape["attachHistoryStream"] = (input, listener) => {
+      let unsubscribe: (() => void) | null = null;
+
+      return Effect.gen(function* () {
+        const bufferedEvents: TerminalEvent[] = [];
+        let deliverLive = false;
+
+        unsubscribe = yield* subscribe((event) => {
+          if (event.threadId !== input.threadId || event.terminalId !== input.terminalId) {
+            return Effect.void;
+          }
+
+          if (!deliverLive) {
+            bufferedEvents.push(event);
+            return Effect.void;
+          }
+
+          const attachEvent = terminalEventToHistoryAttachEvent(event);
+          return attachEvent ? listener(attachEvent) : Effect.void;
+        });
+
+        const initialSnapshot = yield* readHistorySnapshot(input);
+
+        yield* listener({
+          type: "snapshot",
+          snapshot: initialSnapshot,
+        });
+
+        for (const event of bufferedEvents) {
+          if (
+            typeof event.sequence === "number" &&
+            typeof initialSnapshot.sequence === "number" &&
+            event.sequence <= initialSnapshot.sequence
+          ) {
+            continue;
+          }
+
+          const attachEvent = terminalEventToHistoryAttachEvent(event);
           if (attachEvent) {
             yield* listener(attachEvent);
           }
@@ -2382,11 +2499,13 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
     return {
       open,
       attachStream,
+      attachHistoryStream,
       write,
       resize,
       clear,
       restart,
       close,
+      getSnapshot,
       subscribe,
       subscribeMetadata,
     } satisfies TerminalManagerShape;

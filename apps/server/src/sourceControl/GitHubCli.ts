@@ -44,6 +44,39 @@ export interface GitHubRepositoryCloneUrls {
   readonly sshUrl: string;
 }
 
+export type GitHubMergeStrategy = "squash" | "merge" | "rebase";
+
+export interface GitHubPullRequestDetail {
+  readonly state: string;
+  readonly mergedAt: string | null;
+  readonly reviewDecision: string | null;
+  readonly headRefOid: string;
+  readonly url: string;
+}
+
+export interface GitHubPullRequestCheck {
+  readonly name: string;
+  readonly state: string;
+  readonly bucket: string;
+  readonly link: string;
+}
+
+export interface GitHubPullRequestReview {
+  readonly id: string;
+  readonly author: string;
+  readonly state: string;
+  readonly body: string;
+  readonly submittedAt: string;
+}
+
+export interface GitHubPullRequestReviewComment {
+  readonly id: number;
+  readonly user: string;
+  readonly body: string;
+  readonly path: string | null;
+  readonly createdAt: string;
+}
+
 export interface GitHubCliShape {
   readonly execute: (input: {
     readonly cwd: string;
@@ -79,7 +112,35 @@ export interface GitHubCliShape {
     readonly headSelector: string;
     readonly title: string;
     readonly bodyFile: string;
+    readonly draft?: boolean;
   }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly mergePullRequest: (input: {
+    readonly cwd: string;
+    readonly number: number;
+    readonly strategy: GitHubMergeStrategy;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly getPullRequestDetail: (input: {
+    readonly cwd: string;
+    readonly number: number;
+  }) => Effect.Effect<GitHubPullRequestDetail, GitHubCliError>;
+
+  readonly listPullRequestChecks: (input: {
+    readonly cwd: string;
+    readonly number: number;
+  }) => Effect.Effect<ReadonlyArray<GitHubPullRequestCheck>, GitHubCliError>;
+
+  readonly listPullRequestReviews: (input: {
+    readonly cwd: string;
+    readonly number: number;
+  }) => Effect.Effect<ReadonlyArray<GitHubPullRequestReview>, GitHubCliError>;
+
+  readonly listPullRequestReviewComments: (input: {
+    readonly cwd: string;
+    readonly repo: string;
+    readonly number: number;
+  }) => Effect.Effect<ReadonlyArray<GitHubPullRequestReviewComment>, GitHubCliError>;
 
   readonly getDefaultBranch: (input: {
     readonly cwd: string;
@@ -161,6 +222,45 @@ const RawGitHubRepositoryCloneUrlsSchema = Schema.Struct({
   sshUrl: TrimmedNonEmptyString,
 });
 
+const RawGitHubPullRequestDetailSchema = Schema.Struct({
+  state: Schema.String,
+  mergedAt: Schema.NullOr(Schema.String),
+  reviewDecision: Schema.NullOr(Schema.String),
+  headRefOid: Schema.String,
+  url: Schema.String,
+});
+
+const RawGitHubPullRequestCheckSchema = Schema.Struct({
+  name: Schema.optional(Schema.NullOr(Schema.String)),
+  state: Schema.optional(Schema.NullOr(Schema.String)),
+  bucket: Schema.optional(Schema.NullOr(Schema.String)),
+  link: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+const RawGitHubPullRequestChecksSchema = Schema.Array(RawGitHubPullRequestCheckSchema);
+
+const RawGitHubPullRequestReviewsSchema = Schema.Struct({
+  reviews: Schema.Array(
+    Schema.Struct({
+      id: Schema.optional(Schema.NullOr(Schema.String)),
+      author: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) }))),
+      state: Schema.optional(Schema.NullOr(Schema.String)),
+      body: Schema.optional(Schema.NullOr(Schema.String)),
+      submittedAt: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+
+const RawGitHubPullRequestReviewCommentsSchema = Schema.Array(
+  Schema.Struct({
+    id: Schema.Number,
+    user: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) }))),
+    body: Schema.optional(Schema.NullOr(Schema.String)),
+    path: Schema.optional(Schema.NullOr(Schema.String)),
+    created_at: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+);
+
 function normalizeRepositoryCloneUrls(
   raw: Schema.Schema.Type<typeof RawGitHubRepositoryCloneUrlsSchema>,
 ): GitHubRepositoryCloneUrls {
@@ -211,7 +311,14 @@ function deriveRepositoryCloneUrlsFromCreateOutput(
 function decodeGitHubJson<S extends Schema.Top>(
   raw: string,
   schema: S,
-  operation: "listOpenPullRequests" | "getPullRequest" | "getRepositoryCloneUrls",
+  operation:
+    | "listOpenPullRequests"
+    | "getPullRequest"
+    | "getRepositoryCloneUrls"
+    | "getPullRequestDetail"
+    | "listPullRequestChecks"
+    | "listPullRequestReviews"
+    | "listPullRequestReviewComments",
   invalidDetail: string,
 ): Effect.Effect<S["Type"], GitHubCliError, S["DecodingServices"]> {
   return Schema.decodeEffect(Schema.fromJsonString(schema))(raw).pipe(
@@ -352,8 +459,147 @@ export const make = Effect.fn("makeGitHubCli")(function* () {
           input.title,
           "--body-file",
           input.bodyFile,
+          ...(input.draft ? ["--draft"] : []),
         ],
       }).pipe(Effect.asVoid),
+    mergePullRequest: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "merge",
+          String(input.number),
+          input.strategy === "merge"
+            ? "--merge"
+            : input.strategy === "rebase"
+              ? "--rebase"
+              : "--squash",
+        ],
+      }).pipe(Effect.asVoid),
+    getPullRequestDetail: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "view",
+          String(input.number),
+          "--json",
+          "state,mergedAt,reviewDecision,headRefOid,url",
+        ],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          decodeGitHubJson(
+            raw,
+            RawGitHubPullRequestDetailSchema,
+            "getPullRequestDetail",
+            "GitHub CLI returned invalid pull request detail JSON.",
+          ),
+        ),
+        Effect.map((raw) => ({
+          state: raw.state,
+          mergedAt: raw.mergedAt,
+          reviewDecision: raw.reviewDecision,
+          headRefOid: raw.headRefOid,
+          url: raw.url,
+        })),
+      ),
+    listPullRequestChecks: (input) =>
+      // `gh pr checks` exits 8 while checks are pending and 1 when some fail,
+      // yet still prints valid JSON. Tolerate those exit codes (and 0) as long
+      // as stdout parses; any other exit code is a real failure.
+      process
+        .run({
+          operation: "GitHubCli.execute",
+          command: "gh",
+          args: ["pr", "checks", String(input.number), "--json", "name,state,bucket,link"],
+          cwd: input.cwd,
+          timeoutMs: DEFAULT_TIMEOUT_MS,
+          allowNonZeroExit: true,
+        })
+        .pipe(
+          Effect.mapError((error) => normalizeGitHubCliError("execute", error)),
+          Effect.flatMap((result) => {
+            const exitCode = result.exitCode as number;
+            if (exitCode !== 0 && exitCode !== 1 && exitCode !== 8) {
+              return Effect.fail(
+                new GitHubCliError({
+                  operation: "listPullRequestChecks",
+                  detail:
+                    result.stderr.trim() ||
+                    `gh pr checks exited with code ${exitCode}.`,
+                }),
+              );
+            }
+            const raw = result.stdout.trim();
+            if (raw.length === 0) {
+              return Effect.succeed([] as ReadonlyArray<GitHubPullRequestCheck>);
+            }
+            return decodeGitHubJson(
+              raw,
+              RawGitHubPullRequestChecksSchema,
+              "listPullRequestChecks",
+              "GitHub CLI returned invalid pull request checks JSON.",
+            ).pipe(
+              Effect.map((checks) =>
+                checks.map((check) => ({
+                  name: check.name ?? "",
+                  state: check.state ?? "",
+                  bucket: check.bucket ?? "",
+                  link: check.link ?? "",
+                })),
+              ),
+            );
+          }),
+        ),
+    listPullRequestReviews: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["pr", "view", String(input.number), "--json", "reviews"],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          decodeGitHubJson(
+            raw,
+            RawGitHubPullRequestReviewsSchema,
+            "listPullRequestReviews",
+            "GitHub CLI returned invalid pull request reviews JSON.",
+          ),
+        ),
+        Effect.map((decoded) =>
+          decoded.reviews.map((review) => ({
+            id: review.id ?? "",
+            author: review.author?.login ?? "",
+            state: review.state ?? "",
+            body: review.body ?? "",
+            submittedAt: review.submittedAt ?? "",
+          })),
+        ),
+      ),
+    listPullRequestReviewComments: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["api", `repos/${input.repo}/pulls/${input.number}/comments`],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          decodeGitHubJson(
+            raw,
+            RawGitHubPullRequestReviewCommentsSchema,
+            "listPullRequestReviewComments",
+            "GitHub CLI returned invalid pull request review comments JSON.",
+          ),
+        ),
+        Effect.map((decoded) =>
+          decoded.map((comment) => ({
+            id: comment.id,
+            user: comment.user?.login ?? "",
+            body: comment.body ?? "",
+            path: comment.path ?? null,
+            createdAt: comment.created_at ?? "",
+          })),
+        ),
+      ),
     getDefaultBranch: (input) =>
       execute({
         cwd: input.cwd,

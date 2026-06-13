@@ -217,6 +217,8 @@ function makeFixtureState(): AppState {
       [primaryEnvId]: primaryEnvState,
       [remoteEnvId]: remoteEnvState,
     },
+    boardStateById: {},
+    boardsByScopedProjectKey: {},
   };
 }
 

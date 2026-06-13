@@ -1,0 +1,73 @@
+{
+  "name": "Standard delivery",
+  "settings": {
+    "maxConcurrentTickets": 3
+  },
+  "lanes": [
+    {
+      "key": "backlog",
+      "name": "Backlog",
+      "entry": "manual"
+    },
+    {
+      "key": "implement",
+      "name": "Implement",
+      "entry": "auto",
+      "pipeline": [
+        {
+          "key": "code",
+          "type": "agent",
+          "agent": {
+            "instance": "codex",
+            "model": "gpt-5.5",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "value": "xhigh"
+              }
+            ]
+          },
+          "instruction": "Implement the requested ticket in this worktree. Keep the change focused, run the relevant checks, and report the verification evidence.",
+          "captureOutput": true
+        },
+        {
+          "key": "review",
+          "type": "agent",
+          "agent": {
+            "instance": "codex",
+            "model": "gpt-5.5",
+            "options": [
+              {
+                "id": "reasoningEffort",
+                "value": "medium"
+              }
+            ]
+          },
+          "instruction": "Review the accumulated diff for blocking correctness, reliability, or integration issues. List only issues that must be fixed before the ticket can ship.",
+          "captureOutput": true
+        }
+      ],
+      "on": {
+        "success": "owner_review",
+        "failure": "needs_attention",
+        "blocked": "needs_attention"
+      }
+    },
+    {
+      "key": "owner_review",
+      "name": "Owner Review",
+      "entry": "manual"
+    },
+    {
+      "key": "needs_attention",
+      "name": "Needs Attention",
+      "entry": "manual"
+    },
+    {
+      "key": "done",
+      "name": "Done",
+      "entry": "manual",
+      "terminal": true
+    }
+  ]
+}

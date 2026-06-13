@@ -55,6 +55,7 @@ export interface ApnsDeliveryQueueShape {
     readonly deviceId: string;
     readonly token: string;
     readonly notification: NonNullable<ApnsDeliveryJobPayload["notification"]>;
+    readonly jobId?: string;
   }) => Effect.Effect<RelayDeliveryResult, ApnsDeliveryQueueError>;
 }
 
@@ -112,9 +113,11 @@ const make = Effect.gen(function* () {
           "relay.thread_id": input.notification.threadId,
         });
         const now = yield* DateTime.now;
-        const jobId = yield* crypto.randomUUIDv4.pipe(
-          Effect.mapError((cause) => new ApnsDeliveryQueueSendError({ cause })),
-        );
+        const jobId =
+          input.jobId ??
+          (yield* crypto.randomUUIDv4.pipe(
+            Effect.mapError((cause) => new ApnsDeliveryQueueSendError({ cause })),
+          ));
         yield* Effect.annotateCurrentSpan({ "relay.delivery.job_id": jobId });
         const payload = makeApnsDeliveryJobPayload({
           kind: "push_notification",

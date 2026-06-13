@@ -39,6 +39,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     getFullThreadDiffContext: () => Effect.die("unused"),
     getThreadShellById: () => Effect.die("unused"),
     getThreadDetailById: () => Effect.die("unused"),
+    isThreadHidden: () => Effect.succeed(false),
   });
 
 describe("ProjectSetupScriptRunner", () => {
@@ -55,11 +56,13 @@ describe("ProjectSetupScriptRunner", () => {
               Layer.succeed(TerminalManager, {
                 open,
                 attachStream: () => Effect.die(new Error("unused")),
+                attachHistoryStream: () => Effect.die(new Error("unused")),
                 write,
                 resize: () => Effect.void,
                 clear: () => Effect.void,
                 restart: () => Effect.die(new Error("unused")),
                 close: () => Effect.void,
+                getSnapshot: () => Effect.succeed(null),
                 subscribe: () => Effect.succeed(() => undefined),
                 subscribeMetadata: () => Effect.succeed(() => undefined),
               }),
@@ -117,11 +120,13 @@ describe("ProjectSetupScriptRunner", () => {
               Layer.succeed(TerminalManager, {
                 open,
                 attachStream: () => Effect.die(new Error("unused")),
+                attachHistoryStream: () => Effect.die(new Error("unused")),
                 write,
                 resize: () => Effect.void,
                 clear: () => Effect.void,
                 restart: () => Effect.die(new Error("unused")),
                 close: () => Effect.void,
+                getSnapshot: () => Effect.succeed(null),
                 subscribe: () => Effect.succeed(() => undefined),
                 subscribeMetadata: () => Effect.succeed(() => undefined),
               }),

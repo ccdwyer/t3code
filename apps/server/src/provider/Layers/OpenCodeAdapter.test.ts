@@ -63,6 +63,29 @@ const runtimeMock = {
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
     subscribedEvents: [] as unknown[],
+    // When true, the subscribed-event stream stays open after draining
+    // `subscribedEvents` and waits for `pushSubscribedEvent` calls, so tests
+    // can interleave SSE delivery with adapter calls.
+    subscribedEventsOpen: false,
+    notifySubscribedEvent: [] as Array<() => void>,
+  },
+  pushSubscribedEvent(event: unknown) {
+    this.state.subscribedEvents.push(event);
+    for (const notify of this.state.notifySubscribedEvent.splice(0)) {
+      notify();
+    }
+  },
+  // Tests that set `subscribedEventsOpen` MUST close the stream before
+  // finishing (e.g. via Effect.ensuring) — a generator left suspended on the
+  // notify promise blocks the event-pump fiber's teardown at scope close.
+  // Note: pumps of sessions left over from earlier tests may also be
+  // suspended here (their lazy first pull can happen while the stream is
+  // open), which is why the waiter list must support multiple resolvers.
+  closeSubscribedEvents() {
+    this.state.subscribedEventsOpen = false;
+    for (const notify of this.state.notifySubscribedEvent.splice(0)) {
+      notify();
+    }
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -76,6 +99,7 @@ const runtimeMock = {
     this.state.closeError = null;
     this.state.messages = [];
     this.state.subscribedEvents = [];
+    this.closeSubscribedEvents();
   },
 };
 
@@ -161,8 +185,18 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       event: {
         subscribe: async () => ({
           stream: (async function* () {
-            for (const event of runtimeMock.state.subscribedEvents) {
-              yield event;
+            let index = 0;
+            while (true) {
+              if (index < runtimeMock.state.subscribedEvents.length) {
+                yield runtimeMock.state.subscribedEvents[index++];
+                continue;
+              }
+              if (!runtimeMock.state.subscribedEventsOpen) {
+                return;
+              }
+              await new Promise<void>((resolve) => {
+                runtimeMock.state.notifySubscribedEvent.push(resolve);
+              });
             }
           })(),
         }),
@@ -460,18 +494,122 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           input: "actually run 15",
           modelSelection: {
             instanceId: ProviderInstanceId.make("opencode"),
-            model: "openai/gpt-5",
+            model: "anthropic/claude-sonnet-4-5",
           },
         })
         .pipe(Effect.flip);
 
-      // The original turn keeps running — only the steer prompt failed.
+      // The original turn keeps running — only the steer prompt failed, and
+      // the pre-steer model is restored instead of reporting the new one.
       assert.equal(error._tag, "ProviderAdapterRequestError");
       const sessions = yield* adapter.listSessions();
       const session = sessions.find((entry) => entry.threadId === threadId);
       assert.equal(session?.status, "running");
       assert.equal(String(session?.activeTurnId), String(turn.turnId));
+      assert.equal(session?.model, "openai/gpt-5");
+      assert.equal(session?.lastError, "steer failed");
     }),
+  );
+
+  it.effect("opens a fresh turn for a prompt sent right after an interrupt", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-interrupt-then-prompt");
+      const openCodeSessionId = "http://127.0.0.1:9999/session";
+      const statusEvent = (status: Record<string, unknown>) => ({
+        type: "session.status",
+        properties: { sessionID: openCodeSessionId, status },
+      });
+      // Keep the SSE stream open so events can be delivered mid-test.
+      runtimeMock.state.subscribedEventsOpen = true;
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "run 5 commands",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+
+      yield* adapter.interruptTurn(threadId, turn.turnId);
+
+      // The interrupt settles the turn synchronously — without waiting for
+      // the async SSE idle event the session must already be ready.
+      const interruptedSessions = yield* adapter.listSessions();
+      const interrupted = interruptedSessions.find((entry) => entry.threadId === threadId);
+      assert.equal(interrupted?.status, "ready");
+      assert.equal(interrupted?.activeTurnId, undefined);
+
+      // A prompt sent immediately after the interrupt is a fresh turn, not a
+      // steer of the aborted one.
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "try something else",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      assert.notEqual(String(nextTurn.turnId), String(turn.turnId));
+
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      assert.equal(session?.status, "running");
+      assert.equal(String(session?.activeTurnId), String(nextTurn.turnId));
+
+      // The abort of the interrupted turn makes the server emit a trailing
+      // idle. Deliver it AFTER the fresh turn has started: it must not
+      // settle the fresh turn. The retry event is an observable marker that
+      // proves the stale idle was processed without emitting turn.completed,
+      // and the busy + idle pair is the fresh turn's own lifecycle, which
+      // must still complete it.
+      const settleEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            (event.type === "turn.completed" || event.type === "runtime.warning"),
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      runtimeMock.pushSubscribedEvent(statusEvent({ type: "idle" }));
+      runtimeMock.pushSubscribedEvent(statusEvent({ type: "retry", message: "stale-idle-marker" }));
+      runtimeMock.pushSubscribedEvent(statusEvent({ type: "busy" }));
+      runtimeMock.pushSubscribedEvent(statusEvent({ type: "idle" }));
+
+      const settleEvents = Array.from(
+        yield* Fiber.join(settleEventsFiber).pipe(Effect.timeout("1 second")),
+      );
+      // The stale abort-idle (processed before the marker warning) emitted no
+      // turn.completed; only the genuine idle completed the fresh turn.
+      assert.deepEqual(
+        settleEvents.map((event) => event.type),
+        ["runtime.warning", "turn.completed"],
+      );
+      const completed = settleEvents[1];
+      if (completed?.type === "turn.completed") {
+        assert.equal(String(completed.turnId), String(nextTurn.turnId));
+        assert.equal(completed.payload.state, "completed");
+      }
+
+      const settledSessions = yield* adapter.listSessions();
+      const settled = settledSessions.find((entry) => entry.threadId === threadId);
+      assert.equal(settled?.status, "ready");
+      assert.equal(settled?.activeTurnId, undefined);
+    }).pipe(
+      // Close the live SSE stream so the event-pump fiber can wind down at
+      // scope close instead of hanging on the suspended mock generator.
+      Effect.ensuring(Effect.sync(() => runtimeMock.closeSubscribedEvents())),
+    ),
   );
 
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {

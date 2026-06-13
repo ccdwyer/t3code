@@ -56,6 +56,8 @@ function withActiveEnvironmentState(
   return {
     activeEnvironmentId,
     environmentStateById,
+    boardStateById: {},
+    boardsByScopedProjectKey: {},
   };
 }
 
@@ -262,6 +264,8 @@ describe("environment state removal", () => {
         [remoteEnvironmentId]: removedState,
         [localEnvironmentId]: keptState,
       },
+      boardStateById: {},
+      boardsByScopedProjectKey: {},
     };
 
     const next = removeEnvironmentState(state, remoteEnvironmentId);
@@ -421,6 +425,8 @@ describe("setThreadBranch", () => {
         [localEnvironmentId]: environmentStateOf(makeState(localThread), localEnvironmentId),
         [remoteEnvironmentId]: environmentStateOf(makeState(remoteThread), remoteEnvironmentId),
       },
+      boardStateById: {},
+      boardsByScopedProjectKey: {},
     };
 
     const next = setThreadBranch(

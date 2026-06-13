@@ -34,9 +34,23 @@ function registerListener<T>(listeners: Set<(event: T) => void>, listener: (even
 }
 
 const terminalAttachListeners = new Set<(event: TerminalAttachStreamEvent) => void>();
+const terminalHistoryAttachListeners = new Set<(event: TerminalHistoryAttachEvent) => void>();
 const terminalMetadataListeners = new Set<(event: TerminalMetadataStreamEvent) => void>();
 const shellStreamListeners = new Set<(event: OrchestrationShellStreamItem) => void>();
 const gitStatusListeners = new Set<(event: VcsStatusResult) => void>();
+
+interface TerminalHistoryAttachEvent {
+  readonly type: "snapshot" | "output";
+  readonly snapshot?: {
+    readonly threadId: string;
+    readonly terminalId: string;
+    readonly history: string;
+    readonly status: string | null;
+  };
+  readonly threadId?: string;
+  readonly terminalId?: string;
+  readonly data?: string;
+}
 
 const rpcClientMock = {
   dispose: vi.fn(),
@@ -44,6 +58,9 @@ const rpcClientMock = {
     open: vi.fn(),
     attach: vi.fn((_input: unknown, listener: (event: TerminalAttachStreamEvent) => void) =>
       registerListener(terminalAttachListeners, listener),
+    ),
+    attachHistory: vi.fn((_input: unknown, listener: (event: TerminalHistoryAttachEvent) => void) =>
+      registerListener(terminalHistoryAttachListeners, listener),
     ),
     write: vi.fn(),
     resize: vi.fn(),
@@ -89,6 +106,23 @@ const rpcClientMock = {
   },
   review: {
     getDiffPreview: vi.fn(),
+  },
+  workflow: {
+    listBoards: vi.fn(),
+    createBoard: vi.fn(),
+    renameBoard: vi.fn(),
+    getBoard: vi.fn(),
+    getBoardDefinition: vi.fn(),
+    saveBoardDefinition: vi.fn(),
+    subscribeBoard: vi.fn(() => () => undefined),
+    createTicket: vi.fn(),
+    moveTicket: vi.fn(),
+    runLane: vi.fn(),
+    resolveApproval: vi.fn(),
+    cancelStep: vi.fn(),
+    setProjectScriptTrust: vi.fn(),
+    getTicketDetail: vi.fn(),
+    getTicketDiff: vi.fn(),
   },
   server: {
     getConfig: vi.fn(),
@@ -337,6 +371,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   showContextMenuFallbackMock.mockReset();
   terminalAttachListeners.clear();
+  terminalHistoryAttachListeners.clear();
   terminalMetadataListeners.clear();
   shellStreamListeners.clear();
   gitStatusListeners.clear();
@@ -365,15 +400,29 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.subscribeLifecycle).not.toHaveBeenCalled();
   });
 
-  it("forwards terminal attach, metadata, and shell stream events", async () => {
+  it("forwards terminal attach, history attach, metadata, and shell stream events", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
 
     const api = createEnvironmentApi(rpcClientMock as never);
     const onTerminalAttachEvent = vi.fn();
+    const onTerminalHistoryAttachEvent = vi.fn();
     const onTerminalMetadataEvent = vi.fn();
     const onShellEvent = vi.fn();
 
     api.terminal.attach({ threadId: "thread-1", terminalId: "terminal-1" }, onTerminalAttachEvent);
+    const attachHistory = (
+      api.terminal as unknown as {
+        readonly attachHistory: (
+          input: { readonly threadId: string; readonly terminalId: string },
+          callback: (event: TerminalHistoryAttachEvent) => void,
+        ) => () => void;
+      }
+    ).attachHistory;
+    expect(typeof attachHistory).toBe("function");
+    attachHistory(
+      { threadId: "script-thread-1", terminalId: "script-terminal-1" },
+      onTerminalHistoryAttachEvent,
+    );
     api.terminal.onMetadata(onTerminalMetadataEvent);
     api.orchestration.subscribeShell(onShellEvent);
 
@@ -384,6 +433,17 @@ describe("wsApi", () => {
       data: "hello",
     } satisfies TerminalAttachStreamEvent;
     emitEvent(terminalAttachListeners, terminalAttachEvent);
+
+    const terminalHistoryAttachEvent = {
+      type: "snapshot",
+      snapshot: {
+        threadId: "script-thread-1",
+        terminalId: "script-terminal-1",
+        history: "script output\n",
+        status: null,
+      },
+    } satisfies TerminalHistoryAttachEvent;
+    emitEvent(terminalHistoryAttachListeners, terminalHistoryAttachEvent);
 
     const terminalMetadataEvent = {
       type: "upsert",
@@ -422,6 +482,7 @@ describe("wsApi", () => {
     emitEvent(shellStreamListeners, shellEvent);
 
     expect(onTerminalAttachEvent).toHaveBeenCalledWith(terminalAttachEvent);
+    expect(onTerminalHistoryAttachEvent).toHaveBeenCalledWith(terminalHistoryAttachEvent);
     expect(onTerminalMetadataEvent).toHaveBeenCalledWith(terminalMetadataEvent);
     expect(onShellEvent).toHaveBeenCalledWith(shellEvent);
   });

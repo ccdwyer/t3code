@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -13,6 +14,8 @@ import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthWorkflowOperateScope,
+  AuthWorkflowReadScope,
   AuthReviewWriteScope,
   AuthRelayWriteScope,
   AuthTerminalOperateScope,
@@ -29,6 +32,7 @@ import {
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadShell,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
@@ -41,10 +45,14 @@ import {
   FilesystemBrowseError,
   EnvironmentAuthorizationError,
   ThreadId,
+  type TicketId,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
+  type TerminalHistoryAttachStreamEvent,
   type TerminalMetadataStreamEvent,
+  WORKFLOW_WS_METHODS,
+  WorkflowRpcError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -99,6 +107,26 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import { BoardDiscovery } from "./workflow/Services/BoardDiscovery.ts";
+import { BoardRegistry } from "./workflow/Services/BoardRegistry.ts";
+import { ProjectScriptTrust } from "./workflow/Services/ProjectScriptTrust.ts";
+import { ProjectWorkspaceResolver } from "./workflow/Services/ProjectWorkspaceResolver.ts";
+import { TicketDiffQuery } from "./workflow/Services/TicketDiffQuery.ts";
+import { WorkflowBoardEvents } from "./workflow/Services/WorkflowBoardEvents.ts";
+import { WorkflowBoardSaveLocks } from "./workflow/Services/WorkflowBoardSaveLocks.ts";
+import { WorkflowBoardVersionStore } from "./workflow/Services/WorkflowBoardVersionStore.ts";
+import { WorkflowEngine } from "./workflow/Services/WorkflowEngine.ts";
+import { WorkflowEventStore } from "./workflow/Services/WorkflowEventStore.ts";
+import { WorkflowIntakeService } from "./workflow/Services/WorkflowIntake.ts";
+import { WorkflowThreadJanitor } from "./workflow/Services/WorkflowThreadJanitor.ts";
+import { PredicateEvaluator } from "./workflow/Services/PredicateEvaluator.ts";
+import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
+import { WorkflowWorktreeJanitor } from "./workflow/Services/WorkflowWorktreeJanitor.ts";
+import { WorkflowFileLoader } from "./workflow/Services/WorkflowFileLoader.ts";
+import { WorkflowReadModel } from "./workflow/Services/WorkflowReadModel.ts";
+import { WorkSourceConnectionStore } from "./workflow/Services/WorkSourceConnectionStore.ts";
+import { workflowRpcHandlers } from "./workflow/Layers/WorkflowRpcHandlers.ts";
+import { ticketBaseRef } from "./workflow/ticketRefs.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
@@ -137,6 +165,36 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [ORCHESTRATION_WS_METHODS.subscribeShell, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot, AuthOrchestrationReadScope],
   [ORCHESTRATION_WS_METHODS.subscribeThread, AuthOrchestrationReadScope],
+  [WORKFLOW_WS_METHODS.listBoards, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.listNeedsAttentionTickets, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.createBoard, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.deleteBoard, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.renameBoard, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.subscribeBoard, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getBoard, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getBoardDefinition, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.saveBoardDefinition, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.listBoardVersions, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getBoardVersion, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getTicketDetail, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getTicketDiff, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.createTicket, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.editTicket, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.moveTicket, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.runLane, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.resolveApproval, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.answerTicketStep, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.postTicketMessage, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.setProjectScriptTrust, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.cancelStep, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.intakeTickets, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.listTicketArtifacts, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getWebhookConfig, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.getBoardDigest, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.dryRunBoard, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.listWorkSourceConnections, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.createWorkSourceConnection, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.deleteWorkSourceConnection, AuthWorkflowOperateScope],
   [WS_METHODS.serverGetConfig, AuthOrchestrationReadScope],
   [WS_METHODS.serverRefreshProviders, AuthOrchestrationOperateScope],
   [WS_METHODS.serverUpdateProvider, AuthOrchestrationOperateScope],
@@ -173,6 +231,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.reviewGetDiffPreview, AuthReviewWriteScope],
   [WS_METHODS.terminalOpen, AuthTerminalOperateScope],
   [WS_METHODS.terminalAttach, AuthTerminalOperateScope],
+  [WS_METHODS.terminalAttachHistory, AuthTerminalOperateScope],
   [WS_METHODS.terminalWrite, AuthTerminalOperateScope],
   [WS_METHODS.terminalResize, AuthTerminalOperateScope],
   [WS_METHODS.terminalClear, AuthTerminalOperateScope],
@@ -267,6 +326,42 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const relayClient = yield* RelayClient.RelayClient;
+      const workflowEngine = yield* WorkflowEngine;
+      const workflowEventStore = yield* WorkflowEventStore;
+      const workflowWorktreeJanitor = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowWorktreeJanitor>,
+        WorkflowWorktreeJanitor,
+      );
+      const workflowIntake = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowIntakeService>,
+        WorkflowIntakeService,
+      );
+      const workflowThreadJanitor = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowThreadJanitor>,
+        WorkflowThreadJanitor,
+      );
+      const workflowWebhook = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowWebhook>,
+        WorkflowWebhook,
+      );
+      const workflowPredicates = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<PredicateEvaluator>,
+        PredicateEvaluator,
+      );
+      const workflowReadModel = yield* WorkflowReadModel;
+      const workflowBoardRegistry = yield* BoardRegistry;
+      const workflowTicketDiff = yield* TicketDiffQuery;
+      const workflowBoardEvents = yield* WorkflowBoardEvents;
+      const workflowBoardSaveLocks = yield* WorkflowBoardSaveLocks;
+      const workflowBoardVersions = yield* WorkflowBoardVersionStore;
+      const workflowFileLoader = yield* WorkflowFileLoader;
+      const workflowBoardDiscovery = yield* BoardDiscovery;
+      const workflowProjectWorkspaceResolver = yield* ProjectWorkspaceResolver;
+      const projectScriptTrust = yield* ProjectScriptTrust;
+      // WorkSourceConnectionStoreLive is provided by WorkflowServerRuntimeLive
+      // (via WorkSourceLive), so resolve it as a required service — the
+      // connection RPCs need a real store, not a standby no-op.
+      const workflowConnectionStore = yield* WorkSourceConnectionStore;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -479,7 +574,14 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               }),
             );
           case "thread.unarchived":
-            return projectionSnapshotQuery.getThreadShellById(event.payload.threadId).pipe(
+            return projectionSnapshotQuery.isThreadHidden(event.payload.threadId).pipe(
+              Effect.flatMap((hidden) =>
+                hidden
+                  ? Effect.succeed(Option.none<OrchestrationThreadShell>())
+                  : projectionSnapshotQuery
+                      .getThreadShellById(event.payload.threadId)
+                      .pipe(Effect.orElseSucceed(() => Option.none<OrchestrationThreadShell>())),
+              ),
               Effect.map((thread) =>
                 Option.map(thread, (nextThread) => ({
                   kind: "thread-upserted" as const,
@@ -493,18 +595,24 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
             }
-            return projectionSnapshotQuery
-              .getThreadShellById(ThreadId.make(event.aggregateId))
-              .pipe(
-                Effect.map((thread) =>
-                  Option.map(thread, (nextThread) => ({
-                    kind: "thread-upserted" as const,
-                    sequence: event.sequence,
-                    thread: nextThread,
-                  })),
-                ),
-                Effect.orElseSucceed(() => Option.none()),
-              );
+            // Hidden (workflow-internal) threads never reach the sidebar.
+            return projectionSnapshotQuery.isThreadHidden(ThreadId.make(event.aggregateId)).pipe(
+              Effect.flatMap((hidden) =>
+                hidden
+                  ? Effect.succeed(Option.none<OrchestrationThreadShell>())
+                  : projectionSnapshotQuery
+                      .getThreadShellById(ThreadId.make(event.aggregateId))
+                      .pipe(Effect.orElseSucceed(() => Option.none<OrchestrationThreadShell>())),
+              ),
+              Effect.map((thread) =>
+                Option.map(thread, (nextThread) => ({
+                  kind: "thread-upserted" as const,
+                  sequence: event.sequence,
+                  thread: nextThread,
+                })),
+              ),
+              Effect.orElseSucceed(() => Option.none()),
+            );
         }
       };
 
@@ -759,7 +867,74 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+      const ticketWorktrees = {
+        resolveForTicket: (ticketId: TicketId) =>
+          Effect.gen(function* () {
+            const refName = `workflow/${ticketId as string}`;
+            const refs = yield* gitWorkflow
+              .listRefs({
+                cwd: config.cwd,
+                query: refName,
+                limit: 100,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new WorkflowRpcError({
+                      message: "Failed to resolve workflow ticket worktree refs",
+                      cause,
+                    }),
+                ),
+              );
+            const ref = refs.refs.find(
+              (candidate) =>
+                candidate.name === refName &&
+                candidate.isRemote !== true &&
+                candidate.worktreePath !== null,
+            );
+            if (!ref?.worktreePath) {
+              return yield* new WorkflowRpcError({
+                message: `Workflow ticket ${ticketId} does not have an attached worktree`,
+              });
+            }
+            return {
+              cwd: ref.worktreePath,
+              baseRef: ticketBaseRef(ticketId),
+            };
+          }),
+      };
+
+      const workflowHandlers = workflowRpcHandlers({
+        engine: workflowEngine,
+        eventStore: workflowEventStore,
+        readModel: workflowReadModel,
+        boardRegistry: workflowBoardRegistry,
+        boardDiscovery: workflowBoardDiscovery,
+        projectWorkspaceResolver: workflowProjectWorkspaceResolver,
+        workspaceFileSystem,
+        ticketDiff: workflowTicketDiff,
+        ticketWorktrees,
+        boardEvents: workflowBoardEvents,
+        saveLocks: workflowBoardSaveLocks,
+        versionStore: workflowBoardVersions,
+        ...(Option.isSome(workflowWorktreeJanitor)
+          ? { worktreeJanitor: workflowWorktreeJanitor.value }
+          : {}),
+        ...(Option.isSome(workflowIntake) ? { intake: workflowIntake.value } : {}),
+        ...(Option.isSome(workflowThreadJanitor)
+          ? { threadJanitor: workflowThreadJanitor.value }
+          : {}),
+        ...(Option.isSome(workflowWebhook) ? { webhook: workflowWebhook.value } : {}),
+        ...(Option.isSome(workflowPredicates) ? { predicates: workflowPredicates.value } : {}),
+        fileLoader: workflowFileLoader,
+        projectScriptTrust,
+        connectionStore: workflowConnectionStore,
+        observeRpcEffect,
+        observeRpcStreamEffect,
+      });
+
       return WsRpcGroup.of({
+        ...workflowHandlers,
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
@@ -1303,6 +1478,17 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
               Effect.acquireRelease(
                 terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
+                (unsubscribe) => Effect.sync(unsubscribe),
+              ),
+            ),
+            { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.terminalAttachHistory]: (input) =>
+          observeRpcStream(
+            WS_METHODS.terminalAttachHistory,
+            Stream.callback<TerminalHistoryAttachStreamEvent, TerminalError>((queue) =>
+              Effect.acquireRelease(
+                terminalManager.attachHistoryStream(input, (event) => Queue.offer(queue, event)),
                 (unsubscribe) => Effect.sync(unsubscribe),
               ),
             ),

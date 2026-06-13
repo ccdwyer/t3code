@@ -1,4 +1,7 @@
 import type {
+  BoardId,
+  BoardListEntry,
+  BoardStreamItem,
   EnvironmentId,
   MessageId,
   OrchestrationCheckpointSummary,
@@ -18,6 +21,7 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopedProjectKey } from "@t3tools/client-runtime";
 import { isProviderDriverKind, ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -37,6 +41,11 @@ import {
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
+import {
+  applyBoardStreamItem as reduceBoardStreamItem,
+  emptyBoardState,
+  type BoardState,
+} from "./workflow/boardState";
 const isProviderDriverKindValue = Schema.is(ProviderDriverKind);
 
 export interface EnvironmentState {
@@ -99,6 +108,8 @@ export interface EnvironmentState {
 export interface AppState {
   activeEnvironmentId: EnvironmentId | null;
   environmentStateById: Record<string, EnvironmentState>;
+  boardStateById: Record<string, BoardState>;
+  boardsByScopedProjectKey: Record<string, ReadonlyArray<BoardListEntry>>;
 }
 
 const initialEnvironmentState: EnvironmentState = {
@@ -124,6 +135,8 @@ const initialEnvironmentState: EnvironmentState = {
 const initialState: AppState = {
   activeEnvironmentId: null,
   environmentStateById: {},
+  boardStateById: {},
+  boardsByScopedProjectKey: {},
 };
 
 const MAX_THREAD_MESSAGES = 2_000;
@@ -1919,6 +1932,15 @@ export function selectThreadIdsByProjectRef(
     : EMPTY_THREAD_IDS;
 }
 
+const EMPTY_BOARD_LIST: ReadonlyArray<BoardListEntry> = [];
+
+export function selectBoardsForProject(
+  state: AppState,
+  projectRef: ScopedProjectRef,
+): ReadonlyArray<BoardListEntry> {
+  return state.boardsByScopedProjectKey[scopedProjectKey(projectRef)] ?? EMPTY_BOARD_LIST;
+}
+
 export function setError(state: AppState, threadId: ThreadId, error: string | null): AppState {
   if (state.activeEnvironmentId === null) {
     return state;
@@ -2015,6 +2037,35 @@ export function setThreadBranch(
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 
+export function applyWorkflowBoardStreamItem(
+  state: AppState,
+  boardId: BoardId,
+  item: BoardStreamItem,
+): AppState {
+  const key = boardId as string;
+  return {
+    ...state,
+    boardStateById: {
+      ...state.boardStateById,
+      [key]: reduceBoardStreamItem(state.boardStateById[key] ?? emptyBoardState, item),
+    },
+  };
+}
+
+export function applyBoardList(
+  state: AppState,
+  projectRef: ScopedProjectRef,
+  entries: ReadonlyArray<BoardListEntry>,
+): AppState {
+  return {
+    ...state,
+    boardsByScopedProjectKey: {
+      ...state.boardsByScopedProjectKey,
+      [scopedProjectKey(projectRef)]: entries,
+    },
+  };
+}
+
 interface AppStore extends AppState {
   setActiveEnvironmentId: (environmentId: EnvironmentId) => void;
   removeEnvironmentState: (environmentId: EnvironmentId) => void;
@@ -2035,6 +2086,8 @@ interface AppStore extends AppState {
     branch: string | null,
     worktreePath: string | null,
   ) => void;
+  applyBoardStreamItem: (boardId: BoardId, item: BoardStreamItem) => void;
+  setProjectBoards: (projectRef: ScopedProjectRef, entries: ReadonlyArray<BoardListEntry>) => void;
 }
 
 export const useStore = create<AppStore>((set) => ({
@@ -2056,4 +2109,8 @@ export const useStore = create<AppStore>((set) => ({
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
   setThreadBranch: (threadRef, branch, worktreePath) =>
     set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),
+  applyBoardStreamItem: (boardId, item) =>
+    set((state) => applyWorkflowBoardStreamItem(state, boardId, item)),
+  setProjectBoards: (projectRef, entries) =>
+    set((state) => applyBoardList(state, projectRef, entries)),
 }));

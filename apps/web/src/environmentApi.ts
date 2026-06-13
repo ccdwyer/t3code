@@ -11,6 +11,8 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       open: (input) => rpcClient.terminal.open(input as never),
       attach: (input, callback, options) =>
         rpcClient.terminal.attach(input as never, callback, options),
+      attachHistory: (input, callback, options) =>
+        rpcClient.terminal.attachHistory(input as never, callback, options),
       write: (input) => rpcClient.terminal.write(input as never),
       resize: (input) => rpcClient.terminal.resize(input as never),
       clear: (input) => rpcClient.terminal.clear(input as never),
@@ -57,6 +59,38 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
         rpcClient.orchestration.subscribeShell(callback, options),
       subscribeThread: (input, callback, options) =>
         rpcClient.orchestration.subscribeThread(input, callback, options),
+    },
+    workflow: {
+      listBoards: rpcClient.workflow.listBoards,
+      createBoard: rpcClient.workflow.createBoard,
+      deleteBoard: rpcClient.workflow.deleteBoard,
+      renameBoard: rpcClient.workflow.renameBoard,
+      getBoard: rpcClient.workflow.getBoard,
+      getBoardDefinition: rpcClient.workflow.getBoardDefinition,
+      saveBoardDefinition: rpcClient.workflow.saveBoardDefinition,
+      listBoardVersions: rpcClient.workflow.listBoardVersions,
+      getBoardVersion: rpcClient.workflow.getBoardVersion,
+      subscribeBoard: (input, callback, options) =>
+        rpcClient.workflow.subscribeBoard(input, callback, options),
+      createTicket: rpcClient.workflow.createTicket,
+      editTicket: rpcClient.workflow.editTicket,
+      moveTicket: rpcClient.workflow.moveTicket,
+      runLane: rpcClient.workflow.runLane,
+      resolveApproval: rpcClient.workflow.resolveApproval,
+      answerTicketStep: rpcClient.workflow.answerTicketStep,
+      postTicketMessage: rpcClient.workflow.postTicketMessage,
+      setProjectScriptTrust: rpcClient.workflow.setProjectScriptTrust,
+      cancelStep: rpcClient.workflow.cancelStep,
+      getTicketDetail: rpcClient.workflow.getTicketDetail,
+      getTicketDiff: rpcClient.workflow.getTicketDiff,
+      intakeTickets: rpcClient.workflow.intakeTickets,
+      listTicketArtifacts: rpcClient.workflow.listTicketArtifacts,
+      getWebhookConfig: rpcClient.workflow.getWebhookConfig,
+      getBoardDigest: rpcClient.workflow.getBoardDigest,
+      dryRunBoard: rpcClient.workflow.dryRunBoard,
+      listWorkSourceConnections: rpcClient.workflow.listWorkSourceConnections,
+      createWorkSourceConnection: rpcClient.workflow.createWorkSourceConnection,
+      deleteWorkSourceConnection: rpcClient.workflow.deleteWorkSourceConnection,
     },
   };
 }

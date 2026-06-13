@@ -2736,6 +2736,20 @@ export default function ChatView(props: ChatViewProps) {
       const command = resolveShortcutCommand(event, keybindings, {
         context: shortcutContext,
       });
+
+      if (
+        !command &&
+        !shortcutContext.terminalFocus &&
+        !shortcutContext.modelPickerOpen &&
+        shouldTypeToFocusComposer(event)
+      ) {
+        if (composerRef.current?.insertTextAtEnd(event.key)) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+      }
+
       if (!command) return;
 
       if (command === "terminal.toggle") {

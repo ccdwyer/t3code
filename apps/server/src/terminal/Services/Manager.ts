@@ -12,6 +12,8 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
+  TerminalHistoryAttachInput,
+  TerminalHistoryAttachStreamEvent,
   TerminalCwdError,
   TerminalError,
   TerminalHistoryError,
@@ -93,6 +95,15 @@ export interface TerminalManagerShape {
   ) => Effect.Effect<() => void, TerminalError>;
 
   /**
+   * Attach to persisted terminal history and stream live events if a matching
+   * session is still active. This never opens or restarts a shell.
+   */
+  readonly attachHistoryStream: (
+    input: TerminalHistoryAttachInput,
+    listener: (event: TerminalHistoryAttachStreamEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<() => void, TerminalError>;
+
+  /**
    * Write input bytes to a terminal session.
    */
   readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
@@ -122,6 +133,15 @@ export interface TerminalManagerShape {
    * When `terminalId` is omitted, closes all sessions for the thread.
    */
   readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+
+  /**
+   * Read the current snapshot for a terminal session without opening or
+   * modifying it. Returns `null` if no session exists for the given ids.
+   */
+  readonly getSnapshot: (input: {
+    readonly threadId: string;
+    readonly terminalId: string;
+  }) => Effect.Effect<TerminalSessionSnapshot | null>;
 
   /**
    * Subscribe to terminal runtime events with a direct callback.

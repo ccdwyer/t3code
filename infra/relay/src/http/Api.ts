@@ -59,6 +59,7 @@ import * as EnvironmentLinks from "../environments/EnvironmentLinks.ts";
 import * as LiveActivities from "../agentActivity/LiveActivities.ts";
 import * as RelayConfiguration from "../Config.ts";
 import * as AgentActivityPublisher from "../agentActivity/AgentActivityPublisher.ts";
+import * as BoardTicketPublisher from "../agentActivity/BoardTicketPublisher.ts";
 import * as EnvironmentConnector from "../environments/EnvironmentConnector.ts";
 import * as EnvironmentLinker from "../environments/EnvironmentLinker.ts";
 import * as ManagedEndpointProvider from "../environments/ManagedEndpointProvider.ts";
@@ -731,6 +732,7 @@ export const serverApi = HttpApiBuilder.group(
   "server",
   Effect.fnUntraced(function* (handlers) {
     const publisher = yield* AgentActivityPublisher.AgentActivityPublisher;
+    const boardTicketPublisher = yield* BoardTicketPublisher.BoardTicketPublisher;
     const publishSignatures = yield* EnvironmentPublishSignatures.EnvironmentPublishSignatures;
     return handlers.handle(
       "publishAgentActivity",
@@ -800,6 +802,56 @@ export const serverApi = HttpApiBuilder.group(
             new RelayInternalError({
               code: "internal_error",
               reason: "upstream_unavailable",
+              traceId,
+            }),
+        }),
+        mapRelayCommonApiErrors("not_authorized"),
+      ),
+    ).handle(
+      "publishBoardTicket",
+      Effect.fn("relay.api.server.publishBoardTicket")(
+        function* (args) {
+          const { params, payload } = args;
+          const principal = yield* RelayEnvironmentPrincipal;
+          if (principal.environmentId !== params.environmentId) {
+            return yield* new HttpApiError.Unauthorized({});
+          }
+          yield* publishSignatures.verifyBoardTicket({
+            environmentId: params.environmentId,
+            environmentPublicKey: principal.environmentPublicKey,
+            ticketId: params.ticketId,
+            request: payload,
+          });
+          return yield* boardTicketPublisher.publish({
+            environmentId: params.environmentId,
+            environmentPublicKey: principal.environmentPublicKey,
+            boardId: payload.state?.boardId ?? "",
+            ticketId: params.ticketId,
+            state: payload.state,
+          });
+        },
+        mapErrorTags({
+          EnvironmentPublishPublicKeyMissing: (_error, traceId) =>
+            new RelayAuthInvalidError({
+              code: "auth_invalid",
+              reason: "not_authorized",
+              traceId,
+            }),
+          EnvironmentPublishSignatureExpired: (_error, traceId) =>
+            new RelayAgentActivityPublishProofExpiredError({
+              code: "agent_activity_publish_proof_expired",
+              traceId,
+            }),
+          EnvironmentPublishSignatureInvalid: (_error, traceId) =>
+            new RelayAgentActivityPublishProofInvalidError({
+              code: "agent_activity_publish_proof_invalid",
+              reason: "invalid_signature_or_payload",
+              traceId,
+            }),
+          DpopProofReplayPersistenceError: (_error, traceId) =>
+            new RelayInternalError({
+              code: "internal_error",
+              reason: "persistence_failed",
               traceId,
             }),
         }),

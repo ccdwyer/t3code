@@ -136,5 +136,215 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
         expect(escapedStat).toBeNull();
       }),
     );
+
+    it.effect(
+      "rejects board file writes when the board path is a symlink outside the workspace",
+      () =>
+        Effect.gen(function* () {
+          const workspaceFileSystem = yield* WorkspaceFileSystem;
+          const cwd = yield* makeTempDir;
+          const outsideDir = yield* makeTempDir;
+          const path = yield* Path.Path;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const outsidePath = path.join(outsideDir, "outside-board.json");
+          const boardPath = path.join(cwd, ".t3/boards/foo.json");
+
+          yield* fileSystem.makeDirectory(path.dirname(boardPath), { recursive: true });
+          yield* fileSystem.writeFileString(outsidePath, '{"name":"outside-before"}\n');
+          yield* fileSystem.symlink(outsidePath, boardPath);
+
+          const error = yield* workspaceFileSystem
+            .writeFile({
+              cwd,
+              relativePath: ".t3/boards/foo.json",
+              contents: '{"name":"outside-after"}\n',
+            })
+            .pipe(Effect.flip);
+
+          expect(error._tag).toBe("WorkspaceFileSystemError");
+          const outside = yield* fileSystem.readFileString(outsidePath);
+          expect(outside).toBe('{"name":"outside-before"}\n');
+        }),
+    );
+
+    it.effect("writes normal board files under the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        yield* workspaceFileSystem.writeFile({
+          cwd,
+          relativePath: ".t3/boards/foo.json",
+          contents: '{"name":"inside"}\n',
+        });
+
+        const saved = yield* fileSystem.readFileString(path.join(cwd, ".t3/boards/foo.json"));
+        expect(saved).toBe('{"name":"inside"}\n');
+      }),
+    );
+
+    it.effect("createFileExclusive creates once and rejects an existing file", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const created = yield* workspaceFileSystem.createFileExclusive({
+          projectRoot: cwd,
+          relativePath: ".t3/boards/workflow-board.json",
+          contents: "{}\n",
+        });
+        expect(created).toEqual({ relativePath: ".t3/boards/workflow-board.json" });
+
+        const error = yield* workspaceFileSystem
+          .createFileExclusive({
+            projectRoot: cwd,
+            relativePath: ".t3/boards/workflow-board.json",
+            contents: '{"overwritten":true}\n',
+          })
+          .pipe(Effect.flip);
+        expect(error._tag).toBe("WorkspaceFileSystemError");
+        if (error._tag === "WorkspaceFileSystemError") {
+          expect(error.operation).toBe("workspaceFileSystem.createFileExclusive");
+        }
+
+        const saved = yield* fileSystem.readFileString(
+          path.join(cwd, ".t3/boards/workflow-board.json"),
+        );
+        expect(saved).toBe("{}\n");
+      }),
+    );
+  });
+
+  describe("deleteFile", () => {
+    it.effect("deletes files relative to the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const boardPath = path.join(cwd, ".t3/boards/delete-me.json");
+
+        yield* writeTextFile(cwd, ".t3/boards/delete-me.json", "{}\n");
+        yield* workspaceFileSystem.deleteFile({
+          cwd,
+          relativePath: ".t3/boards/delete-me.json",
+        });
+
+        const stat = yield* fileSystem.stat(boardPath).pipe(Effect.orElseSucceed(() => null));
+        expect(stat).toBeNull();
+      }),
+    );
+
+    it.effect("treats missing files as successful deletes", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        yield* workspaceFileSystem.deleteFile({
+          cwd,
+          relativePath: ".t3/boards/already-gone.json",
+        });
+      }),
+    );
+
+    it.effect("rejects deletes outside the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+
+        const error = yield* workspaceFileSystem
+          .deleteFile({
+            cwd,
+            relativePath: "../escape.md",
+          })
+          .pipe(Effect.flip);
+
+        expect(error.message).toContain(
+          "Workspace file path must be relative to the project root: ../escape.md",
+        );
+      }),
+    );
+
+    it.effect(
+      "rejects board file deletes when the board path is a symlink outside the workspace",
+      () =>
+        Effect.gen(function* () {
+          const workspaceFileSystem = yield* WorkspaceFileSystem;
+          const cwd = yield* makeTempDir;
+          const outsideDir = yield* makeTempDir;
+          const path = yield* Path.Path;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const outsidePath = path.join(outsideDir, "outside-board.json");
+          const boardPath = path.join(cwd, ".t3/boards/foo.json");
+
+          yield* fileSystem.makeDirectory(path.dirname(boardPath), { recursive: true });
+          yield* fileSystem.writeFileString(outsidePath, '{"name":"outside"}\n');
+          yield* fileSystem.symlink(outsidePath, boardPath);
+
+          const error = yield* workspaceFileSystem
+            .deleteFile({
+              cwd,
+              relativePath: ".t3/boards/foo.json",
+            })
+            .pipe(Effect.flip);
+
+          expect(error._tag).toBe("WorkspaceFileSystemError");
+          const outside = yield* fileSystem.readFileString(outsidePath);
+          expect(outside).toBe('{"name":"outside"}\n');
+          const symlinkTarget = yield* fileSystem.readFileString(boardPath);
+          expect(symlinkTarget).toBe('{"name":"outside"}\n');
+        }),
+    );
+
+    it.effect("deletes dangling symlinks whose entries are inside the workspace", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const boardPath = path.join(cwd, ".t3/boards/dangling.json");
+        const missingTarget = path.join(cwd, ".t3/boards/missing-target.json");
+
+        yield* fileSystem.makeDirectory(path.dirname(boardPath), { recursive: true });
+        yield* fileSystem.symlink(missingTarget, boardPath);
+
+        yield* workspaceFileSystem.deleteFile({
+          cwd,
+          relativePath: ".t3/boards/dangling.json",
+        });
+
+        const linkTarget = yield* fileSystem
+          .readLink(boardPath)
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(linkTarget).toBeNull();
+      }),
+    );
+
+    it.effect("deletes in-workspace symlink loops by unlinking the entry", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const boardPath = path.join(cwd, ".t3/boards/loop.json");
+
+        yield* fileSystem.makeDirectory(path.dirname(boardPath), { recursive: true });
+        yield* fileSystem.symlink(boardPath, boardPath);
+
+        yield* workspaceFileSystem.deleteFile({
+          cwd,
+          relativePath: ".t3/boards/loop.json",
+        });
+
+        const symlinkTarget = yield* fileSystem
+          .readLink(boardPath)
+          .pipe(Effect.orElseSucceed(() => null));
+        expect(symlinkTarget).toBeNull();
+      }),
+    );
   });
 });

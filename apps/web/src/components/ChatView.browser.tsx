@@ -4,10 +4,13 @@ import "../index.css";
 import {
   EventId,
   ORCHESTRATION_WS_METHODS,
+  BoardId,
   EnvironmentId,
   type EnvironmentApi,
   type MessageId,
   type OrchestrationReadModel,
+  type BoardListEntry,
+  type BoardSnapshot,
   type ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -242,6 +245,7 @@ function createBaseServerConfig(): ServerConfig {
 function createMockEnvironmentApi(input: {
   browse: EnvironmentApi["filesystem"]["browse"];
   dispatchCommand: EnvironmentApi["orchestration"]["dispatchCommand"];
+  workflow?: Partial<EnvironmentApi["workflow"]>;
 }): EnvironmentApi {
   return {
     terminal: {} as EnvironmentApi["terminal"],
@@ -253,6 +257,9 @@ function createMockEnvironmentApi(input: {
     vcs: {} as EnvironmentApi["vcs"],
     git: {} as EnvironmentApi["git"],
     review: {} as EnvironmentApi["review"],
+    workflow: {
+      ...input.workflow,
+    } as EnvironmentApi["workflow"],
     orchestration: {
       dispatchCommand: input.dispatchCommand,
       getTurnDiff: (() => {
@@ -1765,6 +1772,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     useStore.setState({
       activeEnvironmentId: null,
       environmentStateById: {},
+      boardStateById: {},
+      boardsByScopedProjectKey: {},
     });
     useUiStateStore.setState({
       projectExpandedById: {},
@@ -4029,6 +4038,590 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("confirms workflow board deletion from the sidebar and refreshes the board list", async () => {
+    const boardId = BoardId.make(`${PROJECT_ID}__delivery`);
+    let boards: BoardListEntry[] = [
+      {
+        boardId,
+        name: "Delivery",
+        filePath: ".t3/boards/delivery.json",
+        error: null,
+      },
+    ];
+    const listBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(async () => boards);
+    const deleteBoardMock = vi.fn<EnvironmentApi["workflow"]["deleteBoard"]>(async (input) => {
+      expect(input).toEqual({ boardId });
+      boards = [];
+    });
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: listBoardsMock,
+          deleteBoard: deleteBoardMock,
+        },
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-board-delete-test" as MessageId,
+        targetText: "board delete target",
+      }),
+    });
+
+    try {
+      const boardRow = page.getByTestId(`board-row-${boardId}`);
+      await expect.element(boardRow).toBeInTheDocument();
+      await boardRow.hover();
+
+      const deleteButton = document.querySelector<HTMLButtonElement>(
+        `[data-testid="board-delete-${boardId}"]`,
+      );
+      expect(deleteButton, "Expected a delete button on the workflow board row.").not.toBeNull();
+      deleteButton?.click();
+
+      await expect.element(page.getByText('Delete board "Delivery"?')).toBeInTheDocument();
+      await expect
+        .element(
+          page.getByText(
+            "This permanently deletes the board file, its tickets, and version history.",
+          ),
+        )
+        .toBeInTheDocument();
+
+      await page.getByRole("button", { name: "Delete board", exact: true }).click();
+
+      await vi.waitFor(
+        () => {
+          expect(deleteBoardMock).toHaveBeenCalledWith({ boardId });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector(`[data-testid="board-row-${boardId}"]`)).toBeNull();
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(
+        listBoardsMock.mock.calls.filter(([input]) => input.projectId === PROJECT_ID).length,
+      ).toBeGreaterThanOrEqual(2);
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      await mounted.cleanup();
+    }
+  });
+
+  it("renames workflow boards inline from the sidebar and refreshes the board list", async () => {
+    const boardId = BoardId.make(`${PROJECT_ID}__delivery`);
+    let boards: BoardListEntry[] = [
+      {
+        boardId,
+        name: "Delivery",
+        filePath: ".t3/boards/delivery.json",
+        error: null,
+      },
+    ];
+    const listBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(async () => boards);
+    const renameBoardMock = vi.fn<EnvironmentApi["workflow"]["renameBoard"]>(async (input) => {
+      expect(input).toEqual({ boardId, name: "Renamed Delivery" });
+      boards = [{ ...boards[0]!, name: input.name }];
+    });
+    const getBoardMock = vi.fn<EnvironmentApi["workflow"]["getBoard"]>(async () => ({
+      projectId: PROJECT_ID,
+      board: {
+        boardId,
+        name: boards[0]!.name,
+        lanes: [],
+      },
+      tickets: [],
+    }));
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: listBoardsMock,
+          renameBoard: renameBoardMock,
+          getBoard: getBoardMock,
+        },
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-board-rename-test" as MessageId,
+        targetText: "board rename target",
+      }),
+    });
+
+    try {
+      const boardRow = page.getByTestId(`board-row-${boardId}`);
+      await expect.element(boardRow).toBeInTheDocument();
+      await boardRow.hover();
+
+      const renameButton = document.querySelector<HTMLButtonElement>(
+        `[data-testid="board-rename-${boardId}"]`,
+      );
+      expect(renameButton, "Expected a rename button on the workflow board row.").not.toBeNull();
+      renameButton?.click();
+
+      const input = page.getByTestId(`board-rename-input-${boardId}`);
+      await input.fill("Renamed Delivery");
+      document
+        .querySelector<HTMLInputElement>(`[data-testid="board-rename-input-${boardId}"]`)
+        ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      await vi.waitFor(
+        () => {
+          expect(renameBoardMock).toHaveBeenCalledWith({ boardId, name: "Renamed Delivery" });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect.element(page.getByText("Renamed Delivery")).toBeInTheDocument();
+      expect(
+        listBoardsMock.mock.calls.filter(([input]) => input.projectId === PROJECT_ID).length,
+      ).toBeGreaterThanOrEqual(2);
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps workflow board inline rename open when the rename fails", async () => {
+    const boardId = BoardId.make(`${PROJECT_ID}__delivery`);
+    const boards: BoardListEntry[] = [
+      {
+        boardId,
+        name: "Delivery",
+        filePath: ".t3/boards/delivery.json",
+        error: null,
+      },
+    ];
+    const listBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(async () => boards);
+    let rejectRename: (error: Error) => void = () => {
+      throw new Error("rename promise was not started");
+    };
+    let resolveRenameStarted: () => void = () => {};
+    const renameStarted = new Promise<void>((resolve) => {
+      resolveRenameStarted = resolve;
+    });
+    const renameBoardMock = vi.fn<EnvironmentApi["workflow"]["renameBoard"]>(
+      (input) =>
+        new Promise<void>((_resolve, reject) => {
+          expect(input).toEqual({ boardId, name: "Renamed Delivery" });
+          rejectRename = reject;
+          resolveRenameStarted();
+        }),
+    );
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: listBoardsMock,
+          renameBoard: renameBoardMock,
+        },
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-board-rename-failure-test" as MessageId,
+        targetText: "board rename failure target",
+      }),
+    });
+
+    try {
+      const boardRow = page.getByTestId(`board-row-${boardId}`);
+      await expect.element(boardRow).toBeInTheDocument();
+      await boardRow.hover();
+
+      const renameButton = document.querySelector<HTMLButtonElement>(
+        `[data-testid="board-rename-${boardId}"]`,
+      );
+      expect(renameButton, "Expected a rename button on the workflow board row.").not.toBeNull();
+      renameButton?.click();
+
+      const input = page.getByTestId(`board-rename-input-${boardId}`);
+      await input.fill("Renamed Delivery");
+      document
+        .querySelector<HTMLInputElement>(`[data-testid="board-rename-input-${boardId}"]`)
+        ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      await renameStarted;
+      await vi.waitFor(
+        () => {
+          const renameInput = document.querySelector<HTMLInputElement>(
+            `[data-testid="board-rename-input-${boardId}"]`,
+          );
+          expect(renameInput?.disabled).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      rejectRename(new Error("rename unavailable"));
+
+      await vi.waitFor(
+        () => {
+          expect(renameBoardMock).toHaveBeenCalledWith({ boardId, name: "Renamed Delivery" });
+          const renameInput = document.querySelector<HTMLInputElement>(
+            `[data-testid="board-rename-input-${boardId}"]`,
+          );
+          expect(renameInput).not.toBeNull();
+          expect(renameInput?.disabled).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect.element(page.getByText("Renamed Delivery")).not.toBeInTheDocument();
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      await mounted.cleanup();
+    }
+  });
+
+  it("updates the active workflow board header after sidebar rename", async () => {
+    const boardId = BoardId.make(`${PROJECT_ID}__delivery`);
+    let boardSnapshot = {
+      projectId: PROJECT_ID,
+      board: {
+        boardId,
+        name: "Delivery",
+        lanes: [],
+      },
+      tickets: [],
+    } satisfies BoardSnapshot;
+    let boards: BoardListEntry[] = [
+      {
+        boardId,
+        name: "Delivery",
+        filePath: ".t3/boards/delivery.json",
+        error: null,
+      },
+    ];
+    const listBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(async () => boards);
+    const renameBoardMock = vi.fn<EnvironmentApi["workflow"]["renameBoard"]>(async (input) => {
+      expect(input).toEqual({ boardId, name: "Renamed Delivery" });
+      boards = [{ ...boards[0]!, name: input.name }];
+      boardSnapshot = {
+        ...boardSnapshot,
+        board: {
+          ...boardSnapshot.board,
+          name: input.name,
+        },
+      };
+    });
+    const getBoardMock = vi.fn<EnvironmentApi["workflow"]["getBoard"]>(async () => boardSnapshot);
+    const subscribeBoardMock = vi.fn<EnvironmentApi["workflow"]["subscribeBoard"]>(
+      (_input, callback) => {
+        callback({ kind: "snapshot", snapshot: boardSnapshot });
+        return () => undefined;
+      },
+    );
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: listBoardsMock,
+          renameBoard: renameBoardMock,
+          getBoard: getBoardMock,
+          subscribeBoard: subscribeBoardMock,
+        },
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-board-rename-active-test" as MessageId,
+        targetText: "active board rename target",
+      }),
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/board?boardId=${boardId}`,
+    });
+
+    try {
+      await expect.element(page.getByRole("heading", { name: "Delivery" })).toBeInTheDocument();
+      const boardRow = page.getByTestId(`board-row-${boardId}`);
+      await expect.element(boardRow).toBeInTheDocument();
+      await boardRow.hover();
+
+      const renameButton = document.querySelector<HTMLButtonElement>(
+        `[data-testid="board-rename-${boardId}"]`,
+      );
+      expect(renameButton, "Expected a rename button on the workflow board row.").not.toBeNull();
+      renameButton?.click();
+
+      const input = page.getByTestId(`board-rename-input-${boardId}`);
+      await input.fill("Renamed Delivery");
+      document
+        .querySelector<HTMLInputElement>(`[data-testid="board-rename-input-${boardId}"]`)
+        ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      await vi.waitFor(
+        () => {
+          expect(renameBoardMock).toHaveBeenCalledWith({ boardId, name: "Renamed Delivery" });
+          expect(useStore.getState().boardStateById[boardId]?.boardName).toBe("Renamed Delivery");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await expect
+        .element(page.getByRole("heading", { name: "Renamed Delivery" }))
+        .toBeInTheDocument();
+      expect(mounted.router.state.location.pathname).toBe(`/${LOCAL_ENVIRONMENT_ID}/board`);
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      await mounted.cleanup();
+    }
+  });
+
+  it("deletes workflow boards through the environment that owns the board row", async () => {
+    const sharedRepositoryIdentity = {
+      canonicalKey: "github.com/example/shared-project",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "https://github.com/example/shared-project.git",
+      },
+    };
+    const localBoardId = BoardId.make(`${PROJECT_ID}__local`);
+    const remoteBoardId = BoardId.make(`${PROJECT_ID}__remote`);
+    let localBoards: BoardListEntry[] = [
+      {
+        boardId: localBoardId,
+        name: "Local board",
+        filePath: ".t3/boards/local.json",
+        error: null,
+      },
+    ];
+    let remoteBoards: BoardListEntry[] = [
+      {
+        boardId: remoteBoardId,
+        name: "Remote board",
+        filePath: ".t3/boards/remote.json",
+        error: null,
+      },
+    ];
+    const localListBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(
+      async () => localBoards,
+    );
+    const remoteListBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(
+      async () => remoteBoards,
+    );
+    const localDeleteBoardMock = vi.fn<EnvironmentApi["workflow"]["deleteBoard"]>(async () => {
+      localBoards = [];
+    });
+    const remoteDeleteBoardMock = vi.fn<EnvironmentApi["workflow"]["deleteBoard"]>(
+      async (input) => {
+        expect(input).toEqual({ boardId: remoteBoardId });
+        remoteBoards = [];
+      },
+    );
+
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: localListBoardsMock,
+          deleteBoard: localDeleteBoardMock,
+        },
+      }),
+    );
+    __setEnvironmentApiOverrideForTests(
+      REMOTE_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: remoteListBoardsMock,
+          deleteBoard: remoteDeleteBoardMock,
+        },
+      }),
+    );
+
+    const localSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-board-delete-scoped-env-test" as MessageId,
+      targetText: "board delete scoped env target",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...localSnapshot,
+        projects: localSnapshot.projects.map((project) => ({
+          ...project,
+          repositoryIdentity: sharedRepositoryIdentity,
+        })),
+      },
+    });
+
+    try {
+      useSavedEnvironmentRegistryStore.getState().upsert({
+        environmentId: REMOTE_ENVIRONMENT_ID,
+        label: "Remote",
+        httpBaseUrl: "https://remote.example.test",
+        wsBaseUrl: "wss://remote.example.test/ws",
+        createdAt: NOW_ISO,
+        lastConnectedAt: NOW_ISO,
+      });
+      useSavedEnvironmentRuntimeStore.getState().patch(REMOTE_ENVIRONMENT_ID, {
+        connectionState: "connected",
+        authState: "authenticated",
+        descriptor: {
+          ...fixture.serverConfig.environment,
+          environmentId: REMOTE_ENVIRONMENT_ID,
+          label: "Remote",
+        },
+        serverConfig: {
+          ...fixture.serverConfig,
+          environment: {
+            ...fixture.serverConfig.environment,
+            environmentId: REMOTE_ENVIRONMENT_ID,
+            label: "Remote",
+          },
+        },
+        connectedAt: NOW_ISO,
+      });
+      useStore.getState().syncServerShellSnapshot(
+        toShellSnapshot({
+          ...localSnapshot,
+          projects: localSnapshot.projects.map((project) => ({
+            ...project,
+            repositoryIdentity: sharedRepositoryIdentity,
+          })),
+          threads: [],
+        }),
+        REMOTE_ENVIRONMENT_ID,
+      );
+
+      const remoteBoardRow = page.getByTestId(`board-row-${remoteBoardId}`);
+      await expect.element(remoteBoardRow).toBeInTheDocument();
+      await remoteBoardRow.hover();
+
+      const deleteButton = document.querySelector<HTMLButtonElement>(
+        `[data-testid="board-delete-${remoteBoardId}"]`,
+      );
+      expect(
+        deleteButton,
+        "Expected a delete button on the remote workflow board row.",
+      ).not.toBeNull();
+      deleteButton?.click();
+
+      await page.getByRole("button", { name: "Delete board", exact: true }).click();
+
+      await vi.waitFor(
+        () => {
+          expect(remoteDeleteBoardMock).toHaveBeenCalledWith({ boardId: remoteBoardId });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(localDeleteBoardMock).not.toHaveBeenCalled();
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
+      await mounted.cleanup();
+    }
+  });
+
+  it("navigates away after deleting the currently open workflow board", async () => {
+    const boardId = BoardId.make(`${PROJECT_ID}__delivery`);
+    const boardSnapshot = {
+      projectId: PROJECT_ID,
+      board: {
+        boardId,
+        name: "Delivery",
+        lanes: [],
+      },
+      tickets: [],
+    } satisfies BoardSnapshot;
+    let boards: BoardListEntry[] = [
+      {
+        boardId,
+        name: "Delivery",
+        filePath: ".t3/boards/delivery.json",
+        error: null,
+      },
+    ];
+    const listBoardsMock = vi.fn<EnvironmentApi["workflow"]["listBoards"]>(async () => boards);
+    const deleteBoardMock = vi.fn<EnvironmentApi["workflow"]["deleteBoard"]>(async () => {
+      boards = [];
+    });
+    const getBoardMock = vi.fn<EnvironmentApi["workflow"]["getBoard"]>(async () => boardSnapshot);
+    const subscribeBoardMock = vi.fn<EnvironmentApi["workflow"]["subscribeBoard"]>(
+      (_input, callback) => {
+        callback({ kind: "snapshot", snapshot: boardSnapshot });
+        return () => undefined;
+      },
+    );
+    __setEnvironmentApiOverrideForTests(
+      LOCAL_ENVIRONMENT_ID,
+      createMockEnvironmentApi({
+        browse: vi.fn(async () => ({ parentPath: "~/", entries: [] })),
+        dispatchCommand: vi.fn(async () => ({
+          sequence: fixture.snapshot.snapshotSequence + 1,
+        })),
+        workflow: {
+          listBoards: listBoardsMock,
+          deleteBoard: deleteBoardMock,
+          getBoard: getBoardMock,
+          subscribeBoard: subscribeBoardMock,
+        },
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-active-board-delete-test" as MessageId,
+        targetText: "active board delete target",
+      }),
+      initialPath: `/${LOCAL_ENVIRONMENT_ID}/board?boardId=${boardId}`,
+    });
+
+    try {
+      const boardRow = page.getByTestId(`board-row-${boardId}`);
+      await expect.element(boardRow).toBeInTheDocument();
+
+      const deleteButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>(`[data-testid="board-delete-${boardId}"]`),
+        "Expected a delete button on the workflow board row.",
+      );
+      deleteButton.click();
+
+      await page.getByRole("button", { name: "Delete board", exact: true }).click();
+
+      await vi.waitFor(
+        () => {
+          expect(deleteBoardMock).toHaveBeenCalledWith({ boardId });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      await waitForURL(
+        mounted.router,
+        (pathname) => pathname === "/",
+        "Deleting the active workflow board should navigate to the no-board route.",
+      );
+    } finally {
+      __resetEnvironmentApiOverridesForTests();
       await mounted.cleanup();
     }
   });

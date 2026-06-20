@@ -115,6 +115,10 @@ const EnvServerConfig = Config.all({
         .filter((entry) => entry.length > 0),
     ),
   ),
+  webBaseUrl: Config.url("T3CODE_WEB_BASE_URL").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   noBrowser: Config.boolean("T3CODE_NO_BROWSER").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -274,6 +278,7 @@ export const resolveServerConfig = (
       normalizedFlags.baseDir,
       Option.fromUndefinedOr(env.t3Home),
     ).pipe(Option.filter((value) => value.trim().length > 0));
+    const webBaseUrl = env.webBaseUrl;
     const baseDir = yield* resolveBaseDir(
       Option.getOrUndefined(
         resolveOptionPrecedence(explicitBaseDir, Option.fromUndefinedOr(bootstrap?.t3Home)),
@@ -376,6 +381,7 @@ export const resolveServerConfig = (
       staticDir,
       devUrl,
       devAllowedOrigins: env.devAllowedOrigins,
+      webBaseUrl,
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,

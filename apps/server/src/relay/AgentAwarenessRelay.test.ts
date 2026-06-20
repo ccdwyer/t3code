@@ -491,6 +491,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
               Effect.as(Option.some(thread)),
             ),
           getProjectShellById: () => Effect.succeed(Option.some(project)),
+          isThreadHidden: () => Effect.succeed(false),
         } as unknown as ProjectionSnapshotQueryShape;
 
         const descriptor = {
@@ -678,6 +679,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
               } satisfies OrchestrationShellSnapshot),
             getThreadShellById: () => Effect.succeed(Option.some(thread)),
             getProjectShellById: () => Effect.succeed(Option.some(project)),
+            isThreadHidden: () => Effect.succeed(false),
           } as unknown as ProjectionSnapshotQueryShape),
         );
 

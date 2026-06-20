@@ -204,6 +204,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
           searchThreads: () => Effect.succeed({ matches: [] }),
+          isThreadHidden: () => Effect.succeed(false),
         }),
       ),
       Layer.provide(

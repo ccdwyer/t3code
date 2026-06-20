@@ -17,7 +17,9 @@ import {
   Link2Icon,
   PaletteIcon,
   SearchIcon,
+  SendIcon,
   Settings2Icon,
+  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
@@ -56,15 +58,24 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/archived": ArchiveIcon,
 };
 
+export type SettingsSectionPath =
+  | SettingsPath
+  | "/settings/work-sources"
+  | "/settings/outbound";
+
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   label: string;
-  to: SettingsPath;
+  to: SettingsSectionPath;
   icon: ComponentType<{ className?: string }>;
-}> = (Object.keys(SETTINGS_SECTION_LABELS) as SettingsPath[]).map((to) => ({
-  to,
-  label: SETTINGS_SECTION_LABELS[to],
-  icon: SETTINGS_SECTION_ICONS[to],
-}));
+}> = [
+  ...(Object.keys(SETTINGS_SECTION_LABELS) as SettingsPath[]).map((to) => ({
+    to,
+    label: SETTINGS_SECTION_LABELS[to],
+    icon: SETTINGS_SECTION_ICONS[to],
+  })),
+  { label: "Work Sources", to: "/settings/work-sources", icon: WorkflowIcon },
+  { label: "Outbound", to: "/settings/outbound", icon: SendIcon },
+];
 
 function SettingsSectionIcon({ to }: { to: SettingsPath }) {
   const Icon = SETTINGS_SECTION_ICONS[to];
@@ -124,7 +135,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   }, [isMobile, open, setOpen, setOpenMobile]);
 
   const handleSectionClick = useCallback(
-    (to: SettingsPath) => {
+    (to: SettingsSectionPath) => {
       if (isMobile) {
         setOpenMobile(false);
       }

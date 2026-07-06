@@ -41,6 +41,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as PluginHost from "./plugins/PluginHost.ts";
 import * as PluginHttpRegistry from "./plugins/PluginHttpRegistry.ts";
 import { pluginHttpRouteLayer } from "./plugins/PluginHttpRoutes.ts";
+import { pluginWebRouteLayer } from "./plugins/PluginWebRoutes.ts";
 import * as PluginCatalog from "./plugins/PluginCatalog.ts";
 import * as PluginLockfileStore from "./plugins/PluginLockfileStore.ts";
 import * as PluginMigrator from "./plugins/PluginMigrator.ts";
@@ -393,6 +394,7 @@ const PluginLayerLive = Layer.mergeAll(
   PluginRpcDispatcherLayerLive,
   PluginCatalogLayerLive,
   PluginHttpRegistryLayerLive,
+  PluginLockfileStoreLayerLive,
 );
 
 const RuntimeCoreBaseDependenciesLive = ReactorLayerLive.pipe(
@@ -473,6 +475,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     otlpTracesProxyRouteLayer,
     assetRouteLayer,
     pluginHttpRouteLayer,
+    pluginWebRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),

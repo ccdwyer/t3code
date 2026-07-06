@@ -1,11 +1,17 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ServerConfig, ServerProvider, ServerUpsertKeybindingResult } from "./server.ts";
+import {
+  ServerConfig,
+  ServerLifecycleStreamEvent,
+  ServerProvider,
+  ServerUpsertKeybindingResult,
+} from "./server.ts";
 
 const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
+const decodeServerLifecycleEvent = Schema.decodeUnknownSync(ServerLifecycleStreamEvent);
 
 describe("ServerProvider", () => {
   it("defaults capability arrays when decoding provider snapshots", () => {
@@ -94,5 +100,26 @@ describe("server config forward compatibility", () => {
     const parsed = decodeAvailableEditors(["zed", "some-future-editor", "vscode"]);
 
     expect(parsed).toEqual(["zed", "vscode"]);
+  });
+});
+
+describe("ServerLifecycleStreamEvent", () => {
+  it("decodes plugin state change events", () => {
+    const parsed = decodeServerLifecycleEvent({
+      version: 1,
+      sequence: 3,
+      type: "plugins",
+      payload: {
+        kind: "plugin-state-changed",
+        pluginId: "fixture-plugin",
+        state: "active",
+      },
+    });
+
+    expect(parsed.type).toBe("plugins");
+    if (parsed.type === "plugins") {
+      expect(parsed.payload.pluginId).toBe("fixture-plugin");
+      expect(parsed.payload.state).toBe("active");
+    }
   });
 });

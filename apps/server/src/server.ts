@@ -52,6 +52,7 @@ import * as PluginMigrator from "./plugins/PluginMigrator.ts";
 import * as PluginModuleLoader from "./plugins/PluginModuleLoader.ts";
 import * as PluginRpcDispatcher from "./plugins/PluginRpcDispatcher.ts";
 import * as PluginRuntimeRegistry from "./plugins/PluginRuntimeRegistry.ts";
+import * as PluginToolCatalog from "./plugins/PluginToolCatalog.ts";
 import { OutboundUrlLookupLive } from "./plugins/OutboundUrlValidator.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -365,6 +366,9 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
 );
 
 const PluginRuntimeRegistryLayerLive = PluginRuntimeRegistry.layer;
+const PluginToolCatalogLayerLive = PluginToolCatalog.layer.pipe(
+  Layer.provide(PluginRuntimeRegistryLayerLive),
+);
 const PluginHttpRegistryLayerLive = PluginHttpRegistry.layer;
 const PluginLockfileStoreLayerLive = PluginLockfileStore.layer;
 const PluginHostCapabilityDepsLayerLive = Layer.mergeAll(
@@ -386,6 +390,7 @@ const PluginHostLayerLive = PluginHost.layer.pipe(
   Layer.provideMerge(PluginModuleLoader.layer),
   Layer.provideMerge(PluginMigrator.layer),
   Layer.provideMerge(PluginRuntimeRegistryLayerLive),
+  Layer.provideMerge(PluginToolCatalogLayerLive),
   Layer.provideMerge(PluginHttpRegistryLayerLive),
   Layer.provideMerge(PluginHostCapabilityDepsLayerLive),
 );
@@ -427,6 +432,7 @@ const PluginLayerLive = Layer.mergeAll(
   PluginManagementRpcHandlersLayerLive,
   PluginHttpRegistryLayerLive,
   PluginLockfileStoreLayerLive,
+  PluginToolCatalogLayerLive,
 );
 
 const RuntimeCoreBaseDependenciesLive = ReactorLayerLive.pipe(
@@ -511,7 +517,14 @@ export const makeRoutesLayer = Layer.mergeAll(
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
-  McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
+  // Plugin tool toolkit pulls leaf services (no PluginHost). Same layer refs as
+  // PluginLayerLive so Effect memoizes a single registry/catalog instance when
+  // RuntimeServicesLive is also provided (MCP server still built once).
+  McpHttpServer.layer.pipe(
+    Layer.provide(McpSessionRegistry.layer),
+    Layer.provide(PluginToolCatalogLayerLive),
+    Layer.provide(PluginRuntimeRegistryLayerLive),
+  ),
 ).pipe(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),

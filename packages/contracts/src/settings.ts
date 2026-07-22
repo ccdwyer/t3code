@@ -62,10 +62,35 @@ export const EnvironmentIdentificationMode = Schema.Literals(["artwork", "pill",
 export type EnvironmentIdentificationMode = typeof EnvironmentIdentificationMode.Type;
 export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationMode = "artwork";
 
+// ── Codex Micro (local-only device prefs) ─────────────────────────────
+
+export const CodexMicroBrightnessValue = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: 100 }),
+);
+export type CodexMicroBrightnessValue = typeof CodexMicroBrightnessValue.Type;
+export const DEFAULT_CODEX_MICRO_BRIGHTNESS: CodexMicroBrightnessValue = 70;
+
+export const CodexMicroAgentKeysSource = Schema.Literals(["recentChats"]);
+export type CodexMicroAgentKeysSource = typeof CodexMicroAgentKeysSource.Type;
+export const DEFAULT_CODEX_MICRO_AGENT_KEYS_SOURCE: CodexMicroAgentKeysSource = "recentChats";
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Codex Micro macro-pad prefs. LED sync stays off until D1 hardware capture
+  // proves the ledWrite capability; the other prefs are inert until then.
+  codexMicroLedSyncEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  codexMicroBrightness: CodexMicroBrightnessValue.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODEX_MICRO_BRIGHTNESS)),
+  ),
+  codexMicroAutoDim: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  codexMicroKeybindingsSeeded: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  codexMicroAgentKeysSource: CodexMicroAgentKeysSource.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODEX_MICRO_AGENT_KEYS_SOURCE)),
+  ),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -678,6 +703,11 @@ export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  codexMicroLedSyncEnabled: Schema.optionalKey(Schema.Boolean),
+  codexMicroBrightness: Schema.optionalKey(CodexMicroBrightnessValue),
+  codexMicroAutoDim: Schema.optionalKey(Schema.Boolean),
+  codexMicroKeybindingsSeeded: Schema.optionalKey(Schema.Boolean),
+  codexMicroAgentKeysSource: Schema.optionalKey(CodexMicroAgentKeysSource),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),

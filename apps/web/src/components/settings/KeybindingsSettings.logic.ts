@@ -332,9 +332,18 @@ export function keybindingFromKeyboardEvent(
   }
   if (event.altKey) parts.push("alt");
   if (event.shiftKey) parts.push("shift");
-  if (parts.length === 0) {
+  if (parts.length === 0 && !isModifierlessFunctionKeyToken(keyToken)) {
     return null;
   }
   parts.push(keyToken);
   return parts.join("+");
+}
+
+/**
+ * F13-F24 are not present on standard keyboards and are commonly sent by
+ * macro pads / programmable keyboards. They're safe to allow without a
+ * modifier since no OS or app default binds them bare.
+ */
+function isModifierlessFunctionKeyToken(keyToken: string): boolean {
+  return /^f(1[3-9]|2[0-4])$/.test(keyToken);
 }

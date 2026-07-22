@@ -5,6 +5,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
   ServerSettingsPatch,
@@ -108,6 +109,34 @@ describe("ClientSettings sidebar v2", () => {
   it.each([-1, 0, 91])("rejects an auto-settle threshold outside 1..90: %s", (value) => {
     expect(() => decodeClientSettings({ sidebarAutoSettleAfterDays: value })).toThrow();
     expect(() => decodeClientSettingsPatch({ sidebarAutoSettleAfterDays: value })).toThrow();
+  });
+});
+
+describe("ClientSettings Codex Micro", () => {
+  it("derives the documented defaults by decoding an empty config", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroLedSyncEnabled).toBe(false);
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroBrightness).toBe(70);
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroAutoDim).toBe(true);
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroKeybindingsSeeded).toBe(false);
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroAgentKeysSource).toBe("recentChats");
+  });
+
+  it("accepts a partial patch of Codex Micro fields", () => {
+    const patch = decodeClientSettingsPatch({
+      codexMicroLedSyncEnabled: true,
+      codexMicroBrightness: 30,
+      codexMicroKeybindingsSeeded: true,
+    });
+    expect(patch.codexMicroLedSyncEnabled).toBe(true);
+    expect(patch.codexMicroBrightness).toBe(30);
+    expect(patch.codexMicroKeybindingsSeeded).toBe(true);
+    // Untouched fields stay absent in a patch.
+    expect(patch.codexMicroAutoDim).toBeUndefined();
+  });
+
+  it.each([-1, 101, 3.5])("rejects an out-of-range brightness: %s", (value) => {
+    expect(() => decodeClientSettings({ codexMicroBrightness: value })).toThrow();
+    expect(() => decodeClientSettingsPatch({ codexMicroBrightness: value })).toThrow();
   });
 });
 

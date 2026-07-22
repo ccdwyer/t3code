@@ -34,6 +34,16 @@ export const MODEL_PICKER_JUMP_KEYBINDING_COMMANDS = [
 export type ModelPickerJumpKeybindingCommand =
   (typeof MODEL_PICKER_JUMP_KEYBINDING_COMMANDS)[number];
 
+export const AGENT_KEY_KEYBINDING_COMMANDS = [
+  "agentKey.open.1",
+  "agentKey.open.2",
+  "agentKey.open.3",
+  "agentKey.open.4",
+  "agentKey.open.5",
+  "agentKey.open.6",
+] as const;
+export type AgentKeyKeybindingCommand = (typeof AGENT_KEY_KEYBINDING_COMMANDS)[number];
+
 export const THREAD_KEYBINDING_COMMANDS = [
   "thread.previous",
   "thread.next",
@@ -69,8 +79,11 @@ const STATIC_KEYBINDING_COMMANDS = [
   "chat.new",
   "chat.newLocal",
   "editor.openFavorite",
+  "approval.accept",
+  "approval.decline",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
   ...THREAD_KEYBINDING_COMMANDS,
+  ...AGENT_KEY_KEYBINDING_COMMANDS,
 ] as const;
 
 export const SCRIPT_RUN_COMMAND_PATTERN = Schema.TemplateLiteral([

@@ -64,6 +64,45 @@ describe("KeybindingsSettings.logic", () => {
     ).toBe("mod+shift+k");
   });
 
+  it("accepts modifierless macro-pad function keys F13-F24 but rejects other bare keys", () => {
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "F13", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBe("f13");
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "F24", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBe("f24");
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "F12", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBeNull();
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "k", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBeNull();
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "F13", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBe("mod+f13");
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "Shift", metaKey: false, ctrlKey: false, altKey: false, shiftKey: true },
+        "MacIntel",
+      ),
+    ).toBeNull();
+  });
+
   it("serializes shortcuts and when expressions for upserts", () => {
     expect(
       shortcutToKeybindingInput({

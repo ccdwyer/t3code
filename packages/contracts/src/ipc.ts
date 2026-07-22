@@ -89,6 +89,7 @@ import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } fr
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import type { ClientSettings } from "./settings.ts";
+import type { CodexMicroDeviceState, CodexMicroLedFrame } from "./codexMicro.ts";
 import type {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
@@ -1074,6 +1075,22 @@ export interface DesktopBridge {
    * Electron desktop build; web builds have `preview === undefined`.
    */
   preview?: DesktopPreviewBridge;
+  /**
+   * Desktop-only Codex Micro macro-pad surface. Present iff the renderer is
+   * hosted by a desktop build that owns the HID device service. Absent on plain
+   * browsers and older desktop shells — callers must treat `undefined` as
+   * "no device connected" and render the not-connected settings state.
+   */
+  codexMicro?: DesktopCodexMicroBridge;
+}
+
+export interface DesktopCodexMicroBridge {
+  getState: () => Promise<CodexMicroDeviceState>;
+  /** Subscribe to device-state changes; returns an unsubscribe function. */
+  onStateChange: (listener: (state: CodexMicroDeviceState) => void) => () => void;
+  setAgentKeyColors: (frame: CodexMicroLedFrame) => Promise<void>;
+  setBrightness: (percent: number) => Promise<void>;
+  setAutoDim: (enabled: boolean) => Promise<void>;
 }
 
 export interface DesktopPreviewBridge {

@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 
 import {
+  AGENT_KEY_KEYBINDING_COMMANDS,
   KeybindingsConfig,
   KeybindingRule,
   ResolvedKeybindingRule,
@@ -107,6 +108,28 @@ it.effect("rejects invalid command values", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("exposes six agent-key commands, each a valid KeybindingCommand", () =>
+  Effect.gen(function* () {
+    assert.lengthOf(AGENT_KEY_KEYBINDING_COMMANDS, 6);
+    for (const command of AGENT_KEY_KEYBINDING_COMMANDS) {
+      const parsed = yield* decode(KeybindingRule, { key: "f13", command });
+      assert.strictEqual(parsed.command, command);
+    }
+  }),
+);
+
+it.effect("parses the approval accept/decline commands", () =>
+  Effect.gen(function* () {
+    const accept = yield* decode(KeybindingRule, { key: "f19", command: "approval.accept" });
+    assert.strictEqual(accept.command, "approval.accept");
+    const decline = yield* decode(KeybindingRule, {
+      key: "shift+f19",
+      command: "approval.decline",
+    });
+    assert.strictEqual(decline.command, "approval.decline");
   }),
 );
 

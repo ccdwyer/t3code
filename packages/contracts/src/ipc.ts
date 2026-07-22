@@ -139,7 +139,9 @@ import type {
   WorkflowResolveBoardProposalInput,
   WorkflowResolveBoardProposalResult,
   WorkflowRevertBoardProposalResult,
+  WorkflowEventId,
 } from "./workflow.ts";
+import type { WorkflowParkActionResult } from "./rpc.ts";
 import type {
   WorkSourceConnectionView,
   ListImportableWorkItemsResult,
@@ -1363,6 +1365,16 @@ export interface EnvironmentApi {
       readonly tokenBudget?: number | null | undefined;
     }) => Promise<void>;
     moveTicket: (input: { readonly ticketId: TicketId; readonly toLane: LaneKey }) => Promise<void>;
+    // Unpark a parked ticket via one of its re-resolved actions. Compare-and-act
+    // on `parkedEventId`: a stale/superseded invocation resolves to `"stale"`
+    // rather than moving the wrong ticket. Optional until the web/client-runtime
+    // wrapper lands (plan Task 14) so this interface stays satisfiable by every
+    // existing consumer in the meantime.
+    invokeParkAction?: (input: {
+      readonly ticketId: TicketId;
+      readonly actionIndex: number;
+      readonly parkedEventId: WorkflowEventId;
+    }) => Promise<WorkflowParkActionResult>;
     runLane: (input: { readonly ticketId: TicketId }) => Promise<void>;
     resolveApproval: (input: {
       readonly stepRunId: StepRunId;

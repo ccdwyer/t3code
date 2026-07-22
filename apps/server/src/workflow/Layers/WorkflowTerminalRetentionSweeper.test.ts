@@ -32,6 +32,7 @@ const makeEngineLayer = (
     createTicket: () => unsupported(),
     editTicket: () => unsupported(),
     moveTicket: () => unsupported(),
+    invokeParkAction: () => unsupported(),
     createTicketAndEnterUnlocked: () => unsupported(),
     closeTicketFromSourceUnlocked: () => unsupported(),
     reopenTicketFromSourceUnlocked: () => unsupported(),

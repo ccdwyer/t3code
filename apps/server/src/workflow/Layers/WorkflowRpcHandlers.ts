@@ -2775,7 +2775,6 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to move workflow ticket"))),
         { "rpc.aggregate": "workflow" },
       ),
-    // TODO(park): real implementation in plan Task 6.
     [WORKFLOW_WS_METHODS.invokeParkAction]: (input: {
       readonly ticketId: TicketId;
       readonly actionIndex: number;
@@ -2783,7 +2782,9 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
     }) =>
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.invokeParkAction,
-        Effect.fail(workflowRpcError("invokeParkAction not yet implemented")),
+        deps.engine
+          .invokeParkAction(input.ticketId, input.actionIndex, input.parkedEventId)
+          .pipe(Effect.mapError(toWorkflowRpcError("Failed to invoke workflow park action"))),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.runLane]: (input: { readonly ticketId: TicketId }) =>

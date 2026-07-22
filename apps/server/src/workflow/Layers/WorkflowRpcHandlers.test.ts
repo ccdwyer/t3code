@@ -189,6 +189,7 @@ it.effect("workflowRpcHandlers maps createTicket and subscribeBoard", () =>
             editedTicket = input;
           }),
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -358,6 +359,7 @@ it.effect("workflowRpcHandlers lists and creates boards without a client path", 
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -453,7 +455,9 @@ it.effect("workflowRpcHandlers lists and creates boards without a client path", 
         listFiles: () => Effect.succeed([]),
         readFileString: () => Effect.die("unused"),
         writeFile: () => Effect.die("writeFile must not be used"),
-        createFileExclusive: (input: Parameters<WorkspaceFileSystem["Service"]["createFileExclusive"]>[0]) =>
+        createFileExclusive: (
+          input: Parameters<WorkspaceFileSystem["Service"]["createFileExclusive"]>[0],
+        ) =>
           Effect.sync(() => {
             writes.push(input);
             return { relativePath: input.relativePath };
@@ -556,6 +560,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -702,6 +707,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -885,6 +891,7 @@ it.effect("workflowRpcHandlers completes deleteBoard retry after a mid-cascade f
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1078,6 +1085,7 @@ it.effect("workflowRpcHandlers rejects deleteBoard whose derived path is not a b
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1192,6 +1200,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1338,6 +1347,7 @@ it.effect("workflowRpcHandlers delegates project script trust updates", () =>
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1429,6 +1439,7 @@ it.effect("workflowRpcHandlers delegates cooperative step cancellation", () =>
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1572,6 +1583,7 @@ it.effect("workflowRpcHandlers gets and saves encoded board definitions", () =>
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1849,6 +1861,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -1934,7 +1947,9 @@ it.effect(
         workspaceFileSystem: {
           readFile: () => Effect.die("unused"),
           listFiles: () => Effect.succeed([]),
-          readFileString: (input: Parameters<WorkspaceFileSystem["Service"]["readFileString"]>[0]) =>
+          readFileString: (
+            input: Parameters<WorkspaceFileSystem["Service"]["readFileString"]>[0],
+          ) =>
             Effect.sync(() => {
               assert.deepEqual(input, { cwd: workspaceRoot, relativePath: workflowFilePath });
               return fileContents;
@@ -2036,6 +2051,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -2206,6 +2222,7 @@ it.effect("workflowRpcHandlers rejects blank board rename names before touching 
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -2338,6 +2355,7 @@ it.effect("workflowRpcHandlers treats unchanged board rename names as a no-op", 
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -2462,6 +2480,7 @@ it.effect("workflowRpcHandlers reports missing boards during rename without writ
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -2598,6 +2617,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -2791,6 +2811,7 @@ it.effect("workflowRpcHandlers lists board versions and lazy-imports missing his
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -3041,6 +3062,7 @@ it.effect("workflowRpcHandlers records only one lazy import for concurrent histo
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -3223,6 +3245,7 @@ it.effect("workflowRpcHandlers serializes createBoard against lazy history impor
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -3309,7 +3332,9 @@ it.effect("workflowRpcHandlers serializes createBoard against lazy history impor
         listFiles: () => Effect.succeed([]),
         readFileString: () => Effect.succeed(fileContents),
         writeFile: () => Effect.die("unused"),
-        createFileExclusive: (input: Parameters<WorkspaceFileSystem["Service"]["createFileExclusive"]>[0]) =>
+        createFileExclusive: (
+          input: Parameters<WorkspaceFileSystem["Service"]["createFileExclusive"]>[0],
+        ) =>
           Effect.sync(() => {
             fileContents = input.contents;
             return { relativePath: input.relativePath };
@@ -3417,6 +3442,7 @@ it.effect("workflowRpcHandlers skips lazy import when history appears after an e
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -3572,6 +3598,7 @@ versionRoundTripLayer("workflowRpcHandlers version history round trip", (it) => 
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -3843,6 +3870,7 @@ it.effect("workflowRpcHandlers rejects lint-invalid board saves without writing"
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -3961,6 +3989,7 @@ it.effect("workflowRpcHandlers rejects stale board saves without writing", () =>
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4098,6 +4127,7 @@ it.effect("workflowRpcHandlers rejects saves when the board file changed on disk
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4248,6 +4278,7 @@ it.effect("workflowRpcHandlers serializes same-base board saves so only one succ
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4409,6 +4440,7 @@ it.effect("workflowRpcHandlers serializes deleteBoard with an in-flight save", (
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4588,6 +4620,7 @@ it.effect("workflowRpcHandlers rejects unsafe instruction paths without writing"
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4707,6 +4740,7 @@ it.effect("workflowRpcHandlers rejects board saves whose derived path is not a b
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.void,
         moveTicket: () => Effect.void,
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4830,6 +4864,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -4914,7 +4949,9 @@ it.effect(
         workspaceFileSystem: {
           readFile: () => Effect.die("unused"),
           listFiles: () => Effect.succeed([]),
-          readFileString: (input: Parameters<WorkspaceFileSystem["Service"]["readFileString"]>[0]) =>
+          readFileString: (
+            input: Parameters<WorkspaceFileSystem["Service"]["readFileString"]>[0],
+          ) =>
             Effect.sync(() => {
               assert.deepEqual(input, { cwd: workspaceRoot, relativePath: workflowFilePath });
               return fileContents;
@@ -5007,6 +5044,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -5119,6 +5157,7 @@ it.effect(
           createTicket: () => Effect.die("unused"),
           editTicket: () => Effect.void,
           moveTicket: () => Effect.void,
+          invokeParkAction: () => Effect.die("unused"),
           createTicketAndEnterUnlocked: () => Effect.die("unused"),
           closeTicketFromSourceUnlocked: () => Effect.die("unused"),
           reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -5240,6 +5279,7 @@ const importNoopEngine = {
   createTicket: () => Effect.die("unused"),
   editTicket: () => Effect.void,
   moveTicket: () => Effect.void,
+  invokeParkAction: () => Effect.die("unused"),
   createTicketAndEnterUnlocked: () => Effect.die("unused"),
   closeTicketFromSourceUnlocked: () => Effect.die("unused"),
   reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -5388,7 +5428,9 @@ const makeImportHarness = (projectId: ProjectId, options: ImportHarnessOptions =
       listFiles: () => Effect.succeed([]),
       readFileString: () => Effect.die("unused"),
       writeFile: () => Effect.die("writeFile must not be used"),
-      createFileExclusive: (input: Parameters<WorkspaceFileSystem["Service"]["createFileExclusive"]>[0]) =>
+      createFileExclusive: (
+        input: Parameters<WorkspaceFileSystem["Service"]["createFileExclusive"]>[0],
+      ) =>
         Effect.sync(() => {
           writes.push(input);
           return { relativePath: input.relativePath };
@@ -8070,6 +8112,7 @@ it.effect("listImportableWorkItems annotates mapped items + reports sources", ()
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.die("unused"),
         moveTicket: () => Effect.die("unused"),
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -8169,6 +8212,7 @@ it.effect("gates mutating RPCs behind readiness while reads bypass the gate", ()
           Effect.sync(() => {
             moved = true;
           }),
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -8268,6 +8312,7 @@ it.effect("gates importWorkItems behind readiness; listImportableWorkItems bypas
         createTicket: () => Effect.die("unused"),
         editTicket: () => Effect.die("unused"),
         moveTicket: () => Effect.die("unused"),
+        invokeParkAction: () => Effect.die("unused"),
         createTicketAndEnterUnlocked: () => Effect.die("unused"),
         closeTicketFromSourceUnlocked: () => Effect.die("unused"),
         reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
@@ -8455,6 +8500,7 @@ const makeImportDeps = (opts: {
       createTicket: () => Effect.die("unused"),
       editTicket: () => Effect.die("unused"),
       moveTicket: () => Effect.die("unused"),
+      invokeParkAction: () => Effect.die("unused"),
       createTicketAndEnterUnlocked: () => Effect.die("unused"),
       closeTicketFromSourceUnlocked: () => Effect.die("unused"),
       reopenTicketFromSourceUnlocked: () => Effect.die("unused"),

@@ -62,6 +62,7 @@ import {
   type WorkflowRoutingContext,
 } from "../Services/WorkflowRoutingContextBuilder.ts";
 import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
+import { resolveParkActions } from "../parkActions.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
 
@@ -1463,6 +1464,14 @@ const make = Effect.gen(function* () {
     // tombstone dispatches). Injected so the unlocked path reuses the identical
     // side effect.
     readonly supersedeRunningWork: Effect.Effect<void, WorkflowEventStoreError>;
+    // Unpark compare-and-act: when present, the ticket MUST still be parked with
+    // this exact `parked_event_id` when the admission lock is held, or the whole
+    // move no-ops (`acted: "none"`) with nothing emitted. This is the
+    // authoritative TOCTOU-safe guard — it is re-read from the projection row
+    // INSIDE the serialized section. A null/undefined `parked_event_id` on the
+    // row always fails the guard toward "none" (never toward acting). The
+    // supersession side effect runs only AFTER this guard passes.
+    readonly parkedGuard?: { readonly expectedParkedEventId: WorkflowEventId } | undefined;
     // When a terminal lane is entered, whether to call `provider.stopSession` for
     // the ticket's stored agent threads IN-BAND. Defaults to `true` for the public
     // move (no chunk tx is open). The unlocked source-committer callers pass
@@ -1493,7 +1502,7 @@ const make = Effect.gen(function* () {
     },
     WorkflowEventStoreError
   > => {
-    const { routedOptions, externalOptions, supersedeRunningWork } = options;
+    const { routedOptions, externalOptions, supersedeRunningWork, parkedGuard } = options;
     const emit = options.emit ?? lockedEmit;
     const serialize =
       options.serialize ??
@@ -1532,6 +1541,26 @@ const make = Effect.gen(function* () {
           // work; stale events must no-op without side effects.
           yield* supersedeRunningWork;
         }
+        // Unpark compare-and-act (TOCTOU-safe): the ticket must STILL be parked
+        // with the expected `parked_event_id` now that we hold the admission
+        // lock. Re-read from the projection row (getTicketDetail selects
+        // parked_event_id). A concurrent move/invoke that already unparked the
+        // ticket, a status that is no longer "parked", or a null/undefined
+        // parked_event_id all fail the guard toward "none" — nothing is emitted.
+        if (parkedGuard !== undefined) {
+          const rowParkedEventId = detail?.ticket.parkedEventId ?? null;
+          if (
+            detail?.ticket.status !== "parked" ||
+            rowParkedEventId === null ||
+            rowParkedEventId !== parkedGuard.expectedParkedEventId
+          ) {
+            return none;
+          }
+          // Guard passed — only now supersede any (defense-in-depth) running
+          // work. Parked tickets have no running pipeline by invariant, so this
+          // is belt-and-braces, mirroring the external path's ordering.
+          yield* supersedeRunningWork;
+        }
         const routeEvent =
           reason === "routed" && routedOptions !== undefined
             ? routeDecisionEvent(
@@ -1554,21 +1583,34 @@ const make = Effect.gen(function* () {
         // no-op would leave it admitted in its old lane with no signal. Block it
         // so attention_kind='blocked' fires through the existing path. We never
         // commit a move/queue into the phantom lane.
-        if (reason === "routed" && targetLane === null) {
-          yield* Effect.logWarning(
-            "workflow routed move targets a lane missing from the current board def — blocking ticket",
-            { boardId, ticketId, toLane },
-          );
-          yield* emit([
-            {
-              type: "TicketBlocked",
-              ticketId,
-              payload: {
-                reason: `routed to lane '${toLane}' which no longer exists in the board definition`,
-              },
-            } as UnstampedWorkflowEventInput,
-          ]);
-          return none;
+        if (targetLane === null) {
+          if (reason === "routed") {
+            yield* Effect.logWarning(
+              "workflow routed move targets a lane missing from the current board def — blocking ticket",
+              { boardId, ticketId, toLane },
+            );
+            yield* emit([
+              {
+                type: "TicketBlocked",
+                ticketId,
+                payload: {
+                  reason: `routed to lane '${toLane}' which no longer exists in the board definition`,
+                },
+              } as UnstampedWorkflowEventInput,
+            ]);
+            return none;
+          }
+          // A manual move (menu/drag or an unpark park-action) or an external
+          // event targeting a lane that no longer exists must FAIL loudly rather
+          // than commit a move into a phantom lane and strand the ticket — the
+          // pre-existing hole this closes (spec: enterLane phantom-lane guard,
+          // previously routed-only). `initial` keeps its legacy behavior (the
+          // initial lane is validated at ticket creation).
+          if (reason === "manual" || reason === "external") {
+            return yield* new WorkflowEventStoreError({
+              message: `cannot move ticket to lane '${toLane}' which no longer exists in the board definition`,
+            });
+          }
         }
         const limit = targetLane?.wipLimit;
         const admittedCount =
@@ -1627,6 +1669,19 @@ const make = Effect.gen(function* () {
     );
   };
 
+  // Stop whatever the ticket was doing: interrupt the running pipeline fiber,
+  // cancel live provider turns so a stale agent cannot keep mutating the worktree
+  // underneath the next lane's steps (e.g. a merge), and tombstone the outbox
+  // rows so restart recovery never re-dispatches the stale work. Shared by the
+  // manual move (runs it before the lock) and the external/unpark paths (run it
+  // inside the lock, once their guard has confirmed the move still applies).
+  const supersedeRunningWorkFor = (ticketId: TicketId) =>
+    Effect.gen(function* () {
+      yield* interruptRunningPipeline(ticketId);
+      yield* cancelActiveProviderTurnsForTicket(ticketId).pipe(Effect.catch(() => Effect.void));
+      yield* abandonTicketDispatches(ticketId).pipe(Effect.catch(() => Effect.void));
+    });
+
   const enterLane = (
     ticketId: TicketId,
     boardId: BoardId,
@@ -1636,17 +1691,7 @@ const make = Effect.gen(function* () {
     externalOptions?: ExternalEnterLaneOptions,
   ): Effect.Effect<"moved" | "queued" | "none", WorkflowEventStoreError> =>
     Effect.gen(function* () {
-      // A manual move supersedes whatever the ticket was doing: stop live
-      // provider turns so a stale agent cannot keep mutating the worktree
-      // underneath the next lane's steps (e.g. a merge), and tombstone the
-      // outbox rows so restart recovery never re-dispatches the stale work.
-      // External events do the same, but only inside the admission lock once
-      // the stale-lane guard has confirmed the event still applies.
-      const supersedeRunningWork = Effect.gen(function* () {
-        yield* interruptRunningPipeline(ticketId);
-        yield* cancelActiveProviderTurnsForTicket(ticketId).pipe(Effect.catch(() => Effect.void));
-        yield* abandonTicketDispatches(ticketId).pipe(Effect.catch(() => Effect.void));
-      });
+      const supersedeRunningWork = supersedeRunningWorkFor(ticketId);
       if (reason === "manual") {
         yield* supersedeRunningWork;
       }
@@ -1676,6 +1721,34 @@ const make = Effect.gen(function* () {
     reason: MoveReason,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     enterLane(ticketId, boardId, toLane, reason).pipe(Effect.asVoid);
+
+  // A manual move driven by an unpark action. Unlike the plain manual move,
+  // supersession does NOT run before the lock — it runs INSIDE the admission
+  // lock only after the parked compare-and-act guard passes (a stale invoke must
+  // have zero side effects). The guard is the authoritative TOCTOU check; the
+  // action re-resolution + target-lane validation happen before this (race-free
+  // definition data).
+  const enterLaneWithParkedGuard = (
+    ticketId: TicketId,
+    boardId: BoardId,
+    toLane: LaneKey,
+    parkedGuard: { readonly expectedParkedEventId: WorkflowEventId },
+  ): Effect.Effect<"moved" | "queued" | "none", WorkflowEventStoreError> =>
+    Effect.gen(function* () {
+      const lockResult = yield* enterLaneCore(ticketId, boardId, toLane, "manual", {
+        supersedeRunningWork: supersedeRunningWorkFor(ticketId),
+        parkedGuard,
+      });
+
+      yield* runPipelineStarts(lockResult.starts);
+
+      const movedLane = yield* registry.getLane(boardId, toLane);
+      if (movedLane?.terminal === true) {
+        yield* releaseDependents(ticketId).pipe(Effect.catch(() => Effect.void));
+      }
+
+      return lockResult.acted;
+    });
 
   // Parks a ticket in place. The ENTIRE critical section runs under the board
   // admission lock (uninterruptible), mirroring enterLaneCore's idiom: re-read
@@ -2130,6 +2203,64 @@ const make = Effect.gen(function* () {
         });
       }
       yield* moveToLane(ticketId, currentDetail.ticket.boardId as BoardId, toLane, "manual");
+    });
+
+  const invokeParkAction: WorkflowEngineShape["invokeParkAction"] = (
+    ticketId,
+    actionIndex,
+    parkedEventId,
+  ) =>
+    Effect.gen(function* () {
+      const detail = yield* read.getTicketDetail(ticketId);
+      const ticket = detail?.ticket ?? null;
+      const rowParkedEventId = ticket?.parkedEventId ?? null;
+      // Fast pre-lock compare-and-act (the authoritative recheck is in-lock).
+      // No ticket, a non-parked status, or a null/undefined/mismatched
+      // parked_event_id all report "stale": no move, no error toast storm.
+      if (
+        ticket === null ||
+        ticket.status !== "parked" ||
+        rowParkedEventId === null ||
+        rowParkedEventId !== parkedEventId
+      ) {
+        return "stale" as const;
+      }
+      const originJson = ticket.parkOrigin ?? null;
+      if (originJson === null) {
+        return yield* new WorkflowEventStoreError({
+          message: "park actions unavailable — board definition changed",
+        });
+      }
+      const boardId = ticket.boardId as BoardId;
+      const laneKey = ticket.currentLaneKey as LaneKey;
+      // Definition-derived data is read BEFORE the lock: it is race-free relative
+      // to the ticket's parked state, and only the compare-and-act needs the
+      // admission lock. Actions are ALWAYS re-resolved from the CURRENT board
+      // definition by `park_origin` fingerprint — the event's snapshot is never
+      // executed.
+      const definition = yield* registry.getDefinition(boardId);
+      const actions =
+        definition === null ? null : resolveParkActions(definition, laneKey, originJson);
+      const action = actions === null ? undefined : actions[actionIndex];
+      if (action === undefined) {
+        return yield* new WorkflowEventStoreError({
+          message: "park actions unavailable — board definition changed",
+        });
+      }
+      // The action's target lane must exist in the CURRENT definition.
+      const targetLane = yield* registry.getLane(boardId, action.to);
+      if (targetLane === null) {
+        return yield* new WorkflowEventStoreError({
+          message: `park action targets lane '${action.to}' which no longer exists in the board definition`,
+        });
+      }
+      // The authoritative parked guard + the manual move run together in the
+      // admission-locked serialized section. A concurrent invoke/move that
+      // already unparked the ticket makes the guard miss → "none" → "stale".
+      const acted = yield* enterLaneWithParkedGuard(ticketId, boardId, action.to, {
+        expectedParkedEventId: parkedEventId,
+      });
+      return acted === "none" ? ("stale" as const) : acted;
     });
 
   // ---------------------------------------------------------------------------
@@ -2984,6 +3115,7 @@ const make = Effect.gen(function* () {
     createTicket,
     editTicket,
     moveTicket,
+    invokeParkAction,
     createTicketAndEnterUnlocked,
     closeTicketFromSourceUnlocked,
     reopenTicketFromSourceUnlocked,

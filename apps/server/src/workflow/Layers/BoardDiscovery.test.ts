@@ -43,6 +43,7 @@ const workflowEngineStub = Layer.succeed(WorkflowEngine, {
   createTicket: () => Effect.die("unused"),
   editTicket: () => Effect.void,
   moveTicket: () => Effect.die("unused"),
+  invokeParkAction: () => Effect.die("unused"),
   createTicketAndEnterUnlocked: () => Effect.die("unused"),
   closeTicketFromSourceUnlocked: () => Effect.die("unused"),
   reopenTicketFromSourceUnlocked: () => Effect.die("unused"),

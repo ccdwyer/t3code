@@ -7,6 +7,8 @@ import type {
   TicketAttachment,
   TicketId,
   TurnId,
+  WorkflowEventId,
+  WorkflowParkActionResult,
   WorkflowStepUsage,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -44,6 +46,19 @@ export interface WorkflowEngineShape {
     ticketId: TicketId,
     toLane: LaneKey,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
+  // Unpark: re-resolve the parked ticket's actions from the CURRENT board
+  // definition (by `park_origin` fingerprint, never a snapshot), then perform a
+  // manual `TicketMovedToLane` into the chosen action's target lane. The
+  // authoritative parked-state compare-and-act on `parkedEventId` runs INSIDE
+  // the admission lock: a ticket that is no longer parked, or whose parked event
+  // id no longer matches, yields `"stale"` without moving. Fails with a typed
+  // error when the actions can no longer be resolved (definition edited/reverted)
+  // or the action's target lane no longer exists.
+  readonly invokeParkAction: (
+    ticketId: TicketId,
+    actionIndex: number,
+    parkedEventId: WorkflowEventId,
+  ) => Effect.Effect<WorkflowParkActionResult, WorkflowEventStoreError>;
   // Committer-facing UNLOCKED ops for the work-source syncer (Task 9). The CALLER
   // MUST already hold the board save lock for the affected board AND be inside an
   // open `sql.withTransaction`; these never acquire the save lock, never open a

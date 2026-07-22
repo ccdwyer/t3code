@@ -1,8 +1,10 @@
 import {
+  type ApprovalRequestId,
   type EnvironmentId,
   isProviderDriverKind,
   ProjectId,
   type ModelSelection,
+  type ProviderApprovalDecision,
   type ProviderDriverKind,
   type ServerProvider,
   type ScopedProjectRef,
@@ -63,6 +65,66 @@ export function resolveThreadMetadataUpdateForNextTurn(input: {
     ...(modelSelectionChanged ? { modelSelection: nextModelSelection } : {}),
     ...(branchChanged ? { branch: input.nextBranch, worktreePath: null } : {}),
   };
+}
+
+/**
+ * Maps a keybinding command to the exact one-shot approval decision it sends.
+ * `approval.accept` approves the tool call ONCE (never `acceptForSession`) and
+ * `approval.decline` denies it (never `cancel`, which would abort the turn).
+ * Any other command yields `null` so callers can ignore it.
+ */
+export function approvalDecisionForKeybindingCommand(
+  command: string | null | undefined,
+): ProviderApprovalDecision | null {
+  if (command === "approval.accept") return "accept";
+  if (command === "approval.decline") return "decline";
+  return null;
+}
+
+export type ApprovalKeybindingOutcome =
+  | { readonly kind: "ignore" }
+  | { readonly kind: "no-pending" }
+  | { readonly kind: "in-flight" }
+  | {
+      readonly kind: "respond";
+      readonly requestId: ApprovalRequestId;
+      readonly decision: ProviderApprovalDecision;
+    };
+
+/**
+ * Pure decision function backing the `approval.accept` / `approval.decline`
+ * keybinding commands. It targets the focused thread's OLDEST pending approval
+ * (sorted by `createdAt` ascending — self-contained so the result does not
+ * depend on the caller pre-sorting), and returns:
+ *
+ * - `ignore`  — not an approval command, or an auto-repeat keydown (suppressed).
+ * - `no-pending` — the command is valid but nothing is pending (caller toasts).
+ * - `in-flight` — a decision for the target request is already being sent
+ *   (duplicate guard; caller drops it, no second send).
+ * - `respond` — dispatch `decision` for `requestId` via the normal send path.
+ */
+export function resolveApprovalKeybindingOutcome(input: {
+  command: string | null | undefined;
+  isRepeat: boolean;
+  pendingApprovals: ReadonlyArray<{ requestId: ApprovalRequestId; createdAt: string }>;
+  respondingRequestIds: ReadonlyArray<ApprovalRequestId>;
+}): ApprovalKeybindingOutcome {
+  const decision = approvalDecisionForKeybindingCommand(input.command);
+  if (!decision) return { kind: "ignore" };
+  // Repeat suppression: ignore auto-repeat keydowns so a held key does not
+  // fan out into multiple decisions.
+  if (input.isRepeat) return { kind: "ignore" };
+
+  const oldest = [...input.pendingApprovals].toSorted((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  )[0];
+  if (!oldest) return { kind: "no-pending" };
+
+  if (input.respondingRequestIds.includes(oldest.requestId)) {
+    return { kind: "in-flight" };
+  }
+
+  return { kind: "respond", requestId: oldest.requestId, decision };
 }
 
 export function buildLocalDraftThread(

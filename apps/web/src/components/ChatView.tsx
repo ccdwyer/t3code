@@ -256,6 +256,7 @@ import {
   buildLoadingThreadFromShell,
   buildThreadTurnInterruptInput,
   collectUserMessageBlobPreviewUrls,
+  resolveApprovalKeybindingOutcome,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   dismissBranchMismatchForSession,
@@ -1295,6 +1296,18 @@ function ChatViewContent(props: ChatViewProps) {
     null,
   );
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
+  // Synchronous companion to `respondingRequestIds` (which is async React
+  // state): a decision send flips this the instant it starts, closing the
+  // window where two rapid accept/decline presses for the same requestId race
+  // before a re-render. Both the composer buttons and the keybinding commands
+  // funnel through `onRespondToApproval`, so this single guard covers both.
+  const inFlightApprovalRequestIdsRef = useRef<Set<ApprovalRequestId>>(new Set());
+  // Latest-value ref so the window keydown listener (registered above
+  // `onRespondToApproval`'s declaration) can invoke the current send callback
+  // without re-subscribing or hitting a temporal-dead-zone reference.
+  const onRespondToApprovalRef = useRef<
+    ((requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => void) | null
+  >(null);
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
@@ -4464,10 +4477,28 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
-      if (command === "modelPicker.toggle") {
+      if (command === "approval.accept" || command === "approval.decline") {
+        const outcome = resolveApprovalKeybindingOutcome({
+          command,
+          isRepeat: event.repeat,
+          pendingApprovals,
+          respondingRequestIds,
+        });
+        if (outcome.kind === "ignore") {
+          // Auto-repeat keydown for an approval command: swallow it so the
+          // held key neither acts nor falls through to other handling.
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
-        composerRef.current?.toggleModelPicker();
+        if (outcome.kind === "no-pending") {
+          toastManager.add({ type: "info", title: "No pending approval" });
+        } else if (outcome.kind === "respond") {
+          onRespondToApprovalRef.current?.(outcome.requestId, outcome.decision);
+        }
+        // outcome.kind === "in-flight" → a decision is already being sent; drop.
         return;
       }
 
@@ -4500,6 +4531,8 @@ function ChatViewContent(props: ChatViewProps) {
     toggleRightPanel,
     toggleTerminalVisibility,
     composerRef,
+    pendingApprovals,
+    respondingRequestIds,
   ]);
 
   const onRevertToTurnCount = useCallback(
@@ -4973,30 +5006,39 @@ function ChatViewContent(props: ChatViewProps) {
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
+      // In-flight guard: never send a second decision for a request whose
+      // decision is already being submitted (or was just submitted this frame).
+      if (inFlightApprovalRequestIdsRef.current.has(requestId)) return;
+      inFlightApprovalRequestIdsRef.current.add(requestId);
 
       setRespondingRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
-      const result = await respondToThreadApproval({
-        environmentId,
-        input: {
-          threadId: activeThreadId,
-          requestId,
-          decision,
-        },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
-        setThreadError(
-          activeThreadId,
-          error instanceof Error ? error.message : "Failed to submit approval decision.",
-        );
+      try {
+        const result = await respondToThreadApproval({
+          environmentId,
+          input: {
+            threadId: activeThreadId,
+            requestId,
+            decision,
+          },
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          setThreadError(
+            activeThreadId,
+            error instanceof Error ? error.message : "Failed to submit approval decision.",
+          );
+        }
+        return result;
+      } finally {
+        inFlightApprovalRequestIdsRef.current.delete(requestId);
+        setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
       }
-      setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
-      return result;
     },
     [activeThreadId, environmentId, respondToThreadApproval, setThreadError],
   );
+  onRespondToApprovalRef.current = onRespondToApproval;
 
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {

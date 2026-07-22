@@ -219,6 +219,7 @@ import {
   WorkflowResolveBoardProposalResult,
   WorkflowRevertBoardProposalInput,
   WorkflowRevertBoardProposalResult,
+  WorkflowEventId,
   WORKFLOW_WS_METHODS,
 } from "./workflow.ts";
 
@@ -937,6 +938,19 @@ export const WsWorkflowMoveTicketRpc = Rpc.make(WORKFLOW_WS_METHODS.moveTicket, 
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });
 
+// Unpark recovery: compare-and-act on `parkedEventId` so a stale/concurrent
+// invocation is reported rather than silently moving the wrong ticket.
+export const WorkflowParkActionResult = Schema.Literals(["moved", "queued", "stale"]);
+export const WsWorkflowInvokeParkActionRpc = Rpc.make(WORKFLOW_WS_METHODS.invokeParkAction, {
+  payload: Schema.Struct({
+    ticketId: TicketId,
+    actionIndex: Schema.Int,
+    parkedEventId: WorkflowEventId,
+  }),
+  success: WorkflowParkActionResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
 export const WsWorkflowRunLaneRpc = Rpc.make(WORKFLOW_WS_METHODS.runLane, {
   payload: Schema.Struct({ ticketId: TicketId }),
   success: Schema.Void,
@@ -1165,19 +1179,16 @@ export const WsWorkflowListImportableWorkItemsRpc = Rpc.make(
   },
 );
 
-export const WsWorkflowImportWorkItemsRpc = Rpc.make(
-  WORKFLOW_WS_METHODS.importWorkItems,
-  {
-    payload: Schema.Struct({
-      boardId: BoardId,
-      sourceId: Schema.String,
-      externalIds: Schema.Array(Schema.String),
-      destinationLane: Schema.optional(LaneKey),
-    }),
-    success: ImportWorkItemsResult,
-    error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
-  },
-);
+export const WsWorkflowImportWorkItemsRpc = Rpc.make(WORKFLOW_WS_METHODS.importWorkItems, {
+  payload: Schema.Struct({
+    boardId: BoardId,
+    sourceId: Schema.String,
+    externalIds: Schema.Array(Schema.String),
+    destinationLane: Schema.optional(LaneKey),
+  }),
+  success: ImportWorkItemsResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
 
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
   payload: Schema.Struct({}),
@@ -1326,6 +1337,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowCreateTicketRpc,
   WsWorkflowEditTicketRpc,
   WsWorkflowMoveTicketRpc,
+  WsWorkflowInvokeParkActionRpc,
   WsWorkflowRunLaneRpc,
   WsWorkflowResolveApprovalRpc,
   WsWorkflowAnswerTicketStepRpc,

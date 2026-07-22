@@ -52,7 +52,18 @@ import {
   WORKFLOW_WS_METHODS,
   WorkflowSourceConfig,
   WorkSourceAutoPull,
+  WorkflowParkSubstate,
+  WorkflowParkTarget,
+  WorkflowRouteTarget,
+  isParkTarget,
+  WorkflowDryRunEnd,
+  WorkflowDryRunHop,
+  WorkflowDryRunResult,
+  WorkflowRouteDecisionView,
+  WorkflowTicketAttentionKind,
 } from "./workflow.ts";
+import { WorkflowTicketAttentionKind as RelayWorkflowTicketAttentionKind } from "./relay.ts";
+import { WsWorkflowInvokeParkActionRpc, WorkflowParkActionResult } from "./rpc.ts";
 
 const decodeTicketId = Schema.decodeUnknownEffect(TicketId);
 const decodeStepOutcome = Schema.decodeUnknownEffect(StepOutcome);
@@ -78,6 +89,10 @@ const decodeWorkflowGetBoardVersionResult = Schema.decodeUnknownEffect(
 const decodeWorkflowSaveBoardDefinitionResult = Schema.decodeUnknownEffect(
   WorkflowSaveBoardDefinitionResult,
 );
+const decodeWorkflowParkTarget = Schema.decodeUnknownEffect(WorkflowParkTarget);
+const decodeWorkflowRouteTarget = Schema.decodeUnknownEffect(WorkflowRouteTarget);
+const decodeWorkflowDryRunResult = Schema.decodeUnknownEffect(WorkflowDryRunResult);
+const decodeWorkflowRouteDecisionView = Schema.decodeUnknownEffect(WorkflowRouteDecisionView);
 
 describe("workflow ids", () => {
   it("brands a board id from a non-empty string", () => {
@@ -319,7 +334,12 @@ describe("WorkflowDefinition", () => {
       });
 
       const lane = decoded.lanes[0];
-      assert.equal(lane?.transitions?.[0]?.to, "needs_attention");
+      const transitionTo = lane?.transitions?.[0]?.to;
+      if (transitionTo === undefined || isParkTarget(transitionTo)) {
+        assert.fail("expected a plain lane-key transition target");
+      } else {
+        assert.equal(transitionTo, "needs_attention");
+      }
       assert.deepEqual(lane?.transitions?.[0]?.when, {
         "==": [{ var: "steps.review.output.verdict" }, "block"],
       });
@@ -2161,4 +2181,217 @@ describe("WorkflowSourceConfig autoPull", () => {
     assert.equal(s.enabled, true);
     assert.equal(s.autoPull, undefined);
   });
+});
+
+describe("Workflow park sub-states (WorkflowRouteTarget)", () => {
+  const boardWithParkTargets = {
+    name: "Park board",
+    lanes: [
+      {
+        key: "implement",
+        name: "Implement",
+        entry: "auto",
+        on: {
+          failure: { park: "issue", actions: [{ label: "Retry", to: "implement" }] },
+        },
+        transitions: [
+          {
+            when: true,
+            to: {
+              park: "waiting",
+              label: "Needs a decision",
+              actions: [{ label: "Continue", to: "review" }],
+            },
+          },
+        ],
+      },
+      { key: "review", name: "Review", entry: "manual" },
+    ],
+  } as const;
+
+  const decodeWorkflowDefinitionEncodedUnknown =
+    Schema.decodeUnknownEffect(WorkflowDefinitionEncoded);
+  const encodeWorkflowDefinitionEncoded = Schema.encodeUnknownEffect(WorkflowDefinitionEncoded);
+
+  it.effect("decodes and re-encodes a definition with park targets byte-equal", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeWorkflowDefinitionEncodedUnknown(boardWithParkTargets);
+      const encoded = yield* encodeWorkflowDefinitionEncoded(decoded);
+      assert.deepEqual(encoded, boardWithParkTargets);
+    }),
+  );
+
+  it.effect("WorkflowParkSubstate accepts issue and waiting only", () =>
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(WorkflowParkSubstate);
+      assert.equal(yield* decode("issue"), "issue");
+      assert.equal(yield* decode("waiting"), "waiting");
+      const rejected = yield* Effect.exit(decode("other"));
+      assert.strictEqual(rejected._tag, "Failure");
+    }),
+  );
+
+  it.effect("rejects a park target with empty actions", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.exit(decodeWorkflowParkTarget({ park: "issue", actions: [] }));
+      assert.strictEqual(result._tag, "Failure");
+    }),
+  );
+
+  it.effect("rejects an empty-actions park target embedded in a definition", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.exit(
+        decodeWorkflowDefinition({
+          name: "Park board",
+          lanes: [
+            {
+              key: "implement",
+              name: "Implement",
+              entry: "auto",
+              on: { failure: { park: "issue", actions: [] } },
+            },
+          ],
+        }),
+      );
+      assert.strictEqual(result._tag, "Failure");
+    }),
+  );
+
+  it.effect("decodes TicketParked and TicketExternalEventSkipped events", () =>
+    Effect.gen(function* () {
+      const parked = yield* decodeWorkflowEvent({
+        type: "TicketParked",
+        eventId: "evt-parked-1",
+        ticketId: "t-1",
+        streamVersion: 4,
+        occurredAt: "2026-07-22T00:00:04.000Z",
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "Tests failed twice",
+          parkOrigin: '{"src":"step","stepKey":"tests","fp":"abc123"}',
+          pipelineRunId: "pr-1",
+          actionsSnapshot: [{ label: "Retry", to: "implement" }],
+        },
+      });
+      assert.equal(parked.type, "TicketParked");
+      if (parked.type !== "TicketParked") {
+        assert.fail("expected TicketParked");
+      }
+      assert.equal(parked.payload.substate, "issue");
+      assert.equal(parked.payload.actionsSnapshot[0]?.to, "implement");
+
+      const skipped = yield* decodeWorkflowEvent({
+        type: "TicketExternalEventSkipped",
+        eventId: "evt-skipped-1",
+        ticketId: "t-1",
+        streamVersion: 5,
+        occurredAt: "2026-07-22T00:00:05.000Z",
+        payload: { eventName: "ci.passed", reason: "parked" },
+      });
+      assert.equal(skipped.type, "TicketExternalEventSkipped");
+      if (skipped.type !== "TicketExternalEventSkipped") {
+        assert.fail("expected TicketExternalEventSkipped");
+      }
+      assert.equal(skipped.payload.reason, "parked");
+    }),
+  );
+
+  it.effect("TicketStatus accepts parked", () =>
+    Effect.gen(function* () {
+      const status = yield* decodeTicketStatus("parked");
+      assert.equal(status, "parked");
+    }),
+  );
+
+  it("workflow.ts and relay.ts attention-kind literal lists match and include parked kinds", () => {
+    const workflowLiterals = [...WorkflowTicketAttentionKind.literals].sort();
+    const relayLiterals = [...RelayWorkflowTicketAttentionKind.literals].sort();
+    assert.deepEqual(workflowLiterals, relayLiterals);
+    assert.isTrue(workflowLiterals.includes("parked_issue"));
+    assert.isTrue(workflowLiterals.includes("parked_waiting"));
+  });
+
+  it.effect("WorkflowDryRunEnd accepts parked", () =>
+    Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(WorkflowDryRunEnd)("parked");
+      assert.equal(decoded, "parked");
+    }),
+  );
+
+  it.effect("WorkflowDryRunHop supports a park hop with no toLane", () =>
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(WorkflowDryRunHop);
+      const hop = yield* decode({
+        fromLane: "implement",
+        source: "step_on",
+        result: "failure",
+        park: { substate: "issue", label: "Issue encountered" },
+      });
+      assert.equal(hop.toLane, undefined);
+      assert.equal(hop.park?.substate, "issue");
+    }),
+  );
+
+  it.effect("WorkflowDryRunResult can end parked in the starting lane", () =>
+    Effect.gen(function* () {
+      const result = yield* decodeWorkflowDryRunResult({
+        startLane: "implement",
+        scenario: "failure",
+        hops: [
+          {
+            fromLane: "implement",
+            source: "step_on",
+            result: "failure",
+            park: { substate: "issue", label: "Issue encountered" },
+          },
+        ],
+        end: "parked",
+        endLane: "implement",
+        notes: [],
+      });
+      assert.equal(result.end, "parked");
+      assert.equal(result.hops[0]?.toLane, undefined);
+    }),
+  );
+
+  it.effect("WorkflowRouteDecisionView park variant round-trips with optional toLane", () =>
+    Effect.gen(function* () {
+      const view = yield* decodeWorkflowRouteDecisionView({
+        occurredAt: "2026-07-22T00:00:06.000Z",
+        fromLane: "implement",
+        source: "step_on",
+        park: { substate: "issue", label: "Issue encountered", reason: "Tests failed twice" },
+      });
+      assert.equal(view.toLane, undefined);
+      assert.equal(view.park?.substate, "issue");
+      assert.equal(view.park?.reason, "Tests failed twice");
+    }),
+  );
+
+  it.effect("isParkTarget narrows WorkflowRouteTarget", () =>
+    Effect.gen(function* () {
+      const laneTarget = yield* decodeWorkflowRouteTarget("implement");
+      const parkTarget = yield* decodeWorkflowRouteTarget({
+        park: "issue",
+        actions: [{ label: "Retry", to: "implement" }],
+      });
+      assert.isFalse(isParkTarget(laneTarget));
+      assert.isTrue(isParkTarget(parkTarget));
+    }),
+  );
+
+  it("invokeParkAction RPC is registered", () => {
+    assert.equal(WORKFLOW_WS_METHODS.invokeParkAction, "workflow.invokeParkAction");
+    assert.equal(WsWorkflowInvokeParkActionRpc._tag, "workflow.invokeParkAction");
+  });
+
+  it.effect("WorkflowParkActionResult accepts moved/queued/stale", () =>
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(WorkflowParkActionResult);
+      assert.equal(yield* decode("moved"), "moved");
+      assert.equal(yield* decode("queued"), "queued");
+      assert.equal(yield* decode("stale"), "stale");
+    }),
+  );
 });

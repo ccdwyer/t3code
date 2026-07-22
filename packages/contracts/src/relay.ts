@@ -30,6 +30,8 @@ export const WorkflowTicketAttentionKind = Schema.Literals([
   "waiting_for_approval",
   "waiting_for_input",
   "blocked",
+  "parked_issue",
+  "parked_waiting",
 ]);
 export type WorkflowTicketAttentionKind = typeof WorkflowTicketAttentionKind.Type;
 

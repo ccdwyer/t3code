@@ -25,6 +25,7 @@ export const WORKFLOW_WS_METHODS = {
   createTicket: "workflow.createTicket",
   editTicket: "workflow.editTicket",
   moveTicket: "workflow.moveTicket",
+  invokeParkAction: "workflow.invokeParkAction",
   runLane: "workflow.runLane",
   resolveApproval: "workflow.resolveApproval",
   answerTicketStep: "workflow.answerTicketStep",
@@ -140,10 +141,42 @@ export const WorkflowStepType = Schema.Union([
 ]);
 export type WorkflowStepType = typeof WorkflowStepType.Type;
 
+// A human-facing transition out of a lane, rendered as a button on tickets
+// in that lane ("Approve & land", "Send back", …). Purely declarative sugar
+// over moveTicket — the engine treats it like any manual move.
+export const WorkflowLaneAction = Schema.Struct({
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(48)),
+  to: LaneKey,
+  hint: Schema.optional(Schema.String.check(Schema.isMaxLength(160))),
+});
+export type WorkflowLaneAction = typeof WorkflowLaneAction.Type;
+
+export const WorkflowParkSubstate = Schema.Literals(["issue", "waiting"]);
+export type WorkflowParkSubstate = typeof WorkflowParkSubstate.Type;
+
+// A route target that parks the ticket in place instead of moving it to
+// another lane — see docs/superpowers/specs/2026-07-22-workflow-substates-design.md.
+export const WorkflowParkTarget = Schema.Struct({
+  park: WorkflowParkSubstate,
+  label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  // action.to stays LaneKey — parks cannot chain into another park.
+  actions: Schema.NonEmptyArray(WorkflowLaneAction),
+});
+export type WorkflowParkTarget = typeof WorkflowParkTarget.Type;
+
+// The union used everywhere a routing target was previously a bare LaneKey:
+// lane `on.*`, `transitions[].to`, `step.on.*`, and `lane.onEvent[].to`. A
+// bare LaneKey is back-compat for a plain lane move.
+export const WorkflowRouteTarget = Schema.Union([LaneKey, WorkflowParkTarget]);
+export type WorkflowRouteTarget = typeof WorkflowRouteTarget.Type;
+
+export const isParkTarget = (t: WorkflowRouteTarget): t is WorkflowParkTarget =>
+  typeof t !== "string";
+
 export const StepRouting = Schema.Struct({
-  success: Schema.optional(LaneKey),
-  failure: Schema.optional(LaneKey),
-  blocked: Schema.optional(LaneKey),
+  success: Schema.optional(WorkflowRouteTarget),
+  failure: Schema.optional(WorkflowRouteTarget),
+  blocked: Schema.optional(WorkflowRouteTarget),
 });
 export type StepRouting = typeof StepRouting.Type;
 
@@ -230,9 +263,9 @@ export const LaneEntry = Schema.Union([Schema.Literal("auto"), Schema.Literal("m
 export type LaneEntry = typeof LaneEntry.Type;
 
 export const LaneRouting = Schema.Struct({
-  success: Schema.optional(LaneKey),
-  failure: Schema.optional(LaneKey),
-  blocked: Schema.optional(LaneKey),
+  success: Schema.optional(WorkflowRouteTarget),
+  failure: Schema.optional(WorkflowRouteTarget),
+  blocked: Schema.optional(WorkflowRouteTarget),
 });
 export type LaneRouting = typeof LaneRouting.Type;
 
@@ -241,19 +274,9 @@ export type JsonLogicRule = typeof JsonLogicRule.Type;
 
 export const WorkflowLaneTransition = Schema.Struct({
   when: JsonLogicRule,
-  to: LaneKey,
+  to: WorkflowRouteTarget,
 });
 export type WorkflowLaneTransition = typeof WorkflowLaneTransition.Type;
-
-// A human-facing transition out of a lane, rendered as a button on tickets
-// in that lane ("Approve & land", "Send back", …). Purely declarative sugar
-// over moveTicket — the engine treats it like any manual move.
-export const WorkflowLaneAction = Schema.Struct({
-  label: TrimmedNonEmptyString.check(Schema.isMaxLength(48)),
-  to: LaneKey,
-  hint: Schema.optional(Schema.String.check(Schema.isMaxLength(160))),
-});
-export type WorkflowLaneAction = typeof WorkflowLaneAction.Type;
 
 // An external-event matcher: when a webhook event with this name correlates
 // to a ticket sitting in this lane (and the optional predicate over
@@ -261,7 +284,7 @@ export type WorkflowLaneAction = typeof WorkflowLaneAction.Type;
 export const WorkflowLaneEvent = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
   when: Schema.optional(JsonLogicRule),
-  to: LaneKey,
+  to: WorkflowRouteTarget,
 });
 export type WorkflowLaneEvent = typeof WorkflowLaneEvent.Type;
 
@@ -451,6 +474,7 @@ export const TicketStatus = Schema.Union([
   Schema.Literal("queued"),
   Schema.Literal("done"),
   Schema.Literal("failed"),
+  Schema.Literal("parked"),
 ]);
 export type TicketStatus = typeof TicketStatus.Type;
 
@@ -459,6 +483,8 @@ export const WorkflowTicketAttentionKind = Schema.Literals([
   "waiting_for_approval",
   "waiting_for_input",
   "blocked",
+  "parked_issue",
+  "parked_waiting",
 ]);
 export type WorkflowTicketAttentionKind = typeof WorkflowTicketAttentionKind.Type;
 
@@ -781,6 +807,26 @@ export const WorkflowEvent = Schema.Union([
       repo: Schema.String, // owner/name resolved at open time
     }),
   }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketParked"),
+    payload: Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.String,
+      reason: Schema.String,
+      parkOrigin: Schema.String, // JSON per spec: {src,key?,stepKey?,name?,fp}
+      pipelineRunId: Schema.optional(PipelineRunId),
+      actionsSnapshot: Schema.Array(WorkflowLaneAction), // display-only
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketExternalEventSkipped"),
+    payload: Schema.Struct({
+      eventName: Schema.String,
+      reason: Schema.Literal("parked"), // only cause in v1
+    }),
+  }),
 ]);
 export type WorkflowEvent = typeof WorkflowEvent.Type;
 
@@ -868,6 +914,21 @@ export const BoardTicketView = Schema.Struct({
   attentionReason: Schema.optional(Schema.String),
   // Current lane detail — present when the server includes it for attention views.
   currentLane: Schema.optional(WorkflowCurrentLaneView),
+  // Park-in-place details — present while status is "parked". `actions` is
+  // re-resolved from the current board definition at read time; absent means
+  // the definition changed and the park's actions are unavailable.
+  parked: Schema.optional(
+    Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.String,
+      reason: Schema.String,
+      parkedAt: Schema.String,
+      parkedEventId: WorkflowEventId,
+      actions: Schema.optional(Schema.Array(WorkflowLaneActionView)), // absent ⇒ unavailable
+    }),
+  ),
+  // What the agent is currently doing, for running tickets.
+  currentStepLabel: Schema.optional(Schema.String),
 });
 export type BoardTicketView = typeof BoardTicketView.Type;
 
@@ -1025,7 +1086,9 @@ export type WorkflowRouteStepSnapshotView = typeof WorkflowRouteStepSnapshotView
 export const WorkflowRouteDecisionView = Schema.Struct({
   occurredAt: IsoDateTime,
   fromLane: Schema.optional(LaneKey),
-  toLane: LaneKey,
+  // Absent for a park variant (see `park` below) — the ticket never left
+  // its lane, so there is no destination lane to report.
+  toLane: Schema.optional(LaneKey),
   source: Schema.Literals([
     "step_on",
     "lane_transition",
@@ -1040,6 +1103,15 @@ export const WorkflowRouteDecisionView = Schema.Struct({
   pipelineResult: Schema.optional(Schema.Literals(["success", "failure", "blocked"])),
   laneRunCount: Schema.optional(Schema.Int),
   steps: Schema.optional(Schema.Record(Schema.String, WorkflowRouteStepSnapshotView)),
+  // Present when this entry renders a `TicketParked` event rather than a
+  // `TicketRouteDecided` one — the ticket parked in place instead of moving.
+  park: Schema.optional(
+    Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.String,
+      reason: Schema.String,
+    }),
+  ),
 });
 export type WorkflowRouteDecisionView = typeof WorkflowRouteDecisionView.Type;
 
@@ -1179,7 +1251,8 @@ export type WorkflowDryRunScenario = typeof WorkflowDryRunScenario.Type;
 
 export const WorkflowDryRunHop = Schema.Struct({
   fromLane: LaneKey,
-  toLane: LaneKey,
+  // Absent for a park hop (see `park` below) — the walk stayed in `fromLane`.
+  toLane: Schema.optional(LaneKey),
   source: Schema.Literals(["step_on", "lane_transition", "lane_on"]),
   // Which pipeline step's on-route decided the hop (step_on only).
   viaStepKey: Schema.optional(StepKey),
@@ -1188,6 +1261,13 @@ export const WorkflowDryRunHop = Schema.Struct({
   // NonNegativeInt, so the constraint is consistent across the conceptual field.
   matchedTransitionIndex: Schema.optional(Schema.Int),
   result: WorkflowDryRunScenario,
+  // Present when this hop parks the ticket in place instead of moving it.
+  park: Schema.optional(
+    Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.optional(Schema.String),
+    }),
+  ),
 });
 export type WorkflowDryRunHop = typeof WorkflowDryRunHop.Type;
 
@@ -1200,6 +1280,8 @@ export const WorkflowDryRunEnd = Schema.Literals([
   "no_route",
   // The walk kept cycling and hit the hop cap — likely an unbounded loop.
   "cycle_cap",
+  // The walk ended by parking the ticket in place in `endLane`.
+  "parked",
 ]);
 export type WorkflowDryRunEnd = typeof WorkflowDryRunEnd.Type;
 

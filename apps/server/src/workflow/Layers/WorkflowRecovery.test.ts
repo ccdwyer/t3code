@@ -3119,4 +3119,213 @@ layer("WorkflowRecovery", (it) => {
       ]);
     }),
   );
+
+  // Task 9 (A.5): resumeStrandedPipelines' SQL join requires
+  // `pipeline.lane_entry_token = ticket.current_lane_entry_token`. A parked
+  // ticket always has a NULL current_lane_entry_token (the park-in-place
+  // invariant), and `x = NULL` is never true in SQL — so a pipeline left
+  // 'running' behind a since-parked ticket is excluded by construction, never
+  // resumed. A sibling ticket whose token still matches its pipeline row is
+  // the positive control proving the query itself still works.
+  it.effect(
+    "resumeStrandedPipelines ignores a parked ticket's stranded pipeline but resumes a live one",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const recovery = yield* WorkflowRecovery;
+        completedRecoveredSteps.length = 0;
+
+        yield* sql`
+          INSERT INTO projection_board (
+            board_id,
+            project_id,
+            name,
+            workflow_file_path,
+            workflow_version_hash,
+            max_concurrent_tickets
+          )
+          VALUES (
+            'board-park-stranded',
+            'project-park-stranded',
+            'Park Stranded',
+            '.t3/boards/park-stranded.json',
+            'hash-park-stranded',
+            2
+          )
+        `;
+
+        // Ticket A: parked — token NULL by the park invariant.
+        yield* sql`
+          INSERT INTO projection_ticket (
+            ticket_id,
+            board_id,
+            title,
+            current_lane_key,
+            status,
+            current_lane_entry_token,
+            parked_substate,
+            parked_label,
+            parked_reason,
+            parked_at,
+            parked_event_id,
+            park_origin,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            'ticket-park-stranded-a',
+            'board-park-stranded',
+            'Parked ticket',
+            'impl',
+            'parked',
+            NULL,
+            'issue',
+            'Hit a snag',
+            'code blew up',
+            '2026-07-22T00:00:02.000Z',
+            'evt-park-stranded-a',
+            '{"src":"step","stepKey":"code","key":"failure","fp":"fp-a"}',
+            '2026-07-22T00:00:00.000Z',
+            '2026-07-22T00:00:02.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_pipeline_run (
+            pipeline_run_id,
+            ticket_id,
+            lane_key,
+            lane_entry_token,
+            status,
+            started_at
+          )
+          VALUES (
+            'pipeline-park-stranded-a',
+            'ticket-park-stranded-a',
+            'impl',
+            'tok-park-stranded-a',
+            'running',
+            '2026-07-22T00:00:00.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_step_run (
+            step_run_id,
+            pipeline_run_id,
+            ticket_id,
+            step_key,
+            step_type,
+            status,
+            error,
+            started_at
+          )
+          VALUES (
+            'step-park-stranded-a',
+            'pipeline-park-stranded-a',
+            'ticket-park-stranded-a',
+            'code',
+            'agent',
+            'completed',
+            NULL,
+            '2026-07-22T00:00:00.000Z'
+          )
+        `;
+
+        // Ticket B: still genuinely running — the positive control. Its
+        // pipeline's lane_entry_token still matches the ticket's current
+        // token, so the join must find and resume it.
+        yield* sql`
+          INSERT INTO projection_ticket (
+            ticket_id,
+            board_id,
+            title,
+            current_lane_key,
+            status,
+            current_lane_entry_token,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            'ticket-park-stranded-b',
+            'board-park-stranded',
+            'Still running ticket',
+            'impl',
+            'running',
+            'tok-park-stranded-b',
+            '2026-07-22T00:00:00.000Z',
+            '2026-07-22T00:00:01.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_pipeline_run (
+            pipeline_run_id,
+            ticket_id,
+            lane_key,
+            lane_entry_token,
+            status,
+            started_at
+          )
+          VALUES (
+            'pipeline-park-stranded-b',
+            'ticket-park-stranded-b',
+            'impl',
+            'tok-park-stranded-b',
+            'running',
+            '2026-07-22T00:00:00.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_step_run (
+            step_run_id,
+            pipeline_run_id,
+            ticket_id,
+            step_key,
+            step_type,
+            status,
+            error,
+            retryable,
+            started_at
+          )
+          VALUES (
+            'step-park-stranded-b',
+            'pipeline-park-stranded-b',
+            'ticket-park-stranded-b',
+            'code',
+            'agent',
+            'failed',
+            'still running crashed',
+            1,
+            '2026-07-22T00:00:00.000Z'
+          )
+        `;
+
+        yield* recovery.recover();
+
+        const parkedCalls = completedRecoveredSteps.filter(
+          (call) => call.stepRunId === "step-park-stranded-a",
+        );
+        assert.deepEqual(parkedCalls, []);
+
+        const liveCalls = completedRecoveredSteps.filter(
+          (call) => call.stepRunId === "step-park-stranded-b",
+        );
+        assert.deepEqual(liveCalls, [
+          {
+            stepRunId: "step-park-stranded-b",
+            result: { _tag: "failed", error: "still running crashed" },
+          },
+        ]);
+
+        // The parked ticket's own projection state is untouched by recovery.
+        const parkedTicketRows = yield* sql<{
+          readonly status: string;
+          readonly currentLaneEntryToken: string | null;
+        }>`
+          SELECT status, current_lane_entry_token AS "currentLaneEntryToken"
+          FROM projection_ticket
+          WHERE ticket_id = 'ticket-park-stranded-a'
+        `;
+        assert.equal(parkedTicketRows[0]?.status, "parked");
+        assert.equal(parkedTicketRows[0]?.currentLaneEntryToken, null);
+      }),
+  );
 });

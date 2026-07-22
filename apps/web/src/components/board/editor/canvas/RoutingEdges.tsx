@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 
 import type { WorkflowDefinitionEncoded } from "@t3tools/contracts";
 
-import type { WorkflowEditorSelection } from "~/workflow/editorModel";
+import { isParkRouteTarget, type WorkflowEditorSelection } from "~/workflow/editorModel";
 
 import { cn } from "~/lib/utils";
 
@@ -514,7 +514,13 @@ export function deriveRoutingEdges(
       const stepKey = String(step.key);
       for (const kind of routeKinds) {
         const targetLaneKey = step.on?.[kind];
-        if (!targetLaneKey || !laneNames.has(String(targetLaneKey))) {
+        // Park targets stay on the lane (rendered as badges); they never draw
+        // a lane-to-lane edge.
+        if (
+          !targetLaneKey ||
+          isParkRouteTarget(targetLaneKey) ||
+          !laneNames.has(String(targetLaneKey))
+        ) {
           continue;
         }
         const targetKey = String(targetLaneKey);
@@ -538,6 +544,10 @@ export function deriveRoutingEdges(
     }
 
     for (const [index, transition] of (lane.transitions ?? []).entries()) {
+      // Park transitions render as lane badges, not edges.
+      if (isParkRouteTarget(transition.to)) {
+        continue;
+      }
       const targetKey = String(transition.to);
       if (!laneNames.has(targetKey)) {
         continue;
@@ -589,7 +599,11 @@ export function deriveRoutingEdges(
 
     for (const kind of routeKinds) {
       const targetLaneKey = lane.on?.[kind];
-      if (!targetLaneKey || !laneNames.has(String(targetLaneKey))) {
+      if (
+        !targetLaneKey ||
+        isParkRouteTarget(targetLaneKey) ||
+        !laneNames.has(String(targetLaneKey))
+      ) {
         continue;
       }
       const targetKey = String(targetLaneKey);

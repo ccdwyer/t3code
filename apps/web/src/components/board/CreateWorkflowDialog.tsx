@@ -41,7 +41,20 @@ import {
   generateWorkflowDraft,
   listBoardTemplates,
 } from "~/workflow/boardRpc";
-import { lintErrorKey } from "~/workflow/editorModel";
+import {
+  isParkRouteTarget,
+  lintErrorKey,
+  type WorkflowRouteTargetEncoded,
+} from "~/workflow/editorModel";
+
+// Route targets in this read-only preview are either a bare lane key or a park
+// object; render parks as a short summary instead of "[object Object]".
+function formatRouteTarget(target: WorkflowRouteTargetEncoded | undefined): string {
+  if (isParkRouteTarget(target)) {
+    return `park (${target.park})${target.label ? `: ${target.label}` : ""}`;
+  }
+  return String(target);
+}
 import { resolveRecentAgent } from "~/workflow/resolveRecentAgent";
 
 import { ImportBoardDialog } from "./ImportBoardDialog";
@@ -1163,10 +1176,10 @@ function DraftSummary({ definition }: { readonly definition: WorkflowDefinitionE
                   <ul className="space-y-0.5">
                     {transitions.map((transition, transitionIndex) => (
                       <li
-                        key={`${String(transition.to)}-${transitionIndex}`}
+                        key={`${formatRouteTarget(transition.to)}-${transitionIndex}`}
                         className="text-xs text-foreground"
                       >
-                        → {String(transition.to)}
+                        → {formatRouteTarget(transition.to)}
                         {transition.when !== undefined ? (
                           <span className="font-mono opacity-70">
                             {" when "}
@@ -1205,7 +1218,7 @@ function DraftSummary({ definition }: { readonly definition: WorkflowDefinitionE
                   {laneOnEntries.map((k, i) => (
                     <span key={k}>
                       {i > 0 ? ", " : ""}
-                      {k} → {String(laneOn?.[k])}
+                      {k} → {formatRouteTarget(laneOn?.[k])}
                     </span>
                   ))}
                 </p>
@@ -1219,7 +1232,7 @@ function DraftSummary({ definition }: { readonly definition: WorkflowDefinitionE
                       <li key={`${String(ev.name)}-${evIndex}`} className="text-xs text-foreground">
                         <span className="font-mono">{String(ev.name)}</span>
                         {" → "}
-                        {String(ev.to)}
+                        {formatRouteTarget(ev.to)}
                         {ev.when !== undefined ? (
                           <span className="font-mono opacity-70">
                             {" when "}

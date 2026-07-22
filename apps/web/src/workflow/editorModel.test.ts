@@ -13,32 +13,42 @@ import {
   addLane,
   addLaneAction,
   addLaneEvent,
+  addParkAction,
   addStep,
   addTransition,
   adjustSelectionAfterTransitionRemoval,
   canonicalizeDefinitionJson,
+  collectLaneParkBadges,
   createWorkflowEditorModel,
   discardWorkflowChanges,
+  isParkRouteTarget,
   loadRevertedDefinition,
   markWorkflowSaved,
   normalizeSelection,
+  parseRouteSelectValue,
   removeLane,
   removeLaneAction,
   removeLaneEvent,
+  removeParkAction,
   removeStep,
   removeTransition,
   renameLane,
   reorderStep,
+  routeTargetSelectValue,
   setLaneColor,
   setLaneEntry,
+  setRouteTargetKind,
   updateLaneAction,
   updateLaneEvent,
+  updateParkAction,
+  updateParkTarget,
   setLaneOn,
   setLaneTerminal,
   setLaneWipLimit,
   setWorkflowLintErrors,
   updateStep,
   updateTransition,
+  type RouteTargetPath,
   type WorkflowEditorSelection,
 } from "./editorModel";
 
@@ -513,4 +523,204 @@ describe("lane actions", () => {
     model = updateLaneAction(model, "review", 5, { to: "land" });
     expect(model.definition.lanes[0]?.actions).toEqual(snapshot);
   });
+});
+
+describe("park-target editing", () => {
+  const laneOf = (model: ReturnType<typeof createWorkflowEditorModel>, key: string) =>
+    model.definition.lanes.find((lane) => lane.key === key);
+  const transitionTarget = (model: ReturnType<typeof createWorkflowEditorModel>, key: string) =>
+    laneOf(model, key)?.transitions?.[0]?.to;
+  const transitionPath = (laneKey: string): RouteTargetPath => ({
+    site: "transition",
+    laneKey,
+    index: 0,
+  });
+
+  const withParkedTransition = () => {
+    let model = createWorkflowEditorModel(baseDefinition);
+    model = addTransition(model, "run");
+    model = setRouteTargetKind(model, transitionPath("run"), "park-issue");
+    return model;
+  };
+
+  it("select-value helpers map parks to distinct sentinels", () => {
+    expect(routeTargetSelectValue("done")).toBe("done");
+    expect(routeTargetSelectValue(undefined)).toBeUndefined();
+    expect(routeTargetSelectValue({ park: "issue", actions: [{ label: "R", to: "run" }] })).toBe(
+      "__park_issue",
+    );
+    expect(routeTargetSelectValue({ park: "waiting", actions: [{ label: "R", to: "run" }] })).toBe(
+      "__park_waiting",
+    );
+    expect(parseRouteSelectValue("")).toEqual({ kind: "clear" });
+    expect(parseRouteSelectValue("done")).toEqual({ kind: "lane", laneKey: "done" });
+    expect(parseRouteSelectValue("__park_issue")).toEqual({ kind: "park", substate: "issue" });
+    expect(parseRouteSelectValue("__park_waiting")).toEqual({ kind: "park", substate: "waiting" });
+  });
+
+  it("seeds a minimal park with a Retry action back to the owning lane", () => {
+    const model = withParkedTransition();
+    expect(transitionTarget(model, "run")).toEqual({
+      park: "issue",
+      actions: [{ label: "Retry", to: "run" }],
+    });
+  });
+
+  it("preserves the park object when a sibling transition field (when) is edited", () => {
+    // The corruption case both plan reviewers flagged: editing `when` must not
+    // clobber the `to` park object.
+    let model = withParkedTransition();
+    const before = transitionTarget(model, "run");
+    model = updateTransition(model, "run", 0, { when: { "==": [{ var: "x" }, 1] } });
+    expect(laneOf(model, "run")?.transitions?.[0]?.when).toEqual({ "==": [{ var: "x" }, 1] });
+    expect(transitionTarget(model, "run")).toEqual(before);
+  });
+
+  it("toggles substate while preserving label and actions, and swaps park↔lane", () => {
+    const path = transitionPath("run");
+    let model = withParkedTransition();
+    model = updateParkTarget(model, path, { label: "Needs a fix" });
+    model = updateParkAction(model, path, 0, { label: "Try again", hint: "rerun the lane" });
+    model = addParkAction(model, path);
+
+    model = setRouteTargetKind(model, path, "park-waiting");
+    const toggled = transitionTarget(model, "run");
+    expect(isParkRouteTarget(toggled)).toBe(true);
+    if (isParkRouteTarget(toggled)) {
+      expect(toggled.park).toBe("waiting");
+      expect(toggled.label).toBe("Needs a fix");
+      expect(toggled.actions).toHaveLength(2);
+      expect(toggled.actions[0]).toEqual({ label: "Try again", to: "run", hint: "rerun the lane" });
+    }
+
+    model = setRouteTargetKind(model, path, "lane");
+    // park→lane collapses to the first action's target.
+    expect(transitionTarget(model, "run")).toBe("run");
+
+    model = setRouteTargetKind(model, path, "park-issue");
+    expect(isParkRouteTarget(transitionTarget(model, "run"))).toBe(true);
+  });
+
+  it("adds, edits, clears the hint, and enforces at least one park action", () => {
+    const path = transitionPath("run");
+    let model = withParkedTransition();
+
+    // Removing the only action is a no-op (min 1).
+    model = removeParkAction(model, path, 0);
+    const single = transitionTarget(model, "run");
+    expect(isParkRouteTarget(single) && single.actions).toHaveLength(1);
+
+    model = updateParkAction(model, path, 0, { label: "Retry now", to: "queue", hint: "again" });
+    const edited = transitionTarget(model, "run");
+    expect(isParkRouteTarget(edited) && edited.actions[0]).toEqual({
+      label: "Retry now",
+      to: "queue",
+      hint: "again",
+    });
+
+    model = updateParkAction(model, path, 0, { hint: "" });
+    const cleared = transitionTarget(model, "run");
+    expect(isParkRouteTarget(cleared) && cleared.actions[0]).toEqual({
+      label: "Retry now",
+      to: "queue",
+    });
+
+    model = addParkAction(model, path);
+    model = removeParkAction(model, path, 0);
+    const remaining = transitionTarget(model, "run");
+    expect(isParkRouteTarget(remaining) && remaining.actions).toHaveLength(1);
+  });
+
+  it("prunes park actions pointing at a removed lane and drops emptied parks", () => {
+    const path = transitionPath("run");
+    let model = withParkedTransition();
+    model = updateParkAction(model, path, 0, { to: "queue" });
+    model = addParkAction(model, path);
+    model = updateParkAction(model, path, 1, { to: "done" });
+
+    // Removing "done" prunes only its action; the park survives.
+    model = removeLane(model, "done");
+    expect(transitionTarget(model, "run")).toEqual({
+      park: "issue",
+      actions: [{ label: "Retry", to: "queue" }],
+    });
+
+    // Removing "queue" empties the park's actions, so the whole transition is
+    // dropped — mirroring how a bare dangling transition target is removed.
+    model = removeLane(model, "queue");
+    expect(laneOf(model, "run")?.transitions).toBeUndefined();
+  });
+
+  it("clears a lane on.* position when its park empties on lane removal", () => {
+    const path: RouteTargetPath = { site: "laneOn", laneKey: "run", kind: "failure" };
+    let model = createWorkflowEditorModel(baseDefinition);
+    model = setRouteTargetKind(model, path, "park-issue");
+    model = updateParkAction(model, path, 0, { to: "done" });
+    model = removeLane(model, "done");
+    expect(laneOf(model, "run")?.on?.failure).toBeUndefined();
+  });
+
+  it("collects one badge per park target across every routing origin", () => {
+    let model = createWorkflowEditorModel(baseDefinition);
+    model = setRouteTargetKind(
+      model,
+      { site: "laneOn", laneKey: "run", kind: "failure" },
+      "park-issue",
+    );
+    model = updateParkTarget(
+      model,
+      { site: "laneOn", laneKey: "run", kind: "failure" },
+      {
+        label: "Lane parked",
+      },
+    );
+    model = addTransition(model, "run");
+    model = setRouteTargetKind(model, transitionPath("run"), "park-waiting");
+    model = setRouteTargetKind(
+      model,
+      { site: "stepOn", laneKey: "run", stepKey: "review", kind: "failure" },
+      "park-issue",
+    );
+
+    const badges = collectLaneParkBadges(laneOf(model, "run")!);
+    expect(badges).toHaveLength(3);
+    expect(badges).toContainEqual(
+      expect.objectContaining({
+        substate: "issue",
+        label: "Lane parked",
+        selection: { kind: "lane", laneKey: "run" },
+      }),
+    );
+    expect(badges).toContainEqual(
+      expect.objectContaining({
+        substate: "waiting",
+        selection: { kind: "transition", laneKey: "run", index: 0 },
+      }),
+    );
+    expect(badges).toContainEqual(
+      expect.objectContaining({
+        substate: "issue",
+        selection: { kind: "step", laneKey: "run", stepKey: "review" },
+      }),
+    );
+  });
+
+  it.effect("round-trips a park built via the mutators through the schema decode", () =>
+    Effect.gen(function* () {
+      const path = transitionPath("run");
+      let model = withParkedTransition();
+      model = updateParkTarget(model, path, { label: "Needs a human" });
+      model = updateParkAction(model, path, 0, {
+        label: "Retry",
+        to: "run",
+        hint: "rerun the lane",
+      });
+      model = addParkAction(model, path);
+      model = updateParkAction(model, path, 1, { label: "Send back", to: "queue" });
+      // Decoding through WorkflowDefinition enforces the park union
+      // (non-empty actions, valid substate, lane-key targets). Full
+      // lintWorkflowDefinition coverage lives in the server package (Task 10).
+      yield* expectDecodable(model.definition);
+    }),
+  );
 });

@@ -1,5 +1,9 @@
 import { LaneKey, StepKey, WorkflowDefinition } from "@t3tools/contracts";
-import type { WorkflowDefinitionEncoded, WorkflowLintError } from "@t3tools/contracts";
+import type {
+  WorkflowDefinitionEncoded,
+  WorkflowLintError,
+  WorkflowParkSubstate,
+} from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
@@ -21,19 +25,76 @@ type MutableWorkflowStep = Mutable<WorkflowStepEncoded>;
 // string, or a park target object (park objects pass through untouched; no
 // stored definition can contain one yet, see plan Task 1b).
 type MutableWorkflowRouteTarget = NonNullable<MutableWorkflowLane["transitions"]>[number]["to"];
+// The park-object arm of the route-target union (encoded, mutable): everything
+// that is not a bare lane-key string. Its `actions` decode as a non-empty array.
+type MutableWorkflowParkTarget = Exclude<MutableWorkflowRouteTarget, string>;
 type MutableWorkflowLaneTransition = NonNullable<MutableWorkflowLane["transitions"]>[number];
 type MutableWorkflowLaneEvent = NonNullable<MutableWorkflowLane["onEvent"]>[number];
 // Same route-target shape as it reads on the real (readonly, tuple-preserving)
 // Encoded lane — what RoutingEditor/StepFields pass in from `lane.on`/`step.on`.
-type WorkflowRouteTargetEncoded = NonNullable<WorkflowLaneEncoded["transitions"]>[number]["to"];
+export type WorkflowRouteTargetEncoded = NonNullable<
+  WorkflowLaneEncoded["transitions"]
+>[number]["to"];
+// The park arm as it reads on the readonly Encoded lane — the sub-editor's prop.
+export type WorkflowParkTargetEncoded = Exclude<WorkflowRouteTargetEncoded, string>;
 
-// Shared by the lane-level and step-level route selects (RoutingEditor,
-// StepFields): a plain lane-key target renders as-is; a park target renders
-// as "no lane selected" until it has a dedicated editor.
-// TODO(park): Task 18 replaces this with real park-target editing.
+export const PARK_SELECT_VALUES = { issue: "__park_issue", waiting: "__park_waiting" } as const;
+
+// True when a route target parks in place (a park object) rather than moving
+// the ticket to a bare lane key.
+export const isParkRouteTarget = (
+  target: WorkflowRouteTargetEncoded | MutableWorkflowRouteTarget | undefined,
+): target is WorkflowParkTargetEncoded => typeof target === "object" && target !== null;
+
+// Value a route <select> shows for a target: the lane key for a bare move, or
+// a namespaced park sentinel for a park target (distinct from any lane key so
+// selecting one is unambiguous). Undefined ("No route") when unset.
 export const routeTargetSelectValue = (
   target: WorkflowRouteTargetEncoded | MutableWorkflowRouteTarget | undefined,
-): string | undefined => (typeof target === "string" ? target : undefined);
+): string | undefined => {
+  if (target === undefined) {
+    return undefined;
+  }
+  if (typeof target === "string") {
+    return target;
+  }
+  return target.park === "issue" ? PARK_SELECT_VALUES.issue : PARK_SELECT_VALUES.waiting;
+};
+
+// A route <select> can resolve to: clearing the route, a bare lane move, or a
+// park target of a given substate.
+export type RouteSelectChoice =
+  | { readonly kind: "clear" }
+  | { readonly kind: "lane"; readonly laneKey: string }
+  | { readonly kind: "park"; readonly substate: WorkflowParkSubstate };
+
+export const parseRouteSelectValue = (value: string): RouteSelectChoice => {
+  if (value === "") {
+    return { kind: "clear" };
+  }
+  if (value === PARK_SELECT_VALUES.issue) {
+    return { kind: "park", substate: "issue" };
+  }
+  if (value === PARK_SELECT_VALUES.waiting) {
+    return { kind: "park", substate: "waiting" };
+  }
+  return { kind: "lane", laneKey: value };
+};
+
+// The four routing positions a target lives at. The park mutators and the
+// shared editor field address any of them uniformly.
+export type RouteTargetPath =
+  | { readonly site: "laneOn"; readonly laneKey: string; readonly kind: LaneRoutingKind }
+  | { readonly site: "transition"; readonly laneKey: string; readonly index: number }
+  | { readonly site: "laneEvent"; readonly laneKey: string; readonly index: number }
+  | {
+      readonly site: "stepOn";
+      readonly laneKey: string;
+      readonly stepKey: string;
+      readonly kind: LaneRoutingKind;
+    };
+
+export type RouteTargetKind = "lane" | "park-issue" | "park-waiting";
 
 export interface WorkflowEditorModel {
   readonly definition: WorkflowDefinitionEncoded;
@@ -272,16 +333,43 @@ export const addLane = (model: WorkflowEditorModel): WorkflowEditorModel =>
     definition.lanes.push({ key: LaneKey.make(key), name: "New lane", entry: "manual" });
   });
 
+// Rewrite a route target after `removedLaneKey` is deleted. A bare target
+// pointing at the removed lane, or a park whose actions all pointed at it,
+// collapses to `undefined` — the caller then drops that routing position
+// (clears `on.*`, removes the transition/event) exactly as it does for a bare
+// dangling target. A park that keeps at least one action survives with the
+// dangling actions pruned.
+const resolveTargetAfterLaneRemoval = (
+  target: MutableWorkflowRouteTarget | undefined,
+  removedLaneKey: string,
+): MutableWorkflowRouteTarget | undefined => {
+  if (target === undefined) {
+    return undefined;
+  }
+  if (typeof target === "string") {
+    return target === removedLaneKey ? undefined : target;
+  }
+  const actions = target.actions.filter((action) => action.to !== removedLaneKey);
+  return actions.length === 0 ? undefined : { ...target, actions };
+};
+
 export const removeLane = (model: WorkflowEditorModel, laneKey: string): WorkflowEditorModel =>
   mutateDefinition(model, (definition) => {
     definition.lanes = definition.lanes.filter((lane) => lane.key !== laneKey);
     for (const lane of definition.lanes) {
       lane.on = compactOn({
-        success: lane.on?.success === laneKey ? undefined : lane.on?.success,
-        failure: lane.on?.failure === laneKey ? undefined : lane.on?.failure,
-        blocked: lane.on?.blocked === laneKey ? undefined : lane.on?.blocked,
+        success: resolveTargetAfterLaneRemoval(lane.on?.success, laneKey),
+        failure: resolveTargetAfterLaneRemoval(lane.on?.failure, laneKey),
+        blocked: resolveTargetAfterLaneRemoval(lane.on?.blocked, laneKey),
       });
-      lane.transitions = lane.transitions?.filter((transition) => transition.to !== laneKey);
+      lane.transitions = lane.transitions
+        ?.map((transition): MutableWorkflowLaneTransition | undefined => {
+          const to = resolveTargetAfterLaneRemoval(transition.to, laneKey);
+          return to === undefined ? undefined : { ...transition, to };
+        })
+        .filter(
+          (transition): transition is MutableWorkflowLaneTransition => transition !== undefined,
+        );
       if (lane.transitions?.length === 0) {
         delete lane.transitions;
       }
@@ -289,15 +377,20 @@ export const removeLane = (model: WorkflowEditorModel, laneKey: string): Workflo
       if (lane.actions?.length === 0) {
         delete lane.actions;
       }
-      lane.onEvent = lane.onEvent?.filter((event) => event.to !== laneKey);
+      lane.onEvent = lane.onEvent
+        ?.map((event): MutableWorkflowLaneEvent | undefined => {
+          const to = resolveTargetAfterLaneRemoval(event.to, laneKey);
+          return to === undefined ? undefined : { ...event, to };
+        })
+        .filter((event): event is MutableWorkflowLaneEvent => event !== undefined);
       if (lane.onEvent?.length === 0) {
         delete lane.onEvent;
       }
       for (const step of lane.pipeline ?? []) {
         step.on = compactOn({
-          success: step.on?.success === laneKey ? undefined : step.on?.success,
-          failure: step.on?.failure === laneKey ? undefined : step.on?.failure,
-          blocked: step.on?.blocked === laneKey ? undefined : step.on?.blocked,
+          success: resolveTargetAfterLaneRemoval(step.on?.success, laneKey),
+          failure: resolveTargetAfterLaneRemoval(step.on?.failure, laneKey),
+          blocked: resolveTargetAfterLaneRemoval(step.on?.blocked, laneKey),
         });
       }
     }
@@ -509,12 +602,17 @@ export const setLaneOn = (
   model: WorkflowEditorModel,
   laneKey: string,
   kind: LaneRoutingKind,
-  targetLaneKey: string | undefined,
+  target: MutableWorkflowRouteTarget | undefined,
 ): WorkflowEditorModel =>
   updateLane(model, laneKey, (lane) => {
     lane.on = compactOn({
       ...lane.on,
-      [kind]: targetLaneKey === undefined ? undefined : LaneKey.make(targetLaneKey),
+      [kind]:
+        target === undefined
+          ? undefined
+          : typeof target === "string"
+            ? LaneKey.make(target)
+            : target,
     });
   });
 
@@ -607,3 +705,222 @@ export const removeLaneEvent = (
       delete lane.onEvent;
     }
   });
+
+// ── Park-target editing ────────────────────────────────────────────────────
+// One reader/writer over all four routing positions. `update` receives the
+// current target and returns the next one; for the required `transition.to` /
+// `onEvent.to` positions a returned `undefined` is ignored (they cannot be
+// cleared), while `on.*` positions clear on `undefined` via `compactOn`.
+const mutateRouteTargetAt = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+  update: (
+    current: MutableWorkflowRouteTarget | undefined,
+    lane: MutableWorkflowLane,
+    definition: MutableWorkflowDefinition,
+  ) => MutableWorkflowRouteTarget | undefined,
+): WorkflowEditorModel =>
+  updateLane(model, path.laneKey, (lane, definition) => {
+    if (path.site === "laneOn") {
+      lane.on = compactOn({
+        ...lane.on,
+        [path.kind]: update(lane.on?.[path.kind], lane, definition),
+      });
+      return;
+    }
+    if (path.site === "stepOn") {
+      const step = lane.pipeline?.find((candidate) => candidate.key === path.stepKey);
+      if (!step) {
+        return;
+      }
+      step.on = compactOn({
+        ...step.on,
+        [path.kind]: update(step.on?.[path.kind], lane, definition),
+      });
+      return;
+    }
+    if (path.site === "transition") {
+      const transition = lane.transitions?.[path.index];
+      if (!transition) {
+        return;
+      }
+      const next = update(transition.to, lane, definition);
+      if (next !== undefined) {
+        transition.to = next;
+      }
+      return;
+    }
+    const event = lane.onEvent?.[path.index];
+    if (!event) {
+      return;
+    }
+    const next = update(event.to, lane, definition);
+    if (next !== undefined) {
+      event.to = next;
+    }
+  });
+
+const firstOtherLaneKey = (
+  definition: MutableWorkflowDefinition,
+  laneKey: string,
+): string | undefined => definition.lanes.find((candidate) => candidate.key !== laneKey)?.key;
+
+// Write a concrete target (bare lane move) or clear the position. Park objects
+// are set via `setRouteTargetKind`.
+export const setRouteTarget = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+  target: string | undefined,
+): WorkflowEditorModel =>
+  mutateRouteTargetAt(model, path, () => (target === undefined ? undefined : LaneKey.make(target)));
+
+// Swap the target between a bare lane move and a park substate. lane→park seeds
+// a minimal park with a single "Retry" action back to the owning lane;
+// park→park preserves the existing label + actions (substate toggle);
+// park→lane falls back to the first action's target, else another lane.
+export const setRouteTargetKind = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+  kind: RouteTargetKind,
+): WorkflowEditorModel =>
+  mutateRouteTargetAt(model, path, (current, lane, definition) => {
+    const laneKey = String(lane.key);
+    if (kind === "lane") {
+      if (current !== undefined && typeof current !== "string") {
+        const firstActionTo = current.actions[0]?.to;
+        return LaneKey.make(
+          (firstActionTo === undefined ? undefined : String(firstActionTo)) ??
+            firstOtherLaneKey(definition, laneKey) ??
+            laneKey,
+        );
+      }
+      return current ?? LaneKey.make(firstOtherLaneKey(definition, laneKey) ?? laneKey);
+    }
+    const substate: WorkflowParkSubstate = kind === "park-issue" ? "issue" : "waiting";
+    if (current !== undefined && typeof current !== "string") {
+      return { ...current, park: substate };
+    }
+    const seeded: MutableWorkflowParkTarget = {
+      park: substate,
+      actions: [{ label: "Retry", to: LaneKey.make(laneKey) }],
+    };
+    return seeded;
+  });
+
+export const updateParkTarget = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+  patch: { readonly label?: string | undefined },
+): WorkflowEditorModel =>
+  mutateRouteTargetAt(model, path, (current) => {
+    if (current === undefined || typeof current === "string") {
+      return current;
+    }
+    const next: MutableWorkflowParkTarget = { ...current };
+    if ("label" in patch) {
+      if (patch.label === undefined || patch.label.length === 0) {
+        delete next.label;
+      } else {
+        next.label = patch.label;
+      }
+    }
+    return next;
+  });
+
+export const addParkAction = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+): WorkflowEditorModel =>
+  mutateRouteTargetAt(model, path, (current, lane, definition) => {
+    if (current === undefined || typeof current === "string") {
+      return current;
+    }
+    const laneKey = String(lane.key);
+    const to = firstOtherLaneKey(definition, laneKey) ?? laneKey;
+    return {
+      ...current,
+      actions: [...current.actions, { label: "New action", to: LaneKey.make(to) }],
+    };
+  });
+
+export const updateParkAction = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+  index: number,
+  patch: Partial<LaneActionEncoded>,
+): WorkflowEditorModel =>
+  mutateRouteTargetAt(model, path, (current) => {
+    if (
+      current === undefined ||
+      typeof current === "string" ||
+      index < 0 ||
+      index >= current.actions.length
+    ) {
+      return current;
+    }
+    const actions = current.actions.map((action, candidateIndex) => {
+      if (candidateIndex !== index) {
+        return action;
+      }
+      const next = { ...action, ...patch };
+      if (next.hint !== undefined && next.hint.length === 0) {
+        delete next.hint;
+      }
+      return next;
+    });
+    return { ...current, actions };
+  });
+
+// Removing the last action would leave an empty (invalid) park, so the minimum
+// of one action is enforced here — the sub-editor also disables the control.
+export const removeParkAction = (
+  model: WorkflowEditorModel,
+  path: RouteTargetPath,
+  index: number,
+): WorkflowEditorModel =>
+  mutateRouteTargetAt(model, path, (current) => {
+    if (current === undefined || typeof current === "string" || current.actions.length <= 1) {
+      return current;
+    }
+    return {
+      ...current,
+      actions: current.actions.filter((_, candidateIndex) => candidateIndex !== index),
+    };
+  });
+
+export interface LaneParkBadge {
+  readonly substate: WorkflowParkSubstate;
+  readonly label: string | undefined;
+  readonly selection: WorkflowEditorSelection;
+}
+
+// Every park target hanging off a lane (its on.* fallbacks, transitions,
+// external events, and step routes), paired with the selection that opens its
+// editor — the canvas renders one badge per entry.
+export const collectLaneParkBadges = (lane: WorkflowLaneEncoded): ReadonlyArray<LaneParkBadge> => {
+  const laneKey = String(lane.key);
+  const badges: LaneParkBadge[] = [];
+  const push = (
+    target: WorkflowRouteTargetEncoded | undefined,
+    selection: WorkflowEditorSelection,
+  ) => {
+    if (isParkRouteTarget(target)) {
+      badges.push({ substate: target.park, label: target.label, selection });
+    }
+  };
+  for (const kind of ["success", "failure", "blocked"] as const) {
+    push(lane.on?.[kind], { kind: "lane", laneKey });
+  }
+  (lane.transitions ?? []).forEach((transition, index) => {
+    push(transition.to, { kind: "transition", laneKey, index });
+  });
+  for (const event of lane.onEvent ?? []) {
+    push(event.to, { kind: "lane", laneKey });
+  }
+  for (const step of lane.pipeline ?? []) {
+    for (const kind of ["success", "failure", "blocked"] as const) {
+      push(step.on?.[kind], { kind: "step", laneKey, stepKey: String(step.key) });
+    }
+  }
+  return badges;
+};

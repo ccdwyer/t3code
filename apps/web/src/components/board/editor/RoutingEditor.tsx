@@ -9,20 +9,22 @@ import {
   addLaneEvent,
   addTransition,
   adjustSelectionAfterTransitionRemoval,
+  isParkRouteTarget,
   lintErrorKey,
   removeLaneEvent,
   removeTransition,
-  routeTargetSelectValue,
-  setLaneOn,
   updateLaneEvent,
   updateTransition,
 } from "~/workflow/editorModel";
 
+import { ParkTargetFields, RouteTargetSelect } from "./RouteTargetField";
 import {
   lintErrorMatchesTransition,
   type WorkflowEditorMutation,
   type WorkflowLaneEncoded,
 } from "./WorkflowEditor";
+
+const laneRouteKinds = ["success", "failure", "blocked"] as const;
 
 export function RoutingEditor({
   lane,
@@ -54,34 +56,38 @@ export function RoutingEditor({
           Transition
         </Button>
       </div>
-      <div className="grid gap-3 @2xl:grid-cols-3">
-        <LaneRouteSelect
-          label="Lane success route"
-          lanes={lanes}
-          value={routeTargetSelectValue(lane.on?.success)}
-          disabled={disabled}
-          onChange={(targetLaneKey) => {
-            onMutate((current) => setLaneOn(current, laneKey, "success", targetLaneKey));
-          }}
-        />
-        <LaneRouteSelect
-          label="Lane failure route"
-          lanes={lanes}
-          value={routeTargetSelectValue(lane.on?.failure)}
-          disabled={disabled}
-          onChange={(targetLaneKey) => {
-            onMutate((current) => setLaneOn(current, laneKey, "failure", targetLaneKey));
-          }}
-        />
-        <LaneRouteSelect
-          label="Lane blocked route"
-          lanes={lanes}
-          value={routeTargetSelectValue(lane.on?.blocked)}
-          disabled={disabled}
-          onChange={(targetLaneKey) => {
-            onMutate((current) => setLaneOn(current, laneKey, "blocked", targetLaneKey));
-          }}
-        />
+      <div className="space-y-3">
+        <div className="grid gap-3 @2xl:grid-cols-3">
+          {laneRouteKinds.map((kind) => (
+            <label key={kind} className="grid gap-1.5">
+              <span className="text-xs font-medium text-foreground">{`Lane ${kind} route`}</span>
+              <RouteTargetSelect
+                ariaLabel={`Lane ${kind} route`}
+                lanes={lanes}
+                target={lane.on?.[kind]}
+                path={{ site: "laneOn", laneKey, kind }}
+                allowNoRoute
+                disabled={disabled}
+                onMutate={onMutate}
+              />
+            </label>
+          ))}
+        </div>
+        {laneRouteKinds.map((kind) => {
+          const target = lane.on?.[kind];
+          return isParkRouteTarget(target) ? (
+            <ParkTargetFields
+              key={kind}
+              target={target}
+              path={{ site: "laneOn", laneKey, kind }}
+              lanes={lanes}
+              ariaLabelBase={`Lane ${kind} route`}
+              heading={`Lane ${kind} route`}
+              disabled={disabled}
+              onMutate={onMutate}
+            />
+          ) : null;
+        })}
       </div>
       {transitions.length === 0 ? (
         <p className="rounded-md border border-border/70 bg-muted/20 p-3 text-sm text-muted-foreground">
@@ -257,62 +263,30 @@ function LaneEventFields({
         </label>
         <label className="grid gap-1.5">
           <span className="text-xs font-medium text-foreground">Moves to</span>
-          <select
-            aria-label={`Event ${eventIndex + 1} target lane`}
-            className="h-8.5 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-            value={String(event.to)}
+          <RouteTargetSelect
+            ariaLabel={`Event ${eventIndex + 1} target lane`}
+            lanes={lanes}
+            target={event.to}
+            path={{ site: "laneEvent", laneKey, index: eventIndex }}
             disabled={disabled}
-            onChange={(changeEvent) => {
-              const value = changeEvent.currentTarget.value;
-              onMutate((current) => updateLaneEvent(current, laneKey, eventIndex, { to: value }));
-            }}
-          >
-            {lanes.map((laneOption) => (
-              <option key={String(laneOption.key)} value={String(laneOption.key)}>
-                {laneOption.name}
-              </option>
-            ))}
-          </select>
+            onMutate={onMutate}
+          />
         </label>
       </div>
+      {isParkRouteTarget(event.to) ? (
+        <div className="mt-3">
+          <ParkTargetFields
+            target={event.to}
+            path={{ site: "laneEvent", laneKey, index: eventIndex }}
+            lanes={lanes}
+            ariaLabelBase={`Event ${eventIndex + 1}`}
+            heading="Park in place"
+            disabled={disabled}
+            onMutate={onMutate}
+          />
+        </div>
+      ) : null}
     </li>
-  );
-}
-
-function LaneRouteSelect({
-  label,
-  lanes,
-  value,
-  disabled = false,
-  onChange,
-}: {
-  readonly label: string;
-  readonly lanes: ReadonlyArray<WorkflowLaneEncoded>;
-  readonly value: string | undefined;
-  readonly disabled?: boolean;
-  readonly onChange: (targetLaneKey: string | undefined) => void;
-}) {
-  return (
-    <label className="grid gap-1.5">
-      <span className="text-xs font-medium text-foreground">{label}</span>
-      <select
-        aria-label={label}
-        className="h-8.5 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-        value={value ?? ""}
-        disabled={disabled}
-        onChange={(event) => {
-          const targetLaneKey = event.currentTarget.value || undefined;
-          onChange(targetLaneKey);
-        }}
-      >
-        <option value="">No route</option>
-        {lanes.map((lane) => (
-          <option key={String(lane.key)} value={String(lane.key)}>
-            {lane.name}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }
 
@@ -397,28 +371,29 @@ export function TransitionFields({
         </label>
         <label className="grid gap-1.5">
           <span className="text-xs font-medium text-foreground">Target lane</span>
-          <select
-            aria-label={`Transition ${transitionIndex + 1} target lane`}
-            className="h-8.5 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-            value={String(transition.to)}
+          <RouteTargetSelect
+            ariaLabel={`Transition ${transitionIndex + 1} target lane`}
+            lanes={lanes}
+            target={transition.to}
+            path={{ site: "transition", laneKey, index: transitionIndex }}
             disabled={disabled}
-            onChange={(event) => {
-              const value = event.currentTarget.value;
-              onMutate((current) =>
-                updateTransition(current, laneKey, transitionIndex, {
-                  to: value,
-                }),
-              );
-            }}
-          >
-            {lanes.map((lane) => (
-              <option key={String(lane.key)} value={String(lane.key)}>
-                {lane.name}
-              </option>
-            ))}
-          </select>
+            onMutate={onMutate}
+          />
         </label>
       </div>
+      {isParkRouteTarget(transition.to) ? (
+        <div className="mt-3">
+          <ParkTargetFields
+            target={transition.to}
+            path={{ site: "transition", laneKey, index: transitionIndex }}
+            lanes={lanes}
+            ariaLabelBase={`Transition ${transitionIndex + 1}`}
+            heading="Park in place"
+            disabled={disabled}
+            onMutate={onMutate}
+          />
+        </div>
+      ) : null}
     </li>
   );
 }

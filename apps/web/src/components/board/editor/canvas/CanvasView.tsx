@@ -313,6 +313,7 @@ export function CanvasView({
                     disabled={disabled}
                     onSelect={() => onSelect({ kind: "lane", laneKey })}
                     onSelectStep={(stepKey) => onSelect({ kind: "step", laneKey, stepKey })}
+                    onSelectRoute={(routeSelection) => onSelect(routeSelection)}
                     onAddStep={(type) => handleAddStep(laneKey, type)}
                     onClearRoute={(kind) => handleSetLaneRoute(laneKey, kind, undefined)}
                   />

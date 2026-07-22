@@ -1,4 +1,4 @@
-import { LaneKey, type ProviderInstanceId, type ProviderOptionSelection } from "@t3tools/contracts";
+import { type ProviderInstanceId, type ProviderOptionSelection } from "@t3tools/contracts";
 import { useMemo } from "react";
 
 import { ProviderModelPicker } from "~/components/chat/ProviderModelPicker";
@@ -10,7 +10,7 @@ import { getAppModelOptionsForInstance, type AppModelOption } from "~/modelSelec
 import { deriveProviderInstanceEntries, sortProviderInstanceEntries } from "~/providerInstances";
 import { useAtomValue } from "@effect/atom-react";
 import { primaryServerProvidersAtom } from "~/state/server";
-import { routeTargetSelectValue, updateStep } from "~/workflow/editorModel";
+import { isParkRouteTarget, updateStep } from "~/workflow/editorModel";
 
 import {
   agentSelectionWithInstanceModel,
@@ -20,13 +20,14 @@ import {
   retryWithMaxAttempts,
   type StepRetryEncoded,
 } from "./agentStepSelection";
+import { ParkTargetFields, RouteTargetSelect } from "./RouteTargetField";
 import type {
   WorkflowEditorMutation,
   WorkflowLaneEncoded,
   WorkflowStepEncoded,
 } from "./WorkflowEditor";
 
-type RouteKind = "success" | "failure" | "blocked";
+const stepRouteKinds = ["success", "failure", "blocked"] as const;
 type InstructionMode = "inline" | "file";
 
 export function StepFields({
@@ -72,34 +73,38 @@ export function StepFields({
           onMutate={onMutate}
         />
       ) : null}
-      <div className="grid gap-3 @2xl:grid-cols-3">
-        <StepRouteSelect
-          label={`Step ${stepKey} success route`}
-          lanes={lanes}
-          value={routeTargetSelectValue(step.on?.success)}
-          disabled={disabled}
-          onChange={(targetLaneKey) =>
-            updateRoute(onMutate, laneKey, step, "success", targetLaneKey)
-          }
-        />
-        <StepRouteSelect
-          label={`Step ${stepKey} failure route`}
-          lanes={lanes}
-          value={routeTargetSelectValue(step.on?.failure)}
-          disabled={disabled}
-          onChange={(targetLaneKey) =>
-            updateRoute(onMutate, laneKey, step, "failure", targetLaneKey)
-          }
-        />
-        <StepRouteSelect
-          label={`Step ${stepKey} blocked route`}
-          lanes={lanes}
-          value={routeTargetSelectValue(step.on?.blocked)}
-          disabled={disabled}
-          onChange={(targetLaneKey) =>
-            updateRoute(onMutate, laneKey, step, "blocked", targetLaneKey)
-          }
-        />
+      <div className="space-y-3">
+        <div className="grid gap-3 @2xl:grid-cols-3">
+          {stepRouteKinds.map((kind) => (
+            <label key={kind} className="grid gap-1.5">
+              <span className="text-xs font-medium text-foreground">{`Step ${stepKey} ${kind} route`}</span>
+              <RouteTargetSelect
+                ariaLabel={`Step ${stepKey} ${kind} route`}
+                lanes={lanes}
+                target={step.on?.[kind]}
+                path={{ site: "stepOn", laneKey, stepKey, kind }}
+                allowNoRoute
+                disabled={disabled}
+                onMutate={onMutate}
+              />
+            </label>
+          ))}
+        </div>
+        {stepRouteKinds.map((kind) => {
+          const target = step.on?.[kind];
+          return isParkRouteTarget(target) ? (
+            <ParkTargetFields
+              key={kind}
+              target={target}
+              path={{ site: "stepOn", laneKey, stepKey, kind }}
+              lanes={lanes}
+              ariaLabelBase={`Step ${stepKey} ${kind} route`}
+              heading={`Step ${stepKey} ${kind} route`}
+              disabled={disabled}
+              onMutate={onMutate}
+            />
+          ) : null;
+        })}
       </div>
     </div>
   );
@@ -810,65 +815,5 @@ function PullRequestStepFields({
         </>
       ) : null}
     </div>
-  );
-}
-
-function StepRouteSelect({
-  label,
-  lanes,
-  value,
-  disabled = false,
-  onChange,
-}: {
-  readonly label: string;
-  readonly lanes: ReadonlyArray<WorkflowLaneEncoded>;
-  readonly value: string | undefined;
-  readonly disabled?: boolean;
-  readonly onChange: (targetLaneKey: string | undefined) => void;
-}) {
-  return (
-    <label className="grid gap-1.5">
-      <span className="text-xs font-medium text-foreground">{label}</span>
-      <select
-        aria-label={label}
-        className="h-8.5 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-        value={value ?? ""}
-        disabled={disabled}
-        onChange={(event) => {
-          const targetLaneKey = event.currentTarget.value || undefined;
-          onChange(targetLaneKey);
-        }}
-      >
-        <option value="">No route</option>
-        {lanes.map((lane) => (
-          <option key={String(lane.key)} value={String(lane.key)}>
-            {lane.name}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function updateRoute(
-  onMutate: WorkflowEditorMutation,
-  laneKey: string,
-  step: WorkflowStepEncoded,
-  kind: RouteKind,
-  targetLaneKey: string | undefined,
-) {
-  const nextOn = {
-    ...step.on,
-    [kind]: targetLaneKey === undefined ? undefined : LaneKey.make(targetLaneKey),
-  };
-  for (const key of ["success", "failure", "blocked"] as const) {
-    if (nextOn[key] === undefined) {
-      delete nextOn[key];
-    }
-  }
-  onMutate((current) =>
-    updateStep(current, laneKey, String(step.key), {
-      on: Object.keys(nextOn).length === 0 ? undefined : nextOn,
-    }),
   );
 }

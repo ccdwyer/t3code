@@ -13,6 +13,7 @@ import { useCallback, type ReactNode } from "react";
 
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
+import { collectLaneParkBadges, type WorkflowEditorSelection } from "~/workflow/editorModel";
 
 import {
   laneMoveDragId,
@@ -37,6 +38,7 @@ export function LaneCard({
   disabled = false,
   onSelect,
   onSelectStep,
+  onSelectRoute,
   onAddStep,
   onClearRoute,
 }: {
@@ -47,11 +49,13 @@ export function LaneCard({
   readonly disabled?: boolean;
   readonly onSelect: () => void;
   readonly onSelectStep: (stepKey: string) => void;
+  readonly onSelectRoute: (selection: WorkflowEditorSelection) => void;
   readonly onAddStep: (type: WorkflowStepType) => void;
   readonly onClearRoute: (kind: LaneRoutingKind) => void;
 }) {
   const laneKey = String(lane.key);
   const pipeline = lane.pipeline ?? [];
+  const parkBadges = collectLaneParkBadges(lane);
   const { isOver, setNodeRef: setDropRef } = useLaneDropTarget(laneKey);
   const {
     attributes,
@@ -147,6 +151,21 @@ export function LaneCard({
           {lane.wipLimit === undefined ? null : <LaneBadge>WIP {lane.wipLimit}</LaneBadge>}
           {lane.terminal ? <LaneBadge>terminal</LaneBadge> : null}
         </div>
+        {parkBadges.length === 0 ? null : (
+          <div className="flex flex-wrap gap-1" onClick={(event) => event.stopPropagation()}>
+            {parkBadges.map((badge, index) => (
+              <ParkBadge
+                key={`park-${index}`}
+                index={index}
+                laneKey={laneKey}
+                substate={badge.substate}
+                label={badge.label}
+                disabled={disabled}
+                onSelect={() => onSelectRoute(badge.selection)}
+              />
+            ))}
+          </div>
+        )}
       </header>
       <div className="flex flex-col gap-2">
         {pipeline.length === 0 ? (
@@ -235,5 +254,48 @@ function LaneBadge({ children }: { readonly children: ReactNode }) {
     <span className="rounded-sm border border-border/60 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
       {children}
     </span>
+  );
+}
+
+// One badge per park target on the lane, tinted with the same warning/info
+// tokens as the board's issue/waiting tiers. Clicking selects the owning route
+// so the drawer form opens on it.
+function ParkBadge({
+  index,
+  laneKey,
+  substate,
+  label,
+  disabled,
+  onSelect,
+}: {
+  readonly index: number;
+  readonly laneKey: string;
+  readonly substate: "issue" | "waiting";
+  readonly label: string | undefined;
+  readonly disabled: boolean;
+  readonly onSelect: () => void;
+}) {
+  const isIssue = substate === "issue";
+  return (
+    <button
+      type="button"
+      data-testid={`park-badge-${laneKey}-${index}`}
+      data-substate={substate}
+      aria-label={`Park ${isIssue ? "issue" : "waiting"}${label ? `: ${label}` : ""} in lane ${laneKey}`}
+      disabled={disabled}
+      className={cn(
+        "inline-flex max-w-[9rem] items-center gap-1 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+        isIssue
+          ? "border-warning/50 bg-warning/10 text-warning-foreground hover:bg-warning/20"
+          : "border-info/50 bg-info/10 text-info-foreground hover:bg-info/20",
+      )}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
+    >
+      <span aria-hidden="true">{isIssue ? "⚠" : "⏸"}</span>
+      <span className="truncate">{label ?? (isIssue ? "issue" : "waiting")}</span>
+    </button>
   );
 }

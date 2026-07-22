@@ -43,6 +43,41 @@ describe("channelRoutedEdgeIds", () => {
   });
 });
 
+describe("deriveRoutingEdges park targets", () => {
+  it("draws no edge for park targets on lane on.*, transitions, or step routes", () => {
+    const parkDefinition = {
+      name: "Parking",
+      lanes: [
+        {
+          key: "run",
+          name: "Run",
+          entry: "auto",
+          pipeline: [
+            {
+              key: "check",
+              type: "script",
+              run: "true",
+              on: { failure: { park: "issue", actions: [{ label: "Retry", to: "run" }] } },
+            },
+          ],
+          on: { failure: { park: "issue", actions: [{ label: "Retry", to: "run" }] } },
+          transitions: [
+            {
+              when: { var: "pipeline.result" },
+              to: { park: "waiting", actions: [{ label: "Approve", to: "done" }] },
+            },
+          ],
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ],
+    } as never as WorkflowDefinitionEncoded;
+
+    const edges = deriveRoutingEdges(parkDefinition);
+    expect(edges).toEqual([]);
+    expect(JSON.stringify(edges)).not.toContain("[object Object]");
+  });
+});
+
 describe("layoutLabels", () => {
   it("leaves a non-overlapping label at its position", () => {
     const positions = layoutLabels([{ id: "only", x: 100, y: 200, w: 60 }]);

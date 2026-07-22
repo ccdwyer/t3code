@@ -23,6 +23,7 @@ import { BoardHeaderControls } from "../components/board/BoardHeaderControls";
 import { BoardView } from "../components/board/BoardView";
 import { WorkflowEditor } from "../components/board/editor/WorkflowEditor";
 import { WorkflowEditorFullscreen } from "../components/board/editor/WorkflowEditorFullscreen";
+import { NeedsYouStrip } from "../components/board/NeedsYouStrip";
 import { TicketDrawer } from "../components/board/TicketDrawer";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { Button } from "../components/ui/button";
@@ -229,6 +230,30 @@ export function submitParkActionFromBoardRoute(
     });
 }
 
+/**
+ * What `notifyTicketStatusChange`'s dedup guard compares against. Status
+ * alone collapses a re-park into a no-op (both are "parked"), so the guard
+ * also tracks `attentionKind` (issue vs waiting) and the park's own event id
+ * — a fresh `parkedEventId` means a new park happened even when the status
+ * and substate both stayed the same (e.g. retry fails again into the same
+ * "issue" substate).
+ */
+interface TicketNotifyState {
+  readonly status: string;
+  readonly attentionKind?: string | undefined;
+  readonly parkedEventId?: string | undefined;
+}
+
+const ticketNotifyState = (ticket: {
+  readonly status: string;
+  readonly attentionKind?: string | undefined;
+  readonly parked?: { readonly parkedEventId: string } | undefined;
+}): TicketNotifyState => ({
+  status: ticket.status,
+  ...(ticket.attentionKind === undefined ? {} : { attentionKind: ticket.attentionKind }),
+  ...(ticket.parked === undefined ? {} : { parkedEventId: ticket.parked.parkedEventId }),
+});
+
 function WorkflowBoardRouteView() {
   const { environmentId: rawEnvironmentId } = Route.useParams();
   const { boardId: rawBoardId, ticket: rawTicket } = Route.useSearch();
@@ -243,7 +268,7 @@ function WorkflowBoardRouteView() {
   // Passed to WorkflowEditor so it can open the Sources wizard on mount.
   const [editorSourcesTrigger, setEditorSourcesTrigger] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
-  const ticketStatusRef = useRef(new Map<string, string>());
+  const ticketStatusRef = useRef(new Map<string, TicketNotifyState>());
   // In-flight guard for handleParkAction: tickets currently mid-invocation, so
   // a doubled click can't fire a second invokeParkAction RPC for the same
   // ticket while the first is still pending.
@@ -377,16 +402,16 @@ function WorkflowBoardRouteView() {
         // so a re-snapshot for a new board never leaves stale entries behind.
         ticketStatusRef.current.clear();
         for (const ticket of snapshot.tickets) {
-          ticketStatusRef.current.set(ticket.ticketId, ticket.status);
+          ticketStatusRef.current.set(ticket.ticketId, ticketNotifyState(ticket));
         }
       },
       onTicketUpdate: (ticket) => {
         if (ticket.ticketId === selectedTicketIdRef.current) {
           setTicketDetailReloadKey((key) => key + 1);
         }
-        const previousStatus = ticketStatusRef.current.get(ticket.ticketId);
-        ticketStatusRef.current.set(ticket.ticketId, ticket.status);
-        notifyTicketStatusChange(ticket, previousStatus, selectedTicketIdRef.current);
+        const previous = ticketStatusRef.current.get(ticket.ticketId);
+        ticketStatusRef.current.set(ticket.ticketId, ticketNotifyState(ticket));
+        notifyTicketStatusChange(ticket, previous, selectedTicketIdRef.current);
       },
     });
   }, [boardId, environmentId, routeApi]);
@@ -427,6 +452,15 @@ function WorkflowBoardRouteView() {
   const visibleState = useMemo(
     () => filterBoardStateByQuery(state, searchQuery),
     [state, searchQuery],
+  );
+  // All lanes, flattened — the strip pins parked/waiting tickets regardless
+  // of which lane they currently sit in.
+  const needsYouTickets = useMemo(
+    () =>
+      visibleState.ticketIds
+        .map((ticketId) => visibleState.ticketById[ticketId])
+        .filter((ticket) => ticket !== undefined),
+    [visibleState],
   );
 
   useEffect(() => {
@@ -796,6 +830,11 @@ function WorkflowBoardRouteView() {
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
+              <NeedsYouStrip
+                tickets={needsYouTickets}
+                onOpen={handleOpenTicket}
+                onParkAction={handleParkAction}
+              />
               <BoardView
                 state={visibleState}
                 onMove={handleMove}
@@ -901,15 +940,26 @@ export function filterBoardStateByQuery(state: BoardState, query: string): Board
   };
 }
 
-function notifyTicketStatusChange(
-  ticket: { readonly ticketId: string; readonly title: string; readonly status: string },
-  previousStatus: string | undefined,
+export function notifyTicketStatusChange(
+  ticket: {
+    readonly ticketId: string;
+    readonly title: string;
+    readonly status: string;
+    readonly attentionKind?: string | undefined;
+    readonly parked?: { readonly parkedEventId: string } | undefined;
+  },
+  previous: TicketNotifyState | undefined,
   openTicketId: TicketId | null,
 ): void {
+  if (openTicketId === ticket.ticketId) {
+    return;
+  }
+  const next = ticketNotifyState(ticket);
   if (
-    previousStatus === undefined ||
-    previousStatus === ticket.status ||
-    openTicketId === ticket.ticketId
+    previous === undefined ||
+    (previous.status === next.status &&
+      previous.attentionKind === next.attentionKind &&
+      previous.parkedEventId === next.parkedEventId)
   ) {
     return;
   }
@@ -919,6 +969,26 @@ function notifyTicketStatusChange(
         type: "warning",
         title: `"${ticket.title}" is waiting on you`,
         description: "Open the ticket to answer or approve.",
+      }),
+    );
+    return;
+  }
+  if (ticket.status === "parked" && ticket.attentionKind === "parked_issue") {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: `"${ticket.title}" hit an issue`,
+        description: "Open the ticket to see what went wrong.",
+      }),
+    );
+    return;
+  }
+  if (ticket.status === "parked" && ticket.attentionKind === "parked_waiting") {
+    toastManager.add(
+      stackedThreadToast({
+        type: "warning",
+        title: `"${ticket.title}" is waiting on you`,
+        description: "Open the ticket to review and choose an action.",
       }),
     );
     return;

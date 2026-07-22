@@ -16,6 +16,7 @@ export interface BoardViewTicket {
   readonly currentLaneKey: string;
   readonly status: string;
   readonly queuedAt?: string | undefined;
+  readonly updatedAt?: string | undefined;
   readonly totalTokens?: number | undefined;
   readonly totalDurationMs?: number | undefined;
   readonly pr?:

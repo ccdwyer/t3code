@@ -6,13 +6,14 @@ import {
   TicketId,
   WorkflowEventId,
 } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 
 import {
   filterBoardStateByQuery,
   getBoardRouteEmptyState,
+  notifyTicketStatusChange,
   submitParkActionFromBoardRoute,
   submitTicketAnswerFromBoardRoute,
   submitTicketEditFromBoardRoute,
@@ -341,6 +342,151 @@ describe("submitParkActionFromBoardRoute", () => {
       pendingTicketIds,
     });
     expect(api.workflow.invokeParkAction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("notifyTicketStatusChange", () => {
+  beforeEach(() => {
+    vi.mocked(toastManager.add).mockClear();
+    vi.mocked(stackedThreadToast).mockClear();
+  });
+
+  const baseTicket = { ticketId: "ticket-1", title: "Fix the widget" };
+
+  it("does nothing on first sighting (no previous state)", () => {
+    notifyTicketStatusChange(
+      { ...baseTicket, status: "parked", attentionKind: "parked_issue" },
+      undefined,
+      null,
+    );
+    expect(toastManager.add).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the drawer is already open on this ticket", () => {
+    notifyTicketStatusChange(
+      { ...baseTicket, status: "parked", attentionKind: "parked_issue" },
+      { status: "queued" },
+      TicketId.make("ticket-1"),
+    );
+    expect(toastManager.add).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when status/attentionKind/parkedEventId are all unchanged", () => {
+    notifyTicketStatusChange(
+      {
+        ...baseTicket,
+        status: "parked",
+        attentionKind: "parked_issue",
+        parked: { parkedEventId: "event-1" },
+      },
+      { status: "parked", attentionKind: "parked_issue", parkedEventId: "event-1" },
+      null,
+    );
+    expect(toastManager.add).not.toHaveBeenCalled();
+  });
+
+  it("toasts a warning when a ticket starts waiting on the user", () => {
+    notifyTicketStatusChange(
+      { ...baseTicket, status: "waiting_on_user" },
+      { status: "queued" },
+      null,
+    );
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "warning",
+        title: `"${baseTicket.title}" is waiting on you`,
+        description: "Open the ticket to answer or approve.",
+      }),
+    );
+    expect(toastManager.add).toHaveBeenCalledOnce();
+  });
+
+  it("toasts an error when a ticket parks on an issue", () => {
+    notifyTicketStatusChange(
+      {
+        ...baseTicket,
+        status: "parked",
+        attentionKind: "parked_issue",
+        parked: { parkedEventId: "event-1" },
+      },
+      { status: "running" },
+      null,
+    );
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: `"${baseTicket.title}" hit an issue`,
+        description: "Open the ticket to see what went wrong.",
+      }),
+    );
+    expect(toastManager.add).toHaveBeenCalledOnce();
+  });
+
+  it("toasts a warning when a ticket parks waiting on the user", () => {
+    notifyTicketStatusChange(
+      {
+        ...baseTicket,
+        status: "parked",
+        attentionKind: "parked_waiting",
+        parked: { parkedEventId: "event-1" },
+      },
+      { status: "running" },
+      null,
+    );
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "warning",
+        title: `"${baseTicket.title}" is waiting on you`,
+        description: "Open the ticket to review and choose an action.",
+      }),
+    );
+    expect(toastManager.add).toHaveBeenCalledOnce();
+  });
+
+  it("re-toasts a re-park into the same substate once the parkedEventId changes", () => {
+    // A ticket that hit an issue, was retried, and immediately parked on the
+    // same issue substate again: status and attentionKind are unchanged, but
+    // the park is a fresh one — the parkedEventId is how the guard tells.
+    notifyTicketStatusChange(
+      {
+        ...baseTicket,
+        status: "parked",
+        attentionKind: "parked_issue",
+        parked: { parkedEventId: "event-2" },
+      },
+      { status: "parked", attentionKind: "parked_issue", parkedEventId: "event-1" },
+      null,
+    );
+    expect(toastManager.add).toHaveBeenCalledOnce();
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: `"${baseTicket.title}" hit an issue` }),
+    );
+  });
+
+  it("does not re-toast a duplicate broadcast of the same park (identical parkedEventId)", () => {
+    notifyTicketStatusChange(
+      {
+        ...baseTicket,
+        status: "parked",
+        attentionKind: "parked_issue",
+        parked: { parkedEventId: "event-1" },
+      },
+      { status: "parked", attentionKind: "parked_issue", parkedEventId: "event-1" },
+      null,
+    );
+    expect(toastManager.add).not.toHaveBeenCalled();
+  });
+
+  it("still toasts 'needs attention' for failed/blocked statuses", () => {
+    notifyTicketStatusChange({ ...baseTicket, status: "failed" }, { status: "running" }, null);
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: `"${baseTicket.title}" needs attention`,
+        description: "Open the ticket to see what went wrong.",
+      }),
+    );
+    expect(toastManager.add).toHaveBeenCalledOnce();
   });
 });
 

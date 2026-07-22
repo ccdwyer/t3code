@@ -10,7 +10,7 @@ import { getAppModelOptionsForInstance, type AppModelOption } from "~/modelSelec
 import { deriveProviderInstanceEntries, sortProviderInstanceEntries } from "~/providerInstances";
 import { useAtomValue } from "@effect/atom-react";
 import { primaryServerProvidersAtom } from "~/state/server";
-import { updateStep } from "~/workflow/editorModel";
+import { routeTargetSelectValue, updateStep } from "~/workflow/editorModel";
 
 import {
   agentSelectionWithInstanceModel,
@@ -28,12 +28,6 @@ import type {
 
 type RouteKind = "success" | "failure" | "blocked";
 type InstructionMode = "inline" | "file";
-
-// TODO(park): Task 18 — park targets aren't editable via this plain lane
-// select yet; render them as "no lane selected" until the park sub-editor lands.
-const stepRouteSelectValue = (
-  target: string | { readonly park: "issue" | "waiting" } | undefined,
-): string | undefined => (typeof target === "string" ? target : undefined);
 
 export function StepFields({
   laneKey,
@@ -82,7 +76,7 @@ export function StepFields({
         <StepRouteSelect
           label={`Step ${stepKey} success route`}
           lanes={lanes}
-          value={stepRouteSelectValue(step.on?.success)}
+          value={routeTargetSelectValue(step.on?.success)}
           disabled={disabled}
           onChange={(targetLaneKey) =>
             updateRoute(onMutate, laneKey, step, "success", targetLaneKey)
@@ -91,7 +85,7 @@ export function StepFields({
         <StepRouteSelect
           label={`Step ${stepKey} failure route`}
           lanes={lanes}
-          value={stepRouteSelectValue(step.on?.failure)}
+          value={routeTargetSelectValue(step.on?.failure)}
           disabled={disabled}
           onChange={(targetLaneKey) =>
             updateRoute(onMutate, laneKey, step, "failure", targetLaneKey)
@@ -100,7 +94,7 @@ export function StepFields({
         <StepRouteSelect
           label={`Step ${stepKey} blocked route`}
           lanes={lanes}
-          value={stepRouteSelectValue(step.on?.blocked)}
+          value={routeTargetSelectValue(step.on?.blocked)}
           disabled={disabled}
           onChange={(targetLaneKey) =>
             updateRoute(onMutate, laneKey, step, "blocked", targetLaneKey)

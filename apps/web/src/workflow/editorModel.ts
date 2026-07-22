@@ -23,6 +23,17 @@ type MutableWorkflowStep = Mutable<WorkflowStepEncoded>;
 type MutableWorkflowRouteTarget = NonNullable<MutableWorkflowLane["transitions"]>[number]["to"];
 type MutableWorkflowLaneTransition = NonNullable<MutableWorkflowLane["transitions"]>[number];
 type MutableWorkflowLaneEvent = NonNullable<MutableWorkflowLane["onEvent"]>[number];
+// Same route-target shape as it reads on the real (readonly, tuple-preserving)
+// Encoded lane — what RoutingEditor/StepFields pass in from `lane.on`/`step.on`.
+type WorkflowRouteTargetEncoded = NonNullable<WorkflowLaneEncoded["transitions"]>[number]["to"];
+
+// Shared by the lane-level and step-level route selects (RoutingEditor,
+// StepFields): a plain lane-key target renders as-is; a park target renders
+// as "no lane selected" until it has a dedicated editor.
+// TODO(park): Task 18 replaces this with real park-target editing.
+export const routeTargetSelectValue = (
+  target: WorkflowRouteTargetEncoded | MutableWorkflowRouteTarget | undefined,
+): string | undefined => (typeof target === "string" ? target : undefined);
 
 export interface WorkflowEditorModel {
   readonly definition: WorkflowDefinitionEncoded;

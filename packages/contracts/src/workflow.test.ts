@@ -1768,6 +1768,7 @@ describe("WorkflowBoardMetrics", () => {
         attention: {
           blocked: 1,
           waitingOnUser: 2,
+          parked: 0,
           oldest: [
             { ticketId: "t1", title: "Old ticket", laneKey: "review", ageMs: 86400000 },
             { ticketId: "t2", title: "Another old ticket", laneKey: null, ageMs: 172800000 },

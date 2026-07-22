@@ -5,6 +5,7 @@ import { assert, it } from "@effect/vitest";
 import {
   type BoardListEntry,
   BoardId,
+  isParkTarget,
   LaneKey,
   type ProjectId,
   StepKey,
@@ -14,6 +15,8 @@ import {
   WorkflowDefinition,
   type WorkflowDefinition as WorkflowDefinitionType,
   type WorkflowDefinitionEncoded,
+  type WorkflowParkTarget,
+  type WorkflowRouteTarget,
   WorkflowRpcError,
   TextGenerationError,
 } from "@t3tools/contracts";
@@ -45,6 +48,7 @@ import { makeWorkflowBoardSaveLocks } from "./WorkflowBoardSaveLocks.ts";
 import { WorkflowBoardVersionStoreLive } from "./WorkflowBoardVersionStore.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
+import { buildParkOrigin } from "../parkOrigin.ts";
 import type { ProjectScriptTrustShape } from "../Services/ProjectScriptTrust.ts";
 import type { WorkSourceConnectionStoreShape } from "../Services/WorkSourceConnectionStore.ts";
 import { WorkSourceAuthError } from "../Services/WorkSourceProvider.ts";
@@ -118,7 +122,7 @@ const noopReadModel = {
       cycleTime: { count: 0, p50Ms: 0, p90Ms: 0, avgMs: 0 },
       wipByLane: [],
       statusBreakdown: {},
-      attention: { blocked: 0, waitingOnUser: 0, oldest: [] },
+      attention: { blocked: 0, waitingOnUser: 0, parked: 0, oldest: [] },
       routeOutcomes: [],
       manualMoveCount: 0,
       stepStats: [],
@@ -1255,6 +1259,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
               steps: {
                 verdict: { status: "completed", exitCode: 0, verdict: "approve" },
               },
+              park: null,
             },
             {
               occurredAt: "2026-06-07T00:00:02.000Z",
@@ -1266,6 +1271,23 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
               pipelineResult: null,
               laneRunCount: null,
               steps: null,
+              park: null,
+            },
+            {
+              occurredAt: "2026-06-07T00:00:03.000Z",
+              fromLane: null,
+              toLane: null,
+              source: "step_on" as const,
+              matchedTransitionIndex: null,
+              eventName: null,
+              pipelineResult: null,
+              laneRunCount: null,
+              steps: null,
+              park: {
+                substate: "issue" as const,
+                label: "Issue encountered",
+                reason: "step failed: boom",
+              },
             },
           ]),
       },
@@ -1317,7 +1339,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
       ticketId: TicketId.make("ticket-route-rpc"),
     });
 
-    assert.equal(detail.routeHistory?.length, 2);
+    assert.equal(detail.routeHistory?.length, 3);
     const first = detail.routeHistory?.[0];
     assert.equal(first?.fromLane, "implement");
     assert.equal(first?.source, "lane_transition");
@@ -1334,6 +1356,16 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
     assert.equal(second?.fromLane, undefined);
     assert.equal(second?.matchedTransitionIndex, undefined);
     assert.equal(second?.steps, undefined);
+    // Park row: toLane is absent (the ticket never left its lane) and the
+    // contract's park variant carries substate/label/reason.
+    const third = detail.routeHistory?.[2];
+    assert.equal(third?.toLane, undefined);
+    assert.equal(third?.source, "step_on");
+    assert.deepEqual(third?.park, {
+      substate: "issue",
+      label: "Issue encountered",
+      reason: "step failed: boom",
+    });
   }),
 );
 
@@ -5275,6 +5307,262 @@ it.effect(
     }),
 );
 
+const decodeWorkflowDefinitionForTest = Schema.decodeUnknownSync(WorkflowDefinition);
+
+// Narrow a route target we know is a park target (built that way in the fixture).
+const asParkTargetForTest = (target: WorkflowRouteTarget | undefined): WorkflowParkTarget => {
+  if (target === undefined || !isParkTarget(target)) {
+    throw new Error("expected a park target in the fixture");
+  }
+  return target;
+};
+
+const noopEngineForParkedViewTests = {
+  createTicket: () => Effect.die("unused"),
+  editTicket: () => Effect.void,
+  moveTicket: () => Effect.void,
+  invokeParkAction: () => Effect.die("unused invokeParkAction"),
+  createTicketAndEnterUnlocked: () => Effect.die("unused"),
+  closeTicketFromSourceUnlocked: () => Effect.die("unused"),
+  reopenTicketFromSourceUnlocked: () => Effect.die("unused"),
+  cancellableProviderTurnsForTicket: () => Effect.die("unused"),
+  supersedeProviderWorkForTicket: () => Effect.die("unused"),
+  terminalAgentSessionThreadsForTicket: () => Effect.die("unused"),
+  stopAgentSessionsForTicket: () => Effect.die("unused"),
+  editTicketFieldsUnlocked: () => Effect.die("unused"),
+  withBoardAdmissionLock: (_boardId: BoardId, effect: Effect.Effect<void>) => effect,
+  runLane: () => Effect.void,
+  ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
+  resolveApproval: () => Effect.void,
+  answerTicketStep: () => Effect.void,
+  postTicketMessage: () => Effect.void,
+  editTicketMessage: () => Effect.void,
+  cancelStep: () => Effect.void,
+  cancelBoardPipelines: () => Effect.void,
+  cancelTicketPipelines: () => Effect.void,
+  recoverBoardWip: () => Effect.void,
+  completeRecoveredStep: () => Effect.void,
+};
+
+const parkedViewDeps = (input: {
+  readonly ticket: unknown;
+  readonly definition: WorkflowDefinitionType | null;
+}) => ({
+  engine: noopEngineForParkedViewTests,
+  readModel: {
+    ...noopReadModel,
+    getTicketDetail: () =>
+      Effect.succeed({ ticket: input.ticket, steps: [], messages: [] } as never),
+    listTicketRouteDecisions: () => Effect.succeed([]),
+  },
+  boardRegistry: {
+    register: () => Effect.die("unused"),
+    unregister: () => Effect.void,
+    getDefinition: () => Effect.succeed(input.definition),
+    listDefinitions: () => Effect.succeed([]),
+    getLane: () => Effect.succeed(null),
+  },
+  ticketDiff: { getTicketDiff: () => Effect.die("unused") },
+  ticketWorktrees: { resolveForTicket: () => Effect.die("unused") },
+  boardEvents: {
+    publish: () => Effect.void,
+    stream: () => Stream.empty,
+    subscribe: () => Effect.succeed(Stream.empty),
+  },
+  fileLoader: {
+    lintDefinition: () => Effect.succeed([]),
+    loadAndRegister: () => Effect.die("unused"),
+  },
+  boardDiscovery: { discover: () => Effect.succeed([]), list: () => Effect.succeed([]) },
+  projectWorkspaceResolver: { resolve: () => Effect.succeed("/tmp/project") },
+  workspaceFileSystem: {
+    readFile: () => Effect.die("unused"),
+    listFiles: () => Effect.succeed([]),
+    readFileString: () => Effect.die("unused"),
+    writeFile: () => Effect.die("unused"),
+    createFileExclusive: () => Effect.die("unused"),
+    deleteFile: () => Effect.die("unused"),
+  },
+  projectScriptTrust: noopProjectScriptTrust,
+  connectionStore: noopConnectionStore,
+  versionStore: noopVersionStore,
+  observeRpcEffect: (_method: unknown, effect: Effect.Effect<unknown>) => effect,
+  observeRpcStreamEffect: (_method: unknown, effect: Stream.Stream<unknown>) =>
+    Stream.unwrap(Effect.succeed(effect)),
+});
+
+it.effect(
+  "workflowRpcHandlers getTicketDetail assembles the parked view with re-resolved actions",
+  () =>
+    Effect.gen(function* () {
+      const definition = decodeWorkflowDefinitionForTest({
+        name: "wf",
+        lanes: [
+          {
+            key: "implement",
+            name: "Implement",
+            entry: "auto",
+            on: {
+              failure: {
+                park: "issue",
+                label: "Hit a snag",
+                actions: [{ label: "Retry", to: "implement" }],
+              },
+            },
+          },
+        ],
+      });
+      const target = asParkTargetForTest(definition.lanes[0]?.on?.failure);
+      const parkOrigin = buildParkOrigin({ src: "lane_on", target, key: "failure" });
+
+      const handlers = workflowRpcHandlers(
+        parkedViewDeps({
+          definition,
+          ticket: {
+            ticketId: "ticket-parked-view",
+            boardId: "board-parked-view",
+            title: "Parked ticket",
+            description: null,
+            currentLaneKey: "implement",
+            currentLaneEntryToken: null,
+            queuedAt: null,
+            totalTokens: null,
+            totalDurationMs: null,
+            status: "parked",
+            parkedSubstate: "issue",
+            parkedLabel: "Hit a snag",
+            parkedReason: "step failed: boom",
+            parkedAt: "2026-07-22T00:00:02.000Z",
+            parkedEventId: "evt-parked-1",
+            parkOrigin,
+          },
+        }) as never,
+      );
+
+      const detail = yield* handlers[WORKFLOW_WS_METHODS.getTicketDetail]({
+        ticketId: TicketId.make("ticket-parked-view"),
+      });
+
+      assert.deepEqual(detail.ticket.parked, {
+        substate: "issue",
+        label: "Hit a snag",
+        reason: "step failed: boom",
+        parkedAt: "2026-07-22T00:00:02.000Z",
+        parkedEventId: "evt-parked-1",
+        actions: [{ label: "Retry", to: "implement" }],
+      } as never);
+    }),
+);
+
+it.effect(
+  "workflowRpcHandlers getTicketDetail omits parked.actions once the board definition drops the park (edited away)",
+  () =>
+    Effect.gen(function* () {
+      const originalDefinition = decodeWorkflowDefinitionForTest({
+        name: "wf",
+        lanes: [
+          {
+            key: "implement",
+            name: "Implement",
+            entry: "auto",
+            on: {
+              failure: {
+                park: "issue",
+                label: "Hit a snag",
+                actions: [{ label: "Retry", to: "implement" }],
+              },
+            },
+          },
+        ],
+      });
+      const target = asParkTargetForTest(originalDefinition.lanes[0]?.on?.failure);
+      const parkOrigin = buildParkOrigin({ src: "lane_on", target, key: "failure" });
+
+      // The board was edited after the ticket parked: `on.failure` is now a
+      // plain lane move, not a park — resolveParkActions must fail closed.
+      const editedDefinition = decodeWorkflowDefinitionForTest({
+        name: "wf",
+        lanes: [
+          {
+            key: "implement",
+            name: "Implement",
+            entry: "auto",
+            on: { failure: "implement" },
+          },
+        ],
+      });
+
+      const handlers = workflowRpcHandlers(
+        parkedViewDeps({
+          definition: editedDefinition,
+          ticket: {
+            ticketId: "ticket-parked-edited",
+            boardId: "board-parked-edited",
+            title: "Parked ticket",
+            description: null,
+            currentLaneKey: "implement",
+            currentLaneEntryToken: null,
+            queuedAt: null,
+            totalTokens: null,
+            totalDurationMs: null,
+            status: "parked",
+            parkedSubstate: "issue",
+            parkedLabel: "Hit a snag",
+            parkedReason: "step failed: boom",
+            parkedAt: "2026-07-22T00:00:02.000Z",
+            parkedEventId: "evt-parked-2",
+            parkOrigin,
+          },
+        }) as never,
+      );
+
+      const detail = yield* handlers[WORKFLOW_WS_METHODS.getTicketDetail]({
+        ticketId: TicketId.make("ticket-parked-edited"),
+      });
+
+      assert.isDefined(detail.ticket.parked, "parked detail must still render substate/label");
+      assert.equal(detail.ticket.parked?.substate, "issue");
+      assert.equal(detail.ticket.parked?.label, "Hit a snag");
+      assert.equal(detail.ticket.parked?.reason, "step failed: boom");
+      assert.isUndefined(
+        detail.ticket.parked?.actions,
+        "actions must be absent (undefined), never a stale snapshot, once the board no longer defines the park",
+      );
+    }),
+);
+
+it.effect(
+  "workflowRpcHandlers getTicketDetail omits the parked field for a non-parked ticket and surfaces currentStepLabel",
+  () =>
+    Effect.gen(function* () {
+      const handlers = workflowRpcHandlers(
+        parkedViewDeps({
+          definition: null,
+          ticket: {
+            ticketId: "ticket-running-view",
+            boardId: "board-running-view",
+            title: "Running ticket",
+            description: null,
+            currentLaneKey: "implement",
+            currentLaneEntryToken: "tok-running",
+            queuedAt: null,
+            totalTokens: null,
+            totalDurationMs: null,
+            status: "running",
+            currentStepLabel: "implement",
+          },
+        }) as never,
+      );
+
+      const detail = yield* handlers[WORKFLOW_WS_METHODS.getTicketDetail]({
+        ticketId: TicketId.make("ticket-running-view"),
+      });
+
+      assert.isUndefined(detail.ticket.parked, "a non-parked ticket must not carry a parked field");
+      assert.equal(detail.ticket.currentStepLabel, "implement");
+    }),
+);
+
 const importNoopEngine = {
   createTicket: () => Effect.die("unused"),
   editTicket: () => Effect.void,
@@ -6179,7 +6467,7 @@ const proposalMetrics = {
   cycleTime: { count: 2, p50Ms: 100, p90Ms: 200, avgMs: 150 },
   wipByLane: [],
   statusBreakdown: {},
-  attention: { blocked: 0, waitingOnUser: 0, oldest: [] },
+  attention: { blocked: 0, waitingOnUser: 0, parked: 0, oldest: [] },
   routeOutcomes: [],
   manualMoveCount: 0,
   stepStats: [],

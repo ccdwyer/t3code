@@ -614,6 +614,96 @@ layer("WorkflowReadModel", (it) => {
     }),
   );
 
+  it.effect("renders a TicketParked event as a park route-history row with no toLane", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      const sql = yield* SqlClient.SqlClient;
+      const parkOrigin = encodeUnknownJsonString({
+        src: "step",
+        stepKey: "implement",
+        key: "failure",
+        fp: "abc123",
+      });
+      yield* sql`
+        INSERT INTO workflow_events (
+          event_id, ticket_id, stream_version, event_type, occurred_at, payload_json
+        )
+        VALUES (
+          'event-park-1',
+          'ticket-route-park',
+          0,
+          'TicketParked',
+          '2026-06-07T00:00:01.000Z',
+          ${encodeUnknownJsonString({
+            substate: "issue",
+            label: "Issue encountered",
+            reason: "step failed: boom",
+            parkOrigin,
+            actionsSnapshot: [{ label: "Retry", to: "implement" }],
+          })}
+        )
+      `;
+
+      const decisions = yield* read.listTicketRouteDecisions("ticket-route-park" as never);
+
+      assert.equal(decisions.length, 1);
+      const decision = decisions[0];
+      // The origin's src ("step" here) maps onto the SAME `source` a
+      // TicketRouteDecided row from that site would carry ("step_on").
+      assert.equal(decision?.source, "step_on");
+      assert.equal(decision?.toLane, null);
+      assert.equal(decision?.fromLane, null);
+      assert.deepEqual(decision?.park, {
+        substate: "issue",
+        label: "Issue encountered",
+        reason: "step failed: boom",
+      });
+    }),
+  );
+
+  it.effect(
+    "a TicketParked event with a malformed parkOrigin still renders substate/label/reason, without source detail",
+    () =>
+      Effect.gen(function* () {
+        const read = yield* WorkflowReadModel;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+        INSERT INTO workflow_events (
+          event_id, ticket_id, stream_version, event_type, occurred_at, payload_json
+        )
+        VALUES (
+          'event-park-malformed-1',
+          'ticket-route-park-malformed',
+          0,
+          'TicketParked',
+          '2026-06-07T00:00:01.000Z',
+          ${encodeUnknownJsonString({
+            substate: "waiting",
+            label: "Waiting on approval",
+            reason: "awaiting_user",
+            parkOrigin: "not valid json {",
+            actionsSnapshot: [],
+          })}
+        )
+      `;
+
+        const decisions = yield* read.listTicketRouteDecisions(
+          "ticket-route-park-malformed" as never,
+        );
+
+        assert.equal(decisions.length, 1);
+        const decision = decisions[0];
+        // Malformed origin: source detail degrades to "manual", but substate/
+        // label/reason still render (they come off the event payload directly).
+        assert.equal(decision?.source, "manual");
+        assert.deepEqual(decision?.park, {
+          substate: "waiting",
+          label: "Waiting on approval",
+          reason: "awaiting_user",
+        });
+      }),
+  );
+
   it.effect("returns blockedReason for blocked step runs", () =>
     Effect.gen(function* () {
       const read = yield* WorkflowReadModel;
@@ -1841,7 +1931,7 @@ layer("WorkflowReadModel", (it) => {
   );
 
   it.effect(
-    "listNeedsAttentionTickets returns only waiting/blocked tickets with board name, oldest first",
+    "listNeedsAttentionTickets returns waiting/blocked/parked tickets with board name, oldest first",
     () =>
       Effect.gen(function* () {
         const read = yield* WorkflowReadModel;
@@ -1874,7 +1964,8 @@ layer("WorkflowReadModel", (it) => {
           )
         `;
 
-        // Newer waiting ticket, older blocked ticket, and an excluded running one.
+        // Newer waiting ticket, older blocked ticket, oldest parked ticket, and
+        // an excluded running one.
         yield* insertTicket({
           ticketId: "ticket-waiting",
           status: "waiting_on_user",
@@ -1890,6 +1981,13 @@ layer("WorkflowReadModel", (it) => {
           updatedAt: "2026-06-08T01:00:00.000Z",
         });
         yield* insertTicket({
+          ticketId: "ticket-parked",
+          status: "parked",
+          attentionKind: "parked_issue",
+          attentionReason: "step failed: boom",
+          updatedAt: "2026-06-08T00:30:00.000Z",
+        });
+        yield* insertTicket({
           ticketId: "ticket-running",
           status: "running",
           attentionKind: null,
@@ -1900,15 +1998,60 @@ layer("WorkflowReadModel", (it) => {
         const rows = yield* read.listNeedsAttentionTickets();
         assert.deepEqual(
           rows.map((row) => row.ticketId),
-          ["ticket-blocked", "ticket-waiting"],
+          ["ticket-parked", "ticket-blocked", "ticket-waiting"],
         );
         assert.equal(rows[0]?.boardName, "Attention Board");
-        assert.equal(rows[0]?.status, "blocked");
-        assert.equal(rows[0]?.attentionKind, "blocked");
-        assert.equal(rows[0]?.attentionReason, "Missing creds");
+        assert.equal(rows[0]?.status, "parked");
+        assert.equal(rows[0]?.attentionKind, "parked_issue");
+        assert.equal(rows[0]?.attentionReason, "step failed: boom");
         assert.equal(rows[0]?.currentLaneKey, "review");
-        assert.equal(rows[1]?.attentionKind, "waiting_for_input");
+        assert.equal(rows[1]?.attentionKind, "blocked");
+        assert.equal(rows[2]?.attentionKind, "waiting_for_input");
       }),
+  );
+
+  // ── getBoardDigest ────────────────────────────────────────────────────────
+
+  it.effect("getBoardDigest's needsAttention includes waiting/blocked/parked tickets", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const recentIso = DateTime.formatIso(DateTime.subtract(now, { minutes: 5 }));
+
+      const insertTicket = (input: {
+        readonly ticketId: string;
+        readonly status: string;
+        readonly updatedAt: string;
+      }) => sql`
+        INSERT INTO projection_ticket (
+          ticket_id, board_id, title, current_lane_key, status, created_at, updated_at
+        )
+        VALUES (
+          ${input.ticketId}, 'b-digest-attention', ${input.ticketId}, 'review', ${input.status},
+          ${input.updatedAt}, ${input.updatedAt}
+        )
+      `;
+      yield* insertTicket({
+        ticketId: "d-waiting",
+        status: "waiting_on_user",
+        updatedAt: recentIso,
+      });
+      yield* insertTicket({ ticketId: "d-blocked", status: "blocked", updatedAt: recentIso });
+      yield* insertTicket({ ticketId: "d-parked", status: "parked", updatedAt: recentIso });
+      yield* insertTicket({ ticketId: "d-running", status: "running", updatedAt: recentIso });
+
+      const digest = yield* read.getBoardDigest("b-digest-attention" as never, 24);
+
+      assert.deepEqual(
+        new Set(digest.needsAttention.map((row) => row.ticketId)),
+        new Set(["d-waiting", "d-blocked", "d-parked"]),
+        "parked tickets must appear in the digest's needsAttention alongside waiting/blocked",
+      );
+      const parkedRow = digest.needsAttention.find((row) => row.ticketId === "d-parked");
+      assert.equal(parkedRow?.status, "parked");
+      assert.equal(parkedRow?.laneKey, "review");
+    }),
   );
 
   it.effect("deleteTicketState removes the ticket's notification outbox rows", () =>
@@ -2485,6 +2628,18 @@ layer("WorkflowReadModel", (it) => {
         createdAt: daysAgo(8),
         queuedAt: daysAgo(7),
       });
+      // A parked ticket: non-admitted (no entry token, per the park-in-place
+      // invariant), created outside the throughput window like
+      // m-wip-queued-oldest so it does not perturb the throughput.created
+      // assertion below — only attention.parked is under test here.
+      yield* insertTicket({
+        ticketId: "m-parked",
+        boardId: "b-metrics",
+        title: "Parked",
+        lane: "review",
+        status: "parked",
+        createdAt: daysAgo(8),
+      });
       // A ticket in another board must never leak in.
       yield* insertTicket({
         ticketId: "m-other-board",
@@ -2629,9 +2784,10 @@ layer("WorkflowReadModel", (it) => {
       assert.equal(metrics.statusBreakdown["blocked"], 1);
       assert.equal(metrics.statusBreakdown["waiting_on_user"], 1);
 
-      // attention: blocked/waitingOnUser counts + oldest order (desc by age), cap 5.
+      // attention: blocked/waitingOnUser/parked counts + oldest order (desc by age), cap 5.
       assert.equal(metrics.attention.blocked, 1);
       assert.equal(metrics.attention.waitingOnUser, 1);
+      assert.equal(metrics.attention.parked, 1);
       assert.isAtMost(metrics.attention.oldest.length, 5);
       // Queued ticket (7 days via queued_at) must appear and rank above the
       // admitted m-blocked ticket (5 days via current_lane_entered_at).
@@ -2699,6 +2855,7 @@ layer("WorkflowReadModel", (it) => {
       assert.deepEqual(metrics.statusBreakdown, {});
       assert.equal(metrics.attention.blocked, 0);
       assert.equal(metrics.attention.waitingOnUser, 0);
+      assert.equal(metrics.attention.parked, 0);
       assert.deepEqual([...metrics.attention.oldest], []);
       assert.deepEqual([...metrics.routeOutcomes], []);
       assert.equal(metrics.manualMoveCount, 0);

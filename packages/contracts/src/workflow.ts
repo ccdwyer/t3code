@@ -1217,6 +1217,7 @@ export const WorkflowBoardMetrics = Schema.Struct({
   attention: Schema.Struct({
     blocked: Schema.Number,
     waitingOnUser: Schema.Number,
+    parked: Schema.Number,
     oldest: Schema.Array(BoardMetricsOldest),
   }),
   routeOutcomes: Schema.Array(BoardMetricsRouteOutcome),

@@ -42,6 +42,7 @@ const metrics: WorkflowBoardMetrics = {
   attention: {
     blocked: 1,
     waitingOnUser: 0,
+    parked: 0,
     oldest: [
       {
         ticketId: "t-1",

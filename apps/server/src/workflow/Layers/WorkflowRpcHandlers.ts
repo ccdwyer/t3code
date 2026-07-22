@@ -46,6 +46,7 @@ import type {
   WorkflowGenerateWorkflowDraftInput as WorkflowGenerateWorkflowDraftInputType,
   WorkflowGenerateWorkflowDraftResult,
   ModelSelection as ModelSelectionType,
+  WorkflowParkSubstate,
 } from "@t3tools/contracts";
 import type { WorkSourceConnectionView } from "@t3tools/contracts/workSource";
 import type { WorkSourceProviderName } from "@t3tools/contracts/workSource";
@@ -78,6 +79,7 @@ import type { WorkspaceFileSystem } from "../../workspace/WorkspaceFileSystem.ts
 import { slugifyBoardName, uniqueBoardSlug } from "../boardSlug.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "../boardTemplates.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
+import { resolveParkActions } from "../parkActions.ts";
 import {
   MAX_IMPORT_DEFINITION_CHARS,
   MAX_IMPORT_LANES,
@@ -277,6 +279,8 @@ const NEEDS_ATTENTION_KINDS = new Set<string>([
   "waiting_for_approval",
   "waiting_for_input",
   "blocked",
+  "parked_issue",
+  "parked_waiting",
 ]);
 const validAttentionKind = (raw: string | null | undefined): string | null =>
   raw != null && NEEDS_ATTENTION_KINDS.has(raw) ? raw : null;
@@ -301,49 +305,102 @@ const ENV_BOUND_LINT_CODES: ReadonlySet<LintError["code"]> = new Set([
   "missing_instruction_file",
 ]);
 
-const toBoardTicketView = (ticket: TicketRow): BoardTicketView => ({
-  ticketId: ticket.ticketId as TicketId,
-  boardId: ticket.boardId as BoardId,
-  title: ticket.title,
-  ...(ticket.description === null ? {} : { description: ticket.description }),
-  currentLaneKey: ticket.currentLaneKey as LaneKey,
-  status: ticket.status as TicketStatus,
-  ...(ticket.queuedAt === null ? {} : { queuedAt: ticket.queuedAt }),
-  ...(ticket.dependsOn === undefined || ticket.dependsOn.length === 0
-    ? {}
-    : { dependsOn: ticket.dependsOn as ReadonlyArray<TicketId> }),
-  ...(ticket.unresolvedDependencyCount === undefined || ticket.unresolvedDependencyCount === 0
-    ? {}
-    : { unresolvedDependencyCount: ticket.unresolvedDependencyCount }),
-  ...(typeof ticket.tokenBudget === "number" ? { tokenBudget: ticket.tokenBudget } : {}),
-  ...(ticket.updatedAt === undefined ? {} : { updatedAt: ticket.updatedAt }),
-  ...(typeof ticket.totalTokens === "number" && ticket.totalTokens > 0
-    ? { totalTokens: ticket.totalTokens }
-    : {}),
-  ...(typeof ticket.totalDurationMs === "number" && ticket.totalDurationMs > 0
-    ? { totalDurationMs: ticket.totalDurationMs }
-    : {}),
-  ...(ticket.pr === undefined ? {} : { pr: ticket.pr }),
-  // Attention fields — present when the ticket is in a needs-attention state.
-  ...(validAttentionKind(ticket.attentionKind) === null
-    ? {}
-    : { attentionKind: validAttentionKind(ticket.attentionKind) as never }),
-  ...(ticket.attentionReason == null ? {} : { attentionReason: ticket.attentionReason }),
-  // Current lane detail — present on detail reads (resolved from board definition).
-  ...(ticket.currentLane === undefined
-    ? {}
-    : {
-        currentLane: {
-          key: ticket.currentLane.key as LaneKey,
-          name: ticket.currentLane.name,
-          actions: ticket.currentLane.actions.map((a) => ({
-            label: a.label,
-            to: a.to as LaneKey,
-            ...(a.hint === undefined ? {} : { hint: a.hint }),
+// Re-resolves a parked ticket's actions from the CURRENT board definition
+// (never the event's stored actionsSnapshot — that's history-only, see
+// parkActions.ts) so an edited/reverted board never executes a stale
+// snapshot. `undefined` `definition` (board unregistered/unloaded) and
+// `null` `resolveParkActions` (origin unparseable / target edited away)
+// both degrade to an absent `actions` — the view's "actions unavailable"
+// idiom — never a lie about what the ticket can do.
+const toParkedTicketView = (
+  ticket: TicketRow,
+  definition: WorkflowDefinitionType | null,
+): BoardTicketView["parked"] => {
+  if (
+    ticket.status !== "parked" ||
+    ticket.parkedSubstate == null ||
+    ticket.parkedLabel == null ||
+    ticket.parkedReason == null ||
+    ticket.parkedAt == null ||
+    ticket.parkedEventId == null
+  ) {
+    return undefined;
+  }
+  const actions =
+    definition === null || ticket.parkOrigin == null
+      ? null
+      : resolveParkActions(definition, ticket.currentLaneKey as LaneKey, ticket.parkOrigin);
+  return {
+    substate: ticket.parkedSubstate as WorkflowParkSubstate,
+    label: ticket.parkedLabel,
+    reason: ticket.parkedReason,
+    parkedAt: ticket.parkedAt,
+    parkedEventId: ticket.parkedEventId as never,
+    ...(actions === null
+      ? {}
+      : {
+          actions: actions.map((action) => ({
+            label: action.label,
+            to: action.to as LaneKey,
+            ...(action.hint === undefined ? {} : { hint: action.hint }),
           })),
-        },
-      }),
-});
+        }),
+  };
+};
+
+const toBoardTicketView = (
+  ticket: TicketRow,
+  definition: WorkflowDefinitionType | null,
+): BoardTicketView => {
+  const parked = toParkedTicketView(ticket, definition);
+  return {
+    ticketId: ticket.ticketId as TicketId,
+    boardId: ticket.boardId as BoardId,
+    title: ticket.title,
+    ...(ticket.description === null ? {} : { description: ticket.description }),
+    currentLaneKey: ticket.currentLaneKey as LaneKey,
+    status: ticket.status as TicketStatus,
+    ...(ticket.queuedAt === null ? {} : { queuedAt: ticket.queuedAt }),
+    ...(ticket.dependsOn === undefined || ticket.dependsOn.length === 0
+      ? {}
+      : { dependsOn: ticket.dependsOn as ReadonlyArray<TicketId> }),
+    ...(ticket.unresolvedDependencyCount === undefined || ticket.unresolvedDependencyCount === 0
+      ? {}
+      : { unresolvedDependencyCount: ticket.unresolvedDependencyCount }),
+    ...(typeof ticket.tokenBudget === "number" ? { tokenBudget: ticket.tokenBudget } : {}),
+    ...(ticket.updatedAt === undefined ? {} : { updatedAt: ticket.updatedAt }),
+    ...(typeof ticket.totalTokens === "number" && ticket.totalTokens > 0
+      ? { totalTokens: ticket.totalTokens }
+      : {}),
+    ...(typeof ticket.totalDurationMs === "number" && ticket.totalDurationMs > 0
+      ? { totalDurationMs: ticket.totalDurationMs }
+      : {}),
+    ...(ticket.pr === undefined ? {} : { pr: ticket.pr }),
+    // Attention fields — present when the ticket is in a needs-attention state.
+    ...(validAttentionKind(ticket.attentionKind) === null
+      ? {}
+      : { attentionKind: validAttentionKind(ticket.attentionKind) as never }),
+    ...(ticket.attentionReason == null ? {} : { attentionReason: ticket.attentionReason }),
+    // Current lane detail — present on detail reads (resolved from board definition).
+    ...(ticket.currentLane === undefined
+      ? {}
+      : {
+          currentLane: {
+            key: ticket.currentLane.key as LaneKey,
+            name: ticket.currentLane.name,
+            actions: ticket.currentLane.actions.map((a) => ({
+              label: a.label,
+              to: a.to as LaneKey,
+              ...(a.hint === undefined ? {} : { hint: a.hint }),
+            })),
+          },
+        }),
+    // What the agent is currently doing, for running tickets.
+    ...(ticket.currentStepLabel == null ? {} : { currentStepLabel: ticket.currentStepLabel }),
+    // Park-in-place details — present while status is "parked".
+    ...(parked === undefined ? {} : { parked }),
+  };
+};
 
 const toStepUsageView = (step: StepRunRow) => {
   if (
@@ -489,12 +546,12 @@ const boardSnapshot = (
             : { actions: lane.actions }),
         })),
       },
-      tickets: tickets.map(toBoardTicketView),
+      tickets: tickets.map((ticket) => toBoardTicketView(ticket, definition)),
     } satisfies BoardSnapshot;
   });
 
 const ticketDetail = (
-  deps: Pick<WorkflowRpcHandlerDeps, "readModel">,
+  deps: Pick<WorkflowRpcHandlerDeps, "readModel" | "boardRegistry">,
   ticketId: TicketId,
 ): Effect.Effect<WorkflowTicketDetailView, WorkflowRpcError> =>
   Effect.gen(function* () {
@@ -515,12 +572,16 @@ const ticketDetail = (
           workflowRpcError("Failed to load workflow ticket route history", cause),
         ),
       );
+    // Absent when the board is unregistered/unloaded — toBoardTicketView (and
+    // the park action re-resolution it drives) degrades to "actions
+    // unavailable" in that case rather than failing the whole read.
+    const definition = yield* deps.boardRegistry.getDefinition(detail.ticket.boardId as BoardId);
 
     return {
       routeHistory: routeDecisions.map((decision) => ({
         occurredAt: decision.occurredAt as never,
         ...(decision.fromLane === null ? {} : { fromLane: decision.fromLane as never }),
-        toLane: decision.toLane as never,
+        ...(decision.toLane === null ? {} : { toLane: decision.toLane as never }),
         source: decision.source,
         ...(decision.matchedTransitionIndex === null
           ? {}
@@ -542,8 +603,17 @@ const ticketDetail = (
                 ]),
               ),
             }),
+        ...(decision.park === null
+          ? {}
+          : {
+              park: {
+                substate: decision.park.substate,
+                label: decision.park.label,
+                reason: decision.park.reason,
+              },
+            }),
       })),
-      ticket: toBoardTicketView(detail.ticket),
+      ticket: toBoardTicketView(detail.ticket, definition),
       steps: detail.steps.map(toStepRunView),
       messages: detail.messages.map((message) => ({
         messageId: message.messageId,

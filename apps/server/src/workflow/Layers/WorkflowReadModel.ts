@@ -16,6 +16,7 @@ import {
 
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
+import { parseParkOrigin, type ParkOriginSource } from "../parkOrigin.ts";
 import {
   WorkflowReadModel,
   type BoardListRow,
@@ -151,6 +152,19 @@ const ROUTE_SOURCES = [
   "work_source",
 ] as const;
 const PIPELINE_RESULTS = ["success", "failure", "blocked"] as const;
+const WORKFLOW_PARK_SUBSTATES = ["issue", "waiting"] as const;
+
+// A park's `parkOrigin` records which routing site produced it, using the
+// same vocabulary the engine already resolves actions by (see
+// parkOrigin.ts). Route history reuses the SAME `source` literals a
+// TicketRouteDecided row would carry for that site, so a park row reads
+// like any other history entry rather than inventing a parallel taxonomy.
+const PARK_ORIGIN_SOURCE_BY_SRC: Record<ParkOriginSource, (typeof ROUTE_SOURCES)[number]> = {
+  lane_on: "lane_on",
+  step: "step_on",
+  transition: "lane_transition",
+  event: "external_event",
+};
 
 // Route history is for explaining recent movement, not replaying a ticket's
 // whole life — bound the event scan so detail polling stays cheap.
@@ -188,6 +202,43 @@ const snapshotSteps = (
   return Object.keys(steps).length > 0 ? steps : null;
 };
 
+// Renders a `TicketParked` event as a route-history row. The ticket never
+// left its lane, so `fromLane`/`toLane` are both null (the contract's park
+// variant is `toLane`-less). `substate`/`label`/`reason` come straight off
+// the event payload — independent of `parkOrigin` — so a malformed or
+// unparseable origin never hides them, only the `source` detail they'd
+// otherwise carry.
+const toParkRouteDecisionRow = (
+  occurredAt: string,
+  record: Record<string, unknown>,
+): TicketRouteDecisionRow | null => {
+  const substate = WORKFLOW_PARK_SUBSTATES.find((candidate) => candidate === record["substate"]);
+  if (
+    substate === undefined ||
+    typeof record["label"] !== "string" ||
+    typeof record["reason"] !== "string"
+  ) {
+    return null;
+  }
+  const originJson = typeof record["parkOrigin"] === "string" ? record["parkOrigin"] : null;
+  const origin = originJson === null ? null : parseParkOrigin(originJson);
+  // Malformed/unparseable origin: still render substate/label/reason, just
+  // without the origin-derived `source` detail (falls back to "manual").
+  const source = origin === null ? "manual" : PARK_ORIGIN_SOURCE_BY_SRC[origin.src];
+  return {
+    occurredAt,
+    fromLane: null,
+    toLane: null,
+    source,
+    matchedTransitionIndex: null,
+    eventName: null,
+    pipelineResult: null,
+    laneRunCount: null,
+    steps: null,
+    park: { substate, label: record["label"], reason: record["reason"] },
+  };
+};
+
 /**
  * Map a routing event to a history row. The contextSnapshot is stored as
  * opaque JSON, so highlights are lifted defensively — a missing or malformed
@@ -201,7 +252,13 @@ const toRouteDecisionRow = (
   payload: unknown,
 ): TicketRouteDecisionRow | null => {
   const record = asRecord(payload);
-  if (record === null || typeof record["toLane"] !== "string") {
+  if (record === null) {
+    return null;
+  }
+  if (eventType === "TicketParked") {
+    return toParkRouteDecisionRow(occurredAt, record);
+  }
+  if (typeof record["toLane"] !== "string") {
     return null;
   }
   if (eventType === "TicketMovedToLane") {
@@ -217,6 +274,7 @@ const toRouteDecisionRow = (
           pipelineResult: null,
           laneRunCount: null,
           steps: null,
+          park: null,
         }
       : null;
   }
@@ -244,6 +302,7 @@ const toRouteDecisionRow = (
       PIPELINE_RESULTS.find((candidate) => candidate === pipeline?.["result"]) ?? null,
     laneRunCount: typeof runCount === "number" && Number.isInteger(runCount) ? runCount : null,
     steps: snapshotSteps(snapshot?.["steps"]),
+    park: null,
   };
 };
 
@@ -1055,7 +1114,7 @@ const make = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_ticket
         WHERE board_id = ${boardId}
-          AND status IN ('waiting_on_user', 'blocked')
+          AND status IN ('waiting_on_user', 'blocked', 'parked')
         ORDER BY updated_at ASC
         LIMIT 20
       `);
@@ -1164,10 +1223,12 @@ const make = Effect.gen(function* () {
       const attentionCounts = yield* wrap(sql<{
         readonly blocked: number;
         readonly waitingOnUser: number;
+        readonly parked: number;
       }>`
         SELECT
           SUM(CASE WHEN status = 'blocked' AND terminal_at IS NULL THEN 1 ELSE 0 END) AS "blocked",
-          SUM(CASE WHEN status = 'waiting_on_user' AND terminal_at IS NULL THEN 1 ELSE 0 END) AS "waitingOnUser"
+          SUM(CASE WHEN status = 'waiting_on_user' AND terminal_at IS NULL THEN 1 ELSE 0 END) AS "waitingOnUser",
+          SUM(CASE WHEN status = 'parked' AND terminal_at IS NULL THEN 1 ELSE 0 END) AS "parked"
         FROM projection_ticket
         WHERE board_id = ${boardId}
       `);
@@ -1199,6 +1260,7 @@ const make = Effect.gen(function* () {
       const attention = {
         blocked: attentionCounts[0]?.blocked ?? 0,
         waitingOnUser: attentionCounts[0]?.waitingOnUser ?? 0,
+        parked: attentionCounts[0]?.parked ?? 0,
         oldest,
       };
 
@@ -1320,7 +1382,7 @@ const make = Effect.gen(function* () {
       FROM projection_ticket AS pt
       INNER JOIN projection_board AS pb
         ON pb.board_id = pt.board_id
-      WHERE pt.status IN ('waiting_on_user', 'blocked')
+      WHERE pt.status IN ('waiting_on_user', 'blocked', 'parked')
       ORDER BY pt.updated_at ASC
     `);
 
@@ -1342,7 +1404,7 @@ const make = Effect.gen(function* () {
             payload_json AS "payloadJson"
           FROM workflow_events
           WHERE ticket_id = ${ticketId}
-            AND event_type IN ('TicketRouteDecided', 'TicketMovedToLane')
+            AND event_type IN ('TicketRouteDecided', 'TicketMovedToLane', 'TicketParked')
           ORDER BY sequence DESC
           LIMIT ${ROUTE_DECISION_EVENT_CAP}
         )

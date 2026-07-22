@@ -265,7 +265,7 @@ describe("workflow RPC contracts", () => {
         cycleTime: { count: 2, p50Ms: 50000, p90Ms: 90000, avgMs: 70000 },
         wipByLane: [],
         statusBreakdown: { idle: 5, running: 1 },
-        attention: { blocked: 0, waitingOnUser: 1, oldest: [] },
+        attention: { blocked: 0, waitingOnUser: 1, parked: 0, oldest: [] },
         routeOutcomes: [],
         manualMoveCount: 0,
         stepStats: [],

@@ -4,6 +4,8 @@ import type {
   LaneKey,
   TicketId,
   TicketStatus,
+  WorkflowDefinition,
+  WorkflowParkSubstate,
   WorkflowTicketAttentionKind,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -33,7 +35,8 @@ import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import { WorkflowEventStore, type PersistedWorkflowEvent } from "../Services/WorkflowEventStore.ts";
 import { WorkflowIds } from "../Services/WorkflowIds.ts";
 import { WorkflowProjectionPipeline } from "../Services/WorkflowProjectionPipeline.ts";
-import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { WorkflowReadModel, type TicketRow } from "../Services/WorkflowReadModel.ts";
+import { resolveParkActions } from "../parkActions.ts";
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -402,12 +405,54 @@ const make = Effect.gen(function* () {
       return rechecked;
     });
 
+  // Mirrors WorkflowRpcHandlers' toParkedTicketView: re-resolves actions from
+  // the CURRENT board definition (never the event's stored actionsSnapshot),
+  // degrading to an absent `actions` (never a stale snapshot) when the
+  // definition is unavailable or the origin no longer resolves.
+  const toParkedTicketView = (
+    ticket: TicketRow,
+    definition: WorkflowDefinition | null,
+  ): BoardTicketView["parked"] => {
+    if (
+      ticket.status !== "parked" ||
+      ticket.parkedSubstate == null ||
+      ticket.parkedLabel == null ||
+      ticket.parkedReason == null ||
+      ticket.parkedAt == null ||
+      ticket.parkedEventId == null
+    ) {
+      return undefined;
+    }
+    const actions =
+      definition === null || ticket.parkOrigin == null
+        ? null
+        : resolveParkActions(definition, ticket.currentLaneKey as LaneKey, ticket.parkOrigin);
+    return {
+      substate: ticket.parkedSubstate as WorkflowParkSubstate,
+      label: ticket.parkedLabel,
+      reason: ticket.parkedReason,
+      parkedAt: ticket.parkedAt,
+      parkedEventId: ticket.parkedEventId as never,
+      ...(actions === null
+        ? {}
+        : {
+            actions: actions.map((action) => ({
+              label: action.label,
+              to: action.to as LaneKey,
+              ...(action.hint === undefined ? {} : { hint: action.hint }),
+            })),
+          }),
+    };
+  };
+
   const publishTicketView = (ticketId: PersistedWorkflowEvent["ticketId"]) =>
     Effect.gen(function* () {
       const detail = yield* readModel.getTicketDetail(ticketId);
       const { boardEvents } = yield* getOptionalServices;
       if (detail && Option.isSome(boardEvents)) {
         const ticket = detail.ticket;
+        const definition = yield* registry.getDefinition(ticket.boardId as BoardId);
+        const parked = toParkedTicketView(ticket, definition);
         yield* boardEvents.value.publish({
           ticketId: ticket.ticketId as TicketId,
           boardId: ticket.boardId as BoardId,
@@ -441,6 +486,12 @@ const make = Effect.gen(function* () {
           ...(ticket.attentionReason === undefined || ticket.attentionReason === null
             ? {}
             : { attentionReason: ticket.attentionReason }),
+          // What the agent is currently doing, for running tickets.
+          ...(ticket.currentStepLabel === undefined || ticket.currentStepLabel === null
+            ? {}
+            : { currentStepLabel: ticket.currentStepLabel }),
+          // Park-in-place details — present while status is "parked".
+          ...(parked === undefined ? {} : { parked }),
         } satisfies BoardTicketView);
       }
     });

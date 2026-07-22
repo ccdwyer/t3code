@@ -11,6 +11,7 @@ import type {
   WorkflowBoardMetrics,
   WorkflowBoardProposalView,
   WorkflowDefinitionEncoded,
+  WorkflowParkSubstate,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -191,7 +192,9 @@ export interface RouteDecisionStepSnapshot {
 export interface TicketRouteDecisionRow {
   readonly occurredAt: string;
   readonly fromLane: string | null;
-  readonly toLane: string;
+  // null for a park row — the ticket parked in place, so there is no
+  // destination lane (see `park` below).
+  readonly toLane: string | null;
   readonly source:
     | "step_on"
     | "lane_transition"
@@ -204,6 +207,13 @@ export interface TicketRouteDecisionRow {
   readonly pipelineResult: "success" | "failure" | "blocked" | null;
   readonly laneRunCount: number | null;
   readonly steps: Readonly<Record<string, RouteDecisionStepSnapshot>> | null;
+  // Present when this row renders a `TicketParked` event rather than a
+  // `TicketRouteDecided`/`TicketMovedToLane` one.
+  readonly park: {
+    readonly substate: WorkflowParkSubstate;
+    readonly label: string;
+    readonly reason: string;
+  } | null;
 }
 
 export interface StepRunRow {

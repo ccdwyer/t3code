@@ -111,6 +111,51 @@ describe("describeRouteDecision", () => {
     expect(eventDetail).toContain("…");
   });
 
+  it("describes a park row with a real source using the park shape, not 'Moved'", () => {
+    const described = describeRouteDecision(
+      decision({
+        fromLane: "implement",
+        toLane: undefined,
+        source: "step_on",
+        park: { substate: "issue", label: "Issue encountered", reason: "Tests failed twice" },
+      }),
+      laneName,
+    );
+
+    expect(described.title).toBe("Parked (issue) — Issue encountered");
+    expect(described.title).not.toContain("Moved");
+    expect(described.details).toContain("Tests failed twice");
+    expect(described.details).toContain("From a step outcome");
+  });
+
+  it("regression: a malformed-origin park row (park present + source: manual) never mentions 'manual'", () => {
+    const described = describeRouteDecision(
+      decision({
+        fromLane: "implement",
+        toLane: undefined,
+        source: "manual",
+        park: { substate: "waiting", label: "Waiting on you", reason: "Needs a decision" },
+      }),
+      laneName,
+    );
+
+    expect(described.title).toBe("Parked (waiting) — Waiting on you");
+    expect(described.details).toContain("Needs a decision");
+    const rendered = `${described.title} ${described.details.join(" ")}`;
+    expect(rendered.toLowerCase()).not.toContain("manual");
+    expect(rendered).not.toContain("Moved");
+  });
+
+  it("regression: lane rows (no park) are unaffected by the park-first branch", () => {
+    const described = describeRouteDecision(
+      decision({ fromLane: "implement", toLane: "review", source: "manual" }),
+      laneName,
+    );
+
+    expect(described.title).toBe("Implementation → Review");
+    expect(described.details).toEqual(["Moved manually"]);
+  });
+
   it("truncates runaway verdict strings", () => {
     const described = describeRouteDecision(
       decision({

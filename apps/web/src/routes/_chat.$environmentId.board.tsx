@@ -891,6 +891,7 @@ function WorkflowBoardRouteView() {
             onEditTicket={handleEditTicket}
             onMove={handleDrawerMove}
             onRunLane={handleRunLane}
+            onParkAction={handleParkAction}
             projectId={state.projectId ? ProjectId.make(state.projectId) : undefined}
             cwd={ticketCwd}
           />

@@ -7,9 +7,9 @@ export interface RouteDecisionStepView {
 export interface RouteDecisionView {
   readonly occurredAt: string;
   readonly fromLane?: string | undefined;
-  // Absent for a park entry (the ticket parked in place rather than moving).
-  // TODO(park): Task 17 — render park entries properly; for now this is
-  // display-only fallback handling, no stored history has this shape yet.
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
+  // Absent for a park entry (the ticket parked in place rather than moving —
+  // see `park` below).
   readonly toLane?: string | undefined;
   readonly source:
     | "step_on"
@@ -23,6 +23,16 @@ export interface RouteDecisionView {
   readonly pipelineResult?: "success" | "failure" | "blocked" | undefined;
   readonly laneRunCount?: number | undefined;
   readonly steps?: Readonly<Record<string, RouteDecisionStepView>> | undefined;
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
+  // Present when this entry renders a `TicketParked` event rather than a
+  // `TicketRouteDecided` one — the ticket parked in place instead of moving.
+  readonly park?:
+    | {
+        readonly substate: "issue" | "waiting";
+        readonly label: string;
+        readonly reason: string;
+      }
+    | undefined;
 }
 
 export interface DescribedRouteDecision {
@@ -49,6 +59,41 @@ const PIPELINE_RESULT_LABELS: Record<string, string> = {
   blocked: "Pipeline blocked",
 };
 
+const PARK_SUBSTATE_WORDS: Record<"issue" | "waiting", string> = {
+  issue: "issue",
+  waiting: "waiting",
+};
+
+// Supplementary origin phrase for a park row — shown only when the source is
+// a real, known origin. "manual" is deliberately absent: it is the
+// malformed-origin fallback recorded when a park's real origin could not be
+// determined, and a park row must NEVER be described as "moved manually" (a
+// park never moves the ticket at all).
+const PARK_ORIGIN_LABELS: Partial<Record<RouteDecisionView["source"], string>> = {
+  step_on: "From a step outcome",
+  lane_transition: "From a lane transition",
+  lane_on: "From the lane's default route",
+  external_event: "From an external event",
+};
+
+/**
+ * Describes a park row (`row.park` present). Renders exclusively from the
+ * park fields — never from `source` — so a malformed-origin park row (whose
+ * `source` falls back to `"manual"`) never renders as "Moved manually".
+ */
+const describeParkDecision = (
+  park: NonNullable<RouteDecisionView["park"]>,
+  source: RouteDecisionView["source"],
+): DescribedRouteDecision => {
+  const title = `Parked (${PARK_SUBSTATE_WORDS[park.substate]}) — ${park.label}`;
+  const details: string[] = [park.reason];
+  const originLabel = PARK_ORIGIN_LABELS[source];
+  if (originLabel !== undefined) {
+    details.push(originLabel);
+  }
+  return { title, details };
+};
+
 /**
  * Human-readable explanation of one routing decision for the ticket drawer.
  * `laneName` resolves lane keys to display names (falls back to the key).
@@ -57,8 +102,13 @@ export const describeRouteDecision = (
   decision: RouteDecisionView,
   laneName: (key: string) => string,
 ): DescribedRouteDecision => {
-  // TODO(park): Task 17 — a park entry has no destination lane; fall back to
-  // a dash rather than mis-rendering the target.
+  // Acceptance criterion: branch on `park` FIRST, before ever looking at
+  // `source` — a park row's `source` may be the malformed-origin fallback
+  // ("manual") and must never be mistaken for a manual lane move.
+  if (decision.park !== undefined) {
+    return describeParkDecision(decision.park, decision.source);
+  }
+
   const to = decision.toLane === undefined ? "—" : laneName(decision.toLane);
   const title =
     decision.fromLane === undefined ? `Moved to ${to}` : `${laneName(decision.fromLane)} → ${to}`;

@@ -12,18 +12,22 @@ import {
   ImageIcon,
   Maximize2Icon,
   Minimize2Icon,
+  MoreHorizontalIcon,
   PencilIcon,
   PlayIcon,
   SendIcon,
   XIcon,
 } from "lucide-react";
-import { type ChangeEvent, type FormEvent, useEffect, useState } from "react";
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { Textarea } from "~/components/ui/textarea";
 import { cn, randomUUID } from "~/lib/utils";
+import { ticketAging } from "~/workflow/agingFormat";
+import { useNowTick } from "~/workflow/useNowTick";
 import { stepUsageSummary } from "~/workflow/usageFormat";
 
 import {
@@ -39,6 +43,7 @@ import { AgentSessionDialog } from "./AgentSessionDialog";
 import { MarkdownComposerField } from "./MarkdownComposerField";
 import { TicketArtifacts } from "./TicketArtifacts";
 import { StepActivityFeed } from "./StepActivityFeed";
+import { dispatchParkAction, splitParkActions } from "./TicketCard";
 import { TicketDiff } from "./TicketDiff";
 import { WorkflowEditorFullscreen } from "./editor/WorkflowEditorFullscreen";
 
@@ -74,6 +79,18 @@ export interface TicketDrawerEditInput {
   readonly description?: string | undefined;
 }
 
+/** Park-in-place details for a parked ticket, mirroring `BoardTicketView.parked`.
+ *  `actions` is re-resolved from the current board definition at read time —
+ *  absent means the definition changed and inline recovery is unavailable. */
+export interface TicketDrawerParkedView {
+  readonly substate: "issue" | "waiting";
+  readonly label: string;
+  readonly reason: string;
+  readonly parkedAt: string;
+  readonly parkedEventId: string;
+  readonly actions?: ReadonlyArray<TicketDrawerLaneAction> | undefined;
+}
+
 export interface TicketDrawerDetail {
   readonly ticket: {
     readonly ticketId: string;
@@ -82,6 +99,7 @@ export interface TicketDrawerDetail {
     readonly description?: string | undefined;
     readonly currentLaneKey: string;
     readonly status: string;
+    readonly updatedAt?: string | undefined;
     readonly pr?:
       | {
           readonly number: number;
@@ -90,6 +108,10 @@ export interface TicketDrawerDetail {
           readonly ciState?: "pending" | "success" | "failure" | undefined;
         }
       | undefined;
+    readonly attentionKind?: string | undefined;
+    readonly currentStepLabel?: string | undefined;
+    // Park-in-place details — present while status is "parked".
+    readonly parked?: TicketDrawerParkedView | undefined;
   };
   readonly steps: ReadonlyArray<{
     readonly stepRunId: string;
@@ -169,6 +191,7 @@ export function TicketDrawer({
   onEditTicket,
   onMove,
   onRunLane,
+  onParkAction,
   projectId,
   cwd,
 }: {
@@ -182,6 +205,9 @@ export function TicketDrawer({
   readonly onEditTicket?: ((input: TicketDrawerEditInput) => Promise<void>) | undefined;
   readonly onMove?: ((toLane: string) => void) | undefined;
   readonly onRunLane: () => void;
+  readonly onParkAction?:
+    | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+    | undefined;
   readonly projectId?: ProjectId | undefined;
   readonly cwd?: string | undefined;
 }) {
@@ -224,6 +250,7 @@ export function TicketDrawer({
     latestRouteEntry === undefined
       ? null
       : describeRouteDecision(latestRouteEntry, laneDisplayName);
+  const now = useNowTick(60_000);
 
   useEffect(() => {
     if (editingTicket) {
@@ -401,6 +428,18 @@ export function TicketDrawer({
           </div>
         </div>
       </header>
+
+      {/* Parked banner: sits right after the header, ahead of both the
+          collapsed and fullscreen bodies, so a parked ticket's status/reason/
+          actions are visible regardless of view mode. */}
+      {detail.ticket.parked !== undefined ? (
+        <TicketParkedBanner
+          ticketId={detail.ticket.ticketId}
+          parked={detail.ticket.parked}
+          now={now}
+          onParkAction={onParkAction}
+        />
+      ) : null}
 
       {/*
        * When fullscreen is true: render only the TicketFullscreen overlay.
@@ -657,6 +696,150 @@ export function TicketDrawer({
         </>
       )}
     </aside>
+  );
+}
+
+/**
+ * The parked-ticket banner: tier-colored (warning for "issue", info for
+ * "waiting" — the same token families as the card/strip), with the label
+ * prominent, the full reason (the drawer has room, unlike the card's
+ * `line-clamp-2`), an age readout, and the re-resolved recovery actions.
+ * When actions are unavailable (board definition changed), the note points
+ * at the "Move" select in the footer as the escape hatch.
+ */
+function TicketParkedBanner({
+  ticketId,
+  parked,
+  now,
+  onParkAction,
+}: {
+  readonly ticketId: string;
+  readonly parked: TicketDrawerParkedView;
+  readonly now: number;
+  readonly onParkAction?:
+    | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+    | undefined;
+}) {
+  const aging = ticketAging(
+    { status: "parked", updatedAt: parked.parkedAt, parked: { substate: parked.substate } },
+    now,
+  );
+  const parkActions = parked.actions;
+  const { primary, overflow } =
+    parkActions !== undefined
+      ? splitParkActions(parkActions)
+      : { primary: undefined, overflow: [] };
+
+  const inFlightRef = useRef(false);
+  const [pending, setPending] = useState(false);
+  const runAction = (index: number): void => {
+    dispatchParkAction(
+      {
+        onParkAction,
+        ticketId,
+        actionIndex: index,
+        parkedEventId: parked.parkedEventId,
+      },
+      {
+        isInFlight: () => inFlightRef.current,
+        begin: () => {
+          inFlightRef.current = true;
+          setPending(true);
+        },
+        end: () => {
+          inFlightRef.current = false;
+          setPending(false);
+        },
+      },
+    );
+  };
+
+  const isIssue = parked.substate === "issue";
+
+  return (
+    <div
+      className={cn(
+        "shrink-0 border-b px-4 py-3",
+        isIssue ? "border-warning/40 bg-warning/8" : "border-info/40 bg-info/8",
+      )}
+      data-testid="ticket-parked-banner"
+      data-tier={parked.substate}
+    >
+      <p
+        className={cn(
+          "text-sm font-semibold",
+          isIssue ? "text-warning-foreground" : "text-info-foreground",
+        )}
+        data-testid="ticket-parked-label"
+      >
+        {parked.label}
+      </p>
+      <p
+        className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground"
+        data-testid="ticket-parked-reason"
+      >
+        {parked.reason}
+      </p>
+      {aging !== null ? (
+        <p
+          className="mt-1 text-[11px] tabular-nums text-muted-foreground/80"
+          data-testid="ticket-parked-age"
+        >
+          {aging.durationLabel}
+        </p>
+      ) : null}
+      {parkActions !== undefined && primary !== undefined ? (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-1.5"
+          data-testid="ticket-parked-actions"
+        >
+          <Button
+            size="xs"
+            variant="secondary"
+            disabled={pending}
+            onClick={() => runAction(primary.index)}
+            {...(primary.action.hint !== undefined ? { title: primary.action.hint } : {})}
+          >
+            {primary.action.label}
+          </Button>
+          {overflow.length > 0 ? (
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    disabled={pending}
+                    aria-label="More recovery actions"
+                    data-testid="ticket-parked-actions-overflow"
+                  />
+                }
+              >
+                <MoreHorizontalIcon className="size-3.5" />
+              </MenuTrigger>
+              <MenuPopup align="end">
+                {overflow.map(({ action, index }) => (
+                  <MenuItem
+                    key={action.to + index}
+                    onClick={() => runAction(index)}
+                    {...(action.hint !== undefined ? { title: action.hint } : {})}
+                  >
+                    {action.label}
+                  </MenuItem>
+                ))}
+              </MenuPopup>
+            </Menu>
+          ) : null}
+        </div>
+      ) : (
+        <p
+          className="mt-2 text-[11px] leading-4 text-muted-foreground"
+          data-testid="ticket-parked-actions-unavailable"
+        >
+          Actions unavailable — board changed. Use "Move" below to recover.
+        </p>
+      )}
+    </div>
   );
 }
 

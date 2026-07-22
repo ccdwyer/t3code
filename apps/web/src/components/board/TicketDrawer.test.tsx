@@ -424,6 +424,129 @@ describe("TicketDrawer", () => {
   });
 });
 
+const parkedTicketDetail = {
+  ticket: {
+    ticketId: "ticket-1",
+    boardId: "board-1",
+    title: "Fix the flaky test",
+    currentLaneKey: "implement",
+    status: "parked",
+    updatedAt: "2026-06-08T10:00:00.000Z",
+    parked: {
+      substate: "issue",
+      label: "Issue encountered",
+      reason: "The implement step exited non-zero twice.",
+      parkedAt: "2026-06-08T10:00:00.000Z",
+      parkedEventId: "event-1",
+      actions: [
+        { label: "Retry", to: "implement", hint: "Re-run the implement lane" },
+        { label: "Escalate", to: "review" },
+      ],
+    },
+  },
+  steps: [],
+  messages: [],
+} as const;
+
+describe("TicketDrawer parked banner", () => {
+  it("renders the parked banner with label, reason, age, and recovery actions", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={parkedTicketDetail}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onParkAction={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="ticket-parked-banner"');
+    expect(markup).toContain('data-tier="issue"');
+    expect(markup).toContain('data-testid="ticket-parked-label"');
+    expect(markup).toContain("Issue encountered");
+    expect(markup).toContain('data-testid="ticket-parked-reason"');
+    // Full reason text, not truncated — the drawer has room, unlike the card.
+    expect(markup).toContain("The implement step exited non-zero twice.");
+    // The park is far in the past relative to "now" (system date is 2026-07-22),
+    // so the aging clock has kicked in.
+    expect(markup).toContain('data-testid="ticket-parked-age"');
+    expect(markup).toContain('data-testid="ticket-parked-actions"');
+    expect(markup).toContain(">Retry<");
+    expect(markup).toContain('data-testid="ticket-parked-actions-overflow"');
+  });
+
+  it("wires the primary action (index 0) with its hint and renders an overflow trigger for the rest — the same dispatchParkAction/splitParkActions helpers whose exact-args forwarding is unit-tested in TicketCard.test.tsx", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={parkedTicketDetail}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onParkAction={async () => {}}
+      />,
+    );
+
+    // Primary action (index 0 → Retry) carries its hint as a title attribute.
+    expect(markup).toContain('title="Re-run the implement lane"');
+    expect(markup).toContain(">Retry<");
+    // Overflow trigger present for the remaining action (index 1 → Escalate);
+    // Base UI's popup content is portaled and not present in static markup.
+    expect(markup).toContain('data-testid="ticket-parked-actions-overflow"');
+  });
+
+  it("shows the unavailable note when park actions are absent, pointing at the Move escape hatch", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...parkedTicketDetail,
+          ticket: {
+            ...parkedTicketDetail.ticket,
+            parked: { ...parkedTicketDetail.ticket.parked, actions: undefined },
+          },
+        }}
+        lanes={[
+          { key: "implement", name: "Implementation", entry: "auto", pipelineStepCount: 1 },
+          { key: "review", name: "Review", entry: "manual", pipelineStepCount: 0 },
+        ]}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onMove={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="ticket-parked-actions-unavailable"');
+    expect(markup).not.toContain('data-testid="ticket-parked-actions"');
+    expect(markup).toContain("Actions unavailable");
+    // The Move select in the footer remains the escape hatch.
+    expect(markup).toContain(">Move<");
+  });
+
+  it("renders no parked banner for a non-parked ticket", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer detail={ticketDetail} onApprove={async () => undefined} onRunLane={() => {}} />,
+    );
+
+    expect(markup).not.toContain('data-testid="ticket-parked-banner"');
+  });
+
+  it("keeps the step-answer/reply UI exclusive to waiting_on_user — a parked ticket never shows it, even with a comment composer available", () => {
+    // Parked ⇒ status !== "waiting_on_user" (mutually exclusive statuses).
+    expect(parkedTicketDetail.ticket.status).not.toBe("waiting_on_user");
+
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={parkedTicketDetail}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onPostComment={async () => undefined}
+      />,
+    );
+
+    expect(markup).not.toContain("Ticket reply");
+    expect(markup).not.toContain("Send reply");
+    // The plain comment composer (not the step-answer UI) is still available.
+    expect(markup).toContain("Add a comment");
+  });
+});
+
 describe("TicketDrawer synced-source badge", () => {
   it("shows Synced from badge and hides Edit button when syncedSource is set", () => {
     const markup = renderToStaticMarkup(

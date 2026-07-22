@@ -1,4 +1,5 @@
 import type {
+  CodexMicroDeviceState,
   DesktopBridge,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingFrame,
@@ -246,5 +247,44 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       return () =>
         ipcRenderer.removeListener(IpcChannels.PREVIEW_POINTER_EVENT_CHANNEL, wrappedListener);
     },
+  },
+  codexMicro: {
+    getState: () => ipcRenderer.invoke(IpcChannels.CODEX_MICRO_GET_STATE_CHANNEL),
+    onStateChange: (listener) => {
+      // Replay-on-subscribe, race-free. Every delivery is a FULL snapshot, so
+      // once any push has been delivered a later-resolving snapshot must be
+      // dropped rather than clobber the newer push.
+      let pushDelivered = false;
+      const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
+        if (typeof state !== "object" || state === null) return;
+        pushDelivered = true;
+        listener(state as CodexMicroDeviceState);
+      };
+      // 1. Register the push listener FIRST so no change emitted between the
+      //    snapshot request and registration is lost (no lost-update window).
+      ipcRenderer.on(IpcChannels.CODEX_MICRO_STATE_CHANNEL, wrappedListener);
+      // 2. THEN request the current snapshot; deliver it only if no push has
+      //    arrived yet, so a slower snapshot can never overwrite a newer push.
+      void ipcRenderer
+        .invoke(IpcChannels.CODEX_MICRO_GET_STATE_CHANNEL)
+        .then((state) => {
+          if (pushDelivered) return;
+          if (typeof state !== "object" || state === null) return;
+          pushDelivered = true;
+          listener(state as CodexMicroDeviceState);
+        })
+        .catch(() => {
+          // Snapshot request failed; future pushes still reach the listener.
+        });
+      return () => {
+        ipcRenderer.removeListener(IpcChannels.CODEX_MICRO_STATE_CHANNEL, wrappedListener);
+      };
+    },
+    setAgentKeyColors: (frame) =>
+      ipcRenderer.invoke(IpcChannels.CODEX_MICRO_SET_AGENT_KEY_COLORS_CHANNEL, frame),
+    setBrightness: (percent) =>
+      ipcRenderer.invoke(IpcChannels.CODEX_MICRO_SET_BRIGHTNESS_CHANNEL, percent),
+    setAutoDim: (enabled) =>
+      ipcRenderer.invoke(IpcChannels.CODEX_MICRO_SET_AUTO_DIM_CHANNEL, enabled),
   },
 } satisfies DesktopBridge);

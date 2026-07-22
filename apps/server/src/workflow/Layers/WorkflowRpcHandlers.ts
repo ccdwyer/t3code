@@ -24,6 +24,7 @@ import type {
   WorkflowSaveBoardDefinitionResult,
   WorkflowStepRunView,
   WorkflowTicketDetailView,
+  WorkflowEventId,
   WorkflowDefinition as WorkflowDefinitionType,
   WorkflowDefinitionEncoded,
   WorkflowDryRunScenario,
@@ -2626,6 +2627,8 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
   WORKFLOW_WS_METHODS.createTicket,
   WORKFLOW_WS_METHODS.editTicket,
   WORKFLOW_WS_METHODS.moveTicket,
+  // TODO(park): real implementation in plan Task 6.
+  WORKFLOW_WS_METHODS.invokeParkAction,
   WORKFLOW_WS_METHODS.runLane,
   WORKFLOW_WS_METHODS.resolveApproval,
   WORKFLOW_WS_METHODS.answerTicketStep,
@@ -2770,6 +2773,17 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
         deps.engine
           .moveTicket(input.ticketId, input.toLane)
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to move workflow ticket"))),
+        { "rpc.aggregate": "workflow" },
+      ),
+    // TODO(park): real implementation in plan Task 6.
+    [WORKFLOW_WS_METHODS.invokeParkAction]: (input: {
+      readonly ticketId: TicketId;
+      readonly actionIndex: number;
+      readonly parkedEventId: WorkflowEventId;
+    }) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.invokeParkAction,
+        Effect.fail(workflowRpcError("invokeParkAction not yet implemented")),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.runLane]: (input: { readonly ticketId: TicketId }) =>

@@ -6,6 +6,7 @@ import type {
   WorkflowDryRunScenario,
   WorkflowLane,
 } from "@t3tools/contracts";
+import { isParkTarget } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { inspectJsonLogicRule } from "./jsonLogicRule.ts";
@@ -120,7 +121,9 @@ export const simulateBoardRoute = ({
           output: null,
         };
         const target = step.on?.[result];
-        if (target !== undefined) {
+        // TODO(park): Task 10 — a park target here has no stored occurrence
+        // yet; treat it as "no route" until dry-run park handling lands.
+        if (target !== undefined && !isParkTarget(target)) {
           decision = {
             fromLane: currentKey,
             toLane: target,
@@ -153,6 +156,11 @@ export const simulateBoardRoute = ({
           readonly index: number;
         } | null = null;
         for (const [index, transition] of (lane.transitions ?? []).entries()) {
+          if (isParkTarget(transition.to)) {
+            // TODO(park): Task 10 — no stored transition targets a park yet;
+            // treat it as unroutable-for-now rather than simulate it.
+            continue;
+          }
           const paths = inspectJsonLogicRule(transition.when).variablePaths;
           if (paths.includes("status")) {
             pushNote(
@@ -222,12 +230,18 @@ export const simulateBoardRoute = ({
 
       if (decision === null) {
         const target = lane.on?.[result];
-        if (target !== undefined) {
+        // TODO(park): Task 10 — treat a park target as no route for now.
+        if (target !== undefined && !isParkTarget(target)) {
           decision = { fromLane: currentKey, toLane: target, source: "lane_on", result };
         }
       }
 
       if (decision === null) {
+        return finish("no_route", currentKey);
+      }
+      if (decision.toLane === undefined) {
+        // TODO(park): Task 10 — no code path constructs a park hop yet, so
+        // this is unreachable today; guards satisfy the now-optional toLane.
         return finish("no_route", currentKey);
       }
       hops.push(decision);

@@ -23,6 +23,12 @@ import {
   type WorkflowLaneEncoded,
 } from "./WorkflowEditor";
 
+// TODO(park): Task 18 — park targets aren't editable via this plain lane
+// select yet; render them as "no lane selected" until the park sub-editor lands.
+const laneRouteSelectValue = (
+  target: string | { readonly park: "issue" | "waiting" } | undefined,
+): string | undefined => (typeof target === "string" ? target : undefined);
+
 export function RoutingEditor({
   lane,
   lanes,
@@ -57,7 +63,7 @@ export function RoutingEditor({
         <LaneRouteSelect
           label="Lane success route"
           lanes={lanes}
-          value={lane.on?.success}
+          value={laneRouteSelectValue(lane.on?.success)}
           disabled={disabled}
           onChange={(targetLaneKey) => {
             onMutate((current) => setLaneOn(current, laneKey, "success", targetLaneKey));
@@ -66,7 +72,7 @@ export function RoutingEditor({
         <LaneRouteSelect
           label="Lane failure route"
           lanes={lanes}
-          value={lane.on?.failure}
+          value={laneRouteSelectValue(lane.on?.failure)}
           disabled={disabled}
           onChange={(targetLaneKey) => {
             onMutate((current) => setLaneOn(current, laneKey, "failure", targetLaneKey));
@@ -75,7 +81,7 @@ export function RoutingEditor({
         <LaneRouteSelect
           label="Lane blocked route"
           lanes={lanes}
-          value={lane.on?.blocked}
+          value={laneRouteSelectValue(lane.on?.blocked)}
           disabled={disabled}
           onChange={(targetLaneKey) => {
             onMutate((current) => setLaneOn(current, laneKey, "blocked", targetLaneKey));

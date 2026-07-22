@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
-import { WorkflowDefinition } from "@t3tools/contracts";
+import { WorkflowDefinition, isParkTarget } from "@t3tools/contracts";
 import { defaultBoardDefinition } from "./defaultBoard.ts";
 import { encodeWorkflowDefinitionJson, lintWorkflowDefinition } from "./workflowFile.ts";
 
@@ -56,9 +56,14 @@ describe("defaultBoardDefinition", () => {
     assert.ok(implementation);
     const transitions = implementation.transitions ?? [];
     assert.equal(transitions.length, 3);
-    assert.equal(transitions[0]?.to, "implementation");
-    assert.equal(transitions[1]?.to, "manual_review");
-    assert.equal(transitions[2]?.to, "owner_review");
+    for (const [index, expected] of ["implementation", "manual_review", "owner_review"].entries()) {
+      const to = transitions[index]?.to;
+      if (to === undefined || isParkTarget(to)) {
+        assert.fail(`expected transition ${index} to target a plain lane key`);
+      } else {
+        assert.equal(to, expected);
+      }
+    }
     const loopRule = JSON.stringify(transitions[0]?.when);
     assert.ok(loopRule.includes("lane.runCount"));
     const review = implementation.pipeline?.find((step) => (step.key as string) === "review");

@@ -373,6 +373,8 @@ const WORKFLOW_RPC_REQUIRED_SCOPE_ENTRIES = [
   [WORKFLOW_WS_METHODS.createTicket, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.editTicket, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.moveTicket, AuthWorkflowOperateScope],
+  // TODO(park): real implementation in plan Task 6 — auth-gated from day one.
+  [WORKFLOW_WS_METHODS.invokeParkAction, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.runLane, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.resolveApproval, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.answerTicketStep, AuthWorkflowOperateScope],

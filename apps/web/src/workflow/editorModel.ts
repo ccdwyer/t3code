@@ -1,9 +1,5 @@
 import { LaneKey, StepKey, WorkflowDefinition } from "@t3tools/contracts";
-import type {
-  WorkflowDefinitionEncoded,
-  WorkflowLaneTransition,
-  WorkflowLintError,
-} from "@t3tools/contracts";
+import type { WorkflowDefinitionEncoded, WorkflowLintError } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
@@ -21,6 +17,12 @@ type Mutable<T> =
 type MutableWorkflowDefinition = Mutable<WorkflowDefinitionEncoded>;
 type MutableWorkflowLane = Mutable<WorkflowLaneEncoded>;
 type MutableWorkflowStep = Mutable<WorkflowStepEncoded>;
+// Route target as it appears on a mutable, encoded lane — a bare lane-key
+// string, or a park target object (park objects pass through untouched; no
+// stored definition can contain one yet, see plan Task 1b).
+type MutableWorkflowRouteTarget = NonNullable<MutableWorkflowLane["transitions"]>[number]["to"];
+type MutableWorkflowLaneTransition = NonNullable<MutableWorkflowLane["transitions"]>[number];
+type MutableWorkflowLaneEvent = NonNullable<MutableWorkflowLane["onEvent"]>[number];
 
 export interface WorkflowEditorModel {
   readonly definition: WorkflowDefinitionEncoded;
@@ -51,7 +53,7 @@ const uniqueKey = (existing: ReadonlySet<string>, base: string): string => {
   return `${base}-${suffix}`;
 };
 
-const allStepKeys = (definition: WorkflowDefinitionEncoded): ReadonlySet<string> =>
+const allStepKeys = (definition: MutableWorkflowDefinition): ReadonlySet<string> =>
   new Set(
     definition.lanes.flatMap((lane) => (lane.pipeline ?? []).map((step) => step.key as string)),
   );
@@ -393,7 +395,7 @@ export const setLaneColor = (
 
 type MutableAgentSelection = Extract<MutableWorkflowStep, { type: "agent" }>["agent"];
 
-const defaultAgent = (definition: WorkflowDefinitionEncoded): MutableAgentSelection => {
+const defaultAgent = (definition: MutableWorkflowDefinition): MutableAgentSelection => {
   for (const lane of definition.lanes) {
     for (const step of lane.pipeline ?? []) {
       if (step.type === "agent") {
@@ -405,7 +407,7 @@ const defaultAgent = (definition: WorkflowDefinitionEncoded): MutableAgentSelect
 };
 
 const newStep = (
-  definition: WorkflowDefinitionEncoded,
+  definition: MutableWorkflowDefinition,
   type: WorkflowStepType,
 ): MutableWorkflowStep => {
   const key = uniqueKey(allStepKeys(definition), type);
@@ -516,16 +518,19 @@ export const updateTransition = (
   model: WorkflowEditorModel,
   laneKey: string,
   index: number,
-  patch: { readonly when?: unknown; readonly to?: string },
+  patch: { readonly when?: unknown; readonly to?: MutableWorkflowRouteTarget },
 ): WorkflowEditorModel =>
   updateLane(model, laneKey, (lane) => {
     if (!lane.transitions?.[index]) {
       return;
     }
     const current = lane.transitions[index];
-    const next: WorkflowLaneTransition = {
+    // patch.to may be a bare lane key or a park target object — pass either
+    // through untouched (no stored definition can contain a park target yet,
+    // see plan Task 1b; full park editing lands in Task 18).
+    const next: MutableWorkflowLaneTransition = {
       when: patch.when === undefined ? current.when : patch.when,
-      to: patch.to === undefined ? LaneKey.make(current.to as string) : LaneKey.make(patch.to),
+      to: patch.to === undefined ? current.to : patch.to,
     };
     lane.transitions = lane.transitions.map((transition, transitionIndex) =>
       transitionIndex === index ? next : transition,
@@ -555,7 +560,11 @@ export const updateLaneEvent = (
   model: WorkflowEditorModel,
   laneKey: string,
   index: number,
-  patch: { readonly name?: string; readonly when?: unknown | null; readonly to?: string },
+  patch: {
+    readonly name?: string;
+    readonly when?: unknown | null;
+    readonly to?: MutableWorkflowRouteTarget;
+  },
 ): WorkflowEditorModel =>
   updateLane(model, laneKey, (lane) => {
     if (!lane.onEvent?.[index]) {
@@ -565,10 +574,13 @@ export const updateLaneEvent = (
     // when: null clears the predicate; undefined keeps it.
     const when =
       patch.when === undefined ? current.when : patch.when === null ? undefined : patch.when;
-    const next = {
+    // patch.to may be a bare lane key or a park target object — pass either
+    // through untouched (no stored definition can contain a park target yet,
+    // see plan Task 1b; full park editing lands in Task 18).
+    const next: MutableWorkflowLaneEvent = {
       name: patch.name === undefined ? current.name : patch.name,
       ...(when === undefined ? {} : { when }),
-      to: patch.to === undefined ? LaneKey.make(current.to as string) : LaneKey.make(patch.to),
+      to: patch.to === undefined ? current.to : patch.to,
     };
     lane.onEvent = lane.onEvent.map((event, eventIndex) => (eventIndex === index ? next : event));
   });

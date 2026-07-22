@@ -7,7 +7,10 @@ export interface RouteDecisionStepView {
 export interface RouteDecisionView {
   readonly occurredAt: string;
   readonly fromLane?: string | undefined;
-  readonly toLane: string;
+  // Absent for a park entry (the ticket parked in place rather than moving).
+  // TODO(park): Task 17 — render park entries properly; for now this is
+  // display-only fallback handling, no stored history has this shape yet.
+  readonly toLane?: string | undefined;
   readonly source:
     | "step_on"
     | "lane_transition"
@@ -54,7 +57,9 @@ export const describeRouteDecision = (
   decision: RouteDecisionView,
   laneName: (key: string) => string,
 ): DescribedRouteDecision => {
-  const to = laneName(decision.toLane);
+  // TODO(park): Task 17 — a park entry has no destination lane; fall back to
+  // a dash rather than mis-rendering the target.
+  const to = decision.toLane === undefined ? "—" : laneName(decision.toLane);
   const title =
     decision.fromLane === undefined ? `Moved to ${to}` : `${laneName(decision.fromLane)} → ${to}`;
 

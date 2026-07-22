@@ -16,6 +16,7 @@ import type {
   WorkflowStep,
   WorkflowStepUsage,
 } from "@t3tools/contracts";
+import { isParkTarget } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -227,7 +228,11 @@ const routingKeyForResult = (result: PipelineResult): "success" | "failure" | "b
 
 const stepRouteDecision = (step: WorkflowStep, result: PipelineResult): RouteDecision | null => {
   const target = step.on?.[routingKeyForResult(result)];
-  return target ? { toLane: target, source: "step_on" } : null;
+  if (target === undefined || isParkTarget(target)) {
+    // TODO(park): full handling in plan Task 5 — treat park target as no decision for now.
+    return null;
+  }
+  return { toLane: target, source: "step_on" };
 };
 
 interface StepRunOutcome {
@@ -667,6 +672,10 @@ const make = Effect.gen(function* () {
       for (const [index, transition] of transitions.entries()) {
         const evaluation = yield* evaluateTransition(transition.when, context);
         if (evaluation.result) {
+          if (isParkTarget(transition.to)) {
+            // TODO(park): full handling in plan Task 5 — treat as no route for now, keep evaluating.
+            continue;
+          }
           return {
             toLane: transition.to,
             source: "lane_transition",
@@ -679,7 +688,11 @@ const make = Effect.gen(function* () {
 
   const laneOnDecision = (lane: WorkflowLane, result: PipelineResult): RouteDecision | null => {
     const target = lane.on?.[routingKeyForResult(result)];
-    return target ? { toLane: target, source: "lane_on" } : null;
+    if (target === undefined || isParkTarget(target)) {
+      // TODO(park): full handling in plan Task 5 — treat park target as no decision for now.
+      return null;
+    }
+    return { toLane: target, source: "lane_on" };
   };
 
   const routeDecisionEvent = (
@@ -2386,6 +2399,10 @@ const make = Effect.gen(function* () {
             if (!evaluation.result) {
               continue;
             }
+          }
+          if (isParkTarget(matcher.to)) {
+            // TODO(park): full handling in plan Task 5 — treat as no match for now, keep evaluating.
+            continue;
           }
           return matcher.to;
         }

@@ -29,5 +29,9 @@ export const describeDryRunEnd = (
       return `Stuck in "${lane}" — no route matched. Add a transition or fallback.`;
     case "cycle_cap":
       return `Still looping after ${run.hops.length} hops (ended in "${lane}") — likely an unbounded cycle.`;
+    case "parked":
+      // TODO(park): Task 10/17 — a plain label is enough until dry-run park
+      // hops carry substate/reason detail through this formatter.
+      return `Parked in "${lane}".`;
   }
 };

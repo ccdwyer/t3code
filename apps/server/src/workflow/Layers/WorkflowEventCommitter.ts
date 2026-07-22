@@ -166,11 +166,13 @@ const make = Effect.gen(function* () {
         // splits into an issue-substate `reason` and a waiting-substate `label`, so
         // the notification copy is composed here per the spec's "hit an issue" /
         // "is waiting on you" wording rather than reusing the raw projected value.
+        // The push TITLE is already the ticket title (see the dispatcher's
+        // buildBody caller) — the body must NOT re-embed it or the title doubles.
         const notificationReason =
           event.type === "TicketParked"
             ? event.payload.substate === "issue"
-              ? `"${next.title}" hit an issue: ${event.payload.reason}`
-              : `"${next.title}" is waiting on you: ${event.payload.label}`
+              ? `Hit an issue: ${event.payload.reason}`
+              : `Waiting on you: ${event.payload.label}`
             : next.attentionReason;
         // Supersede any prior PENDING rows for this ticket so at most one pending
         // row (the latest transition) ever reaches the dispatcher. Without this, a

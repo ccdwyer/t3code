@@ -871,7 +871,7 @@ layer("WorkflowEventCommitter", (it) => {
       const row = rows[0]!;
       assert.equal(row.status, "parked");
       assert.equal(row.attentionKind, "parked_issue");
-      assert.equal(row.attentionReason, '"Park issue" hit an issue: step failed: boom');
+      assert.equal(row.attentionReason, "Hit an issue: step failed: boom");
       assert.equal(row.deliveryState, "pending");
     }),
   );
@@ -903,7 +903,7 @@ layer("WorkflowEventCommitter", (it) => {
       const row = rows[0]!;
       assert.equal(row.status, "parked");
       assert.equal(row.attentionKind, "parked_waiting");
-      assert.equal(row.attentionReason, '"Park waiting" is waiting on you: Needs manual review');
+      assert.equal(row.attentionReason, "Waiting on you: Needs manual review");
       assert.equal(row.deliveryState, "pending");
     }),
   );

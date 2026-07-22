@@ -9,6 +9,7 @@ import {
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
 } from "./keybindings.ts";
+import { AGENT_KEY_SLOT_COUNT } from "./codexMicro.ts";
 
 const decode = <S extends Schema.Top>(
   schema: S,
@@ -113,10 +114,49 @@ it.effect("rejects invalid command values", () =>
 
 it.effect("exposes six agent-key commands, each a valid KeybindingCommand", () =>
   Effect.gen(function* () {
-    assert.lengthOf(AGENT_KEY_KEYBINDING_COMMANDS, 6);
+    // Exact ordered literals — not derived from the constant under test — so
+    // a duplicate or renumbered entry cannot slip through, and the command
+    // count stays locked to the LED slot count.
+    assert.deepStrictEqual(
+      [...AGENT_KEY_KEYBINDING_COMMANDS],
+      [
+        "agentKey.open.1",
+        "agentKey.open.2",
+        "agentKey.open.3",
+        "agentKey.open.4",
+        "agentKey.open.5",
+        "agentKey.open.6",
+      ],
+    );
+    assert.lengthOf(AGENT_KEY_KEYBINDING_COMMANDS, AGENT_KEY_SLOT_COUNT);
     for (const command of AGENT_KEY_KEYBINDING_COMMANDS) {
       const parsed = yield* decode(KeybindingRule, { key: "f13", command });
       assert.strictEqual(parsed.command, command);
+    }
+  }),
+);
+
+it.effect("rejects out-of-range agent-key commands", () =>
+  Effect.gen(function* () {
+    for (const command of ["agentKey.open.0", "agentKey.open.7"]) {
+      const result = yield* Effect.exit(decode(KeybindingRule, { key: "f13", command }));
+      assert.strictEqual(result._tag, "Failure", `expected ${command} to be rejected`);
+    }
+  }),
+);
+
+it.effect("rejects the deliberately excluded approval and composer commands", () =>
+  Effect.gen(function* () {
+    // Spec v2: acceptForSession/cancel are NOT key-mapped in v1, and
+    // composer.nav* was cut. Lock the exclusions down.
+    for (const command of [
+      "approval.acceptForSession",
+      "approval.cancel",
+      "composer.navNext",
+      "composer.navPrevious",
+    ]) {
+      const result = yield* Effect.exit(decode(KeybindingRule, { key: "f19", command }));
+      assert.strictEqual(result._tag, "Failure", `expected ${command} to be rejected`);
     }
   }),
 );

@@ -341,8 +341,9 @@ export function keybindingFromKeyboardEvent(
 
 /**
  * F13-F24 are not present on standard keyboards and are commonly sent by
- * macro pads / programmable keyboards. They're safe to allow without a
- * modifier since no OS or app default binds them bare.
+ * macro pads / programmable keyboards. Accepting them bare is an intentional
+ * recorder allowance (not a guarantee that no OS or user mapping uses them);
+ * every other modifierless key stays rejected.
  */
 function isModifierlessFunctionKeyToken(keyToken: string): boolean {
   return /^f(1[3-9]|2[0-4])$/.test(keyToken);

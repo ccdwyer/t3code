@@ -59,15 +59,99 @@ describe("CodexMicroDeviceState", () => {
     ).toThrow();
   });
 
-  it("rejects a battery percentage outside 0..100", () => {
+  it("rejects a battery percentage outside 0..100 or fractional", () => {
+    for (const batteryPercent of [101, -1, 42.5]) {
+      expect(() =>
+        decodeDeviceState({
+          state: "connected",
+          transport: "usb",
+          batteryPercent,
+          capabilities: unverifiedCapabilities,
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("accepts battery boundary values 0 and 100", () => {
+    for (const batteryPercent of [0, 100]) {
+      expect(
+        decodeDeviceState({
+          state: "connected",
+          transport: "usb",
+          batteryPercent,
+          capabilities: unverifiedCapabilities,
+        }).batteryPercent,
+      ).toBe(batteryPercent);
+    }
+  });
+
+  it("rejects impossible state/transport/battery combinations", () => {
+    // Live states must name a transport.
+    for (const state of ["connected", "degraded"] as const) {
+      expect(() =>
+        decodeDeviceState({
+          state,
+          transport: null,
+          batteryPercent: null,
+          capabilities: unverifiedCapabilities,
+        }),
+      ).toThrow();
+    }
+    // Inactive states cannot claim a transport or a battery reading.
+    for (const state of ["disconnected", "discovering", "closed"] as const) {
+      expect(() =>
+        decodeDeviceState({
+          state,
+          transport: "usb",
+          batteryPercent: null,
+          capabilities: unverifiedCapabilities,
+        }),
+      ).toThrow();
+      expect(() =>
+        decodeDeviceState({
+          state,
+          transport: null,
+          batteryPercent: 80,
+          capabilities: unverifiedCapabilities,
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("defaults omitted capability fields to unverified (producer version skew)", () => {
+    const decoded = decodeDeviceState({
+      state: "connected",
+      transport: "usb",
+      batteryPercent: null,
+      capabilities: { ledWrite: "supported" },
+    });
+    expect(decoded.capabilities.ledWrite).toBe("supported");
+    expect(decoded.capabilities.battery).toBe("unverified");
+    expect(decoded.capabilities.viaRawHid).toBe("unverified");
+    expect(decoded.capabilities.brightness).toBe("unverified");
+    expect(decoded.capabilities.autoDim).toBe("unverified");
+  });
+
+  it("rejects an unknown transport literal", () => {
     expect(() =>
       decodeDeviceState({
         state: "connected",
-        transport: "usb",
-        batteryPercent: 101,
+        transport: "bluetooth-classic",
+        batteryPercent: null,
         capabilities: unverifiedCapabilities,
       }),
     ).toThrow();
+  });
+
+  it("round-trips a device state through encode and decode", () => {
+    const state = decodeDeviceState({
+      state: "connected",
+      transport: "usb",
+      batteryPercent: 55,
+      capabilities: { ...unverifiedCapabilities, ledWrite: "supported" },
+    });
+    const encoded = Schema.encodeSync(CodexMicroDeviceState)(state);
+    expect(decodeDeviceState(encoded)).toEqual(state);
   });
 });
 

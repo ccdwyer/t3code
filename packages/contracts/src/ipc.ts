@@ -88,7 +88,7 @@ import { EnvironmentId, type MessageId, type ProjectId } from "./baseSchemas.ts"
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
-import type { ClientSettings } from "./settings.ts";
+import type { ClientSettings, CodexMicroBrightnessValue } from "./settings.ts";
 import type { CodexMicroDeviceState, CodexMicroLedFrame } from "./codexMicro.ts";
 import type {
   SourceControlCloneRepositoryInput,
@@ -1077,19 +1077,34 @@ export interface DesktopBridge {
   preview?: DesktopPreviewBridge;
   /**
    * Desktop-only Codex Micro macro-pad surface. Present iff the renderer is
-   * hosted by a desktop build that owns the HID device service. Absent on plain
-   * browsers and older desktop shells — callers must treat `undefined` as
-   * "no device connected" and render the not-connected settings state.
+   * hosted by a desktop build that ships the HID device service. Absent on
+   * plain browsers and older desktop shells — `undefined` means "feature
+   * unavailable" (the settings page may render its not-connected state, but
+   * must not claim a device is unplugged). Whether a device is actually
+   * connected is `getState().state`.
    */
   codexMicro?: DesktopCodexMicroBridge;
 }
 
 export interface DesktopCodexMicroBridge {
   getState: () => Promise<CodexMicroDeviceState>;
-  /** Subscribe to device-state changes; returns an unsubscribe function. */
+  /**
+   * Subscribe to device-state changes; returns an unsubscribe function.
+   * Replay-on-subscribe: the listener is ALWAYS invoked with the current
+   * state as its first (ordered) emission, so `getState` + subscribe has no
+   * lost-update window — subscribers needing a snapshot should rely on that
+   * first emission rather than racing a separate `getState` call.
+   */
   onStateChange: (listener: (state: CodexMicroDeviceState) => void) => () => void;
+  /**
+   * Device writes resolve `void` on acceptance. Each is a capability-gated
+   * clean no-op while the corresponding capability is not "supported" (the
+   * D1-unverified posture); rejections indicate IPC/decode failures only.
+   * Inputs are decoded against the contracts schemas at the main-process
+   * boundary (`CodexMicroLedFrame`, `CodexMicroBrightnessValue`).
+   */
   setAgentKeyColors: (frame: CodexMicroLedFrame) => Promise<void>;
-  setBrightness: (percent: number) => Promise<void>;
+  setBrightness: (percent: CodexMicroBrightnessValue) => Promise<void>;
   setAutoDim: (enabled: boolean) => Promise<void>;
 }
 

@@ -85,8 +85,13 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODEX_MICRO_BRIGHTNESS)),
   ),
   codexMicroAutoDim: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  codexMicroKeybindingsSeeded: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
+  // Environments whose server keybindings have already received the Codex
+  // Micro seeded layout. Keyed per environment because keybindings are
+  // server-owned: one machine-local boolean would let environment A's seeding
+  // suppress environment B's (or a settings wipe re-seed over user edits —
+  // seeding must additionally never replace existing rules).
+  codexMicroKeybindingsSeededEnvironments: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
   ),
   codexMicroAgentKeysSource: CodexMicroAgentKeysSource.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODEX_MICRO_AGENT_KEYS_SOURCE)),
@@ -706,7 +711,7 @@ export const ClientSettingsPatch = Schema.Struct({
   codexMicroLedSyncEnabled: Schema.optionalKey(Schema.Boolean),
   codexMicroBrightness: Schema.optionalKey(CodexMicroBrightnessValue),
   codexMicroAutoDim: Schema.optionalKey(Schema.Boolean),
-  codexMicroKeybindingsSeeded: Schema.optionalKey(Schema.Boolean),
+  codexMicroKeybindingsSeededEnvironments: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
   codexMicroAgentKeysSource: Schema.optionalKey(CodexMicroAgentKeysSource),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),

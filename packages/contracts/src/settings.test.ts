@@ -113,23 +113,29 @@ describe("ClientSettings sidebar v2", () => {
 });
 
 describe("ClientSettings Codex Micro", () => {
-  it("derives the documented defaults by decoding an empty config", () => {
+  it("decoding an empty config yields the documented defaults", () => {
+    // Decode {} directly — a legacy pre-Micro settings file must gain the
+    // defaults at runtime, independent of how DEFAULT_CLIENT_SETTINGS is
+    // maintained.
+    const decoded = decodeClientSettings({});
+    expect(decoded.codexMicroLedSyncEnabled).toBe(false);
+    expect(decoded.codexMicroBrightness).toBe(70);
+    expect(decoded.codexMicroAutoDim).toBe(true);
+    expect(decoded.codexMicroKeybindingsSeededEnvironments).toEqual([]);
+    expect(decoded.codexMicroAgentKeysSource).toBe("recentChats");
     expect(DEFAULT_CLIENT_SETTINGS.codexMicroLedSyncEnabled).toBe(false);
-    expect(DEFAULT_CLIENT_SETTINGS.codexMicroBrightness).toBe(70);
-    expect(DEFAULT_CLIENT_SETTINGS.codexMicroAutoDim).toBe(true);
-    expect(DEFAULT_CLIENT_SETTINGS.codexMicroKeybindingsSeeded).toBe(false);
-    expect(DEFAULT_CLIENT_SETTINGS.codexMicroAgentKeysSource).toBe("recentChats");
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroKeybindingsSeededEnvironments).toEqual([]);
   });
 
   it("accepts a partial patch of Codex Micro fields", () => {
     const patch = decodeClientSettingsPatch({
       codexMicroLedSyncEnabled: true,
       codexMicroBrightness: 30,
-      codexMicroKeybindingsSeeded: true,
+      codexMicroKeybindingsSeededEnvironments: ["env-1"],
     });
     expect(patch.codexMicroLedSyncEnabled).toBe(true);
     expect(patch.codexMicroBrightness).toBe(30);
-    expect(patch.codexMicroKeybindingsSeeded).toBe(true);
+    expect(patch.codexMicroKeybindingsSeededEnvironments).toEqual(["env-1"]);
     // Untouched fields stay absent in a patch.
     expect(patch.codexMicroAutoDim).toBeUndefined();
   });

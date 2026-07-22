@@ -101,6 +101,20 @@ describe("KeybindingsSettings.logic", () => {
         "MacIntel",
       ),
     ).toBeNull();
+    // Platform-independent: the allowance is not a macOS special case.
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "F13", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "Win32",
+      ),
+    ).toBe("f13");
+    // Upper boundary: F25 (nonstandard) stays rejected bare.
+    expect(
+      keybindingFromKeyboardEvent(
+        { key: "F25", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+        "MacIntel",
+      ),
+    ).toBeNull();
   });
 
   it("serializes shortcuts and when expressions for upserts", () => {

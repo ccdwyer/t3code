@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 // ── Connection ───────────────────────────────────────────────────────
@@ -26,19 +27,54 @@ export const CodexMicroCapabilityStatus = Schema.Literals([
 ]);
 export type CodexMicroCapabilityStatus = typeof CodexMicroCapabilityStatus.Type;
 
+// Each field decoding-defaults to "unverified" so a payload from an older (or
+// newer) producer that omits a capability degrades to the safe no-op posture
+// instead of failing decode.
+//
+// Capabilities describe the CURRENT connection's transport only. The device
+// service must reset every field to "unverified" whenever the transport
+// changes or the device reconnects — a USB-proven capability must never be
+// carried across onto a BLE link (BLE is keys-only until proven).
+const CapabilityStatusField = CodexMicroCapabilityStatus.pipe(
+  Schema.withDecodingDefault(Effect.succeed("unverified" as const)),
+);
+
 export const CodexMicroCapabilities = Schema.Struct({
-  viaRawHid: CodexMicroCapabilityStatus,
-  ledWrite: CodexMicroCapabilityStatus,
-  battery: CodexMicroCapabilityStatus,
-  brightness: CodexMicroCapabilityStatus,
-  autoDim: CodexMicroCapabilityStatus,
+  viaRawHid: CapabilityStatusField,
+  ledWrite: CapabilityStatusField,
+  battery: CapabilityStatusField,
+  brightness: CapabilityStatusField,
+  autoDim: CapabilityStatusField,
 });
 export type CodexMicroCapabilities = typeof CodexMicroCapabilities.Type;
 
 // ── Device state ─────────────────────────────────────────────────────
 
-export const CodexMicroBatteryPercent = Schema.Number.check(
+export const CodexMicroBatteryPercent = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: 100 }),
+);
+
+// Cross-field invariants: a live connection must name its transport, and an
+// inactive device cannot claim one (nor a battery reading — no stale
+// last-known values over IPC).
+const deviceStateInvariantFilter = Schema.makeFilter(
+  ({
+    state,
+    transport,
+    batteryPercent,
+  }: {
+    readonly state: CodexMicroConnectionState;
+    readonly transport: CodexMicroTransport | null;
+    readonly batteryPercent: number | null;
+  }) => {
+    if (state === "connected" || state === "degraded") {
+      return transport !== null || `A ${state} device must have a transport.`;
+    }
+    return (
+      (transport === null && batteryPercent === null) ||
+      `A ${state} device cannot have a transport or battery reading.`
+    );
+  },
 );
 
 export const CodexMicroDeviceState = Schema.Struct({
@@ -46,7 +82,7 @@ export const CodexMicroDeviceState = Schema.Struct({
   transport: Schema.NullOr(CodexMicroTransport),
   batteryPercent: Schema.NullOr(CodexMicroBatteryPercent),
   capabilities: CodexMicroCapabilities,
-});
+}).check(deviceStateInvariantFilter);
 export type CodexMicroDeviceState = typeof CodexMicroDeviceState.Type;
 
 // ── LED frame ────────────────────────────────────────────────────────

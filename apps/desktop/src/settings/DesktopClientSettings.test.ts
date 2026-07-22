@@ -19,7 +19,7 @@ const clientSettings: ClientSettings = {
   codexMicroLedSyncEnabled: false,
   codexMicroBrightness: 70,
   codexMicroAutoDim: true,
-  codexMicroKeybindingsSeeded: false,
+  codexMicroKeybindingsSeededEnvironments: [],
   codexMicroAgentKeysSource: "recentChats",
   dismissedProviderUpdateNotificationKeys: [],
   diffIgnoreWhitespace: true,

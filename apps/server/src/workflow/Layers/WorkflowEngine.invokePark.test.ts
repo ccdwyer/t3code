@@ -30,8 +30,10 @@ import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 
-// ── Harness (copied from WorkflowEngine.park.test.ts — a lint-free registry so
-//    these engine tests can register park-bearing definitions directly). ──────
+// ── Harness (copied from WorkflowEngine.park.test.ts). Kept lint-free
+//    deliberately: the deleted-target-lane fixtures below register
+//    definitions the real registry's lint now rejects — they test the
+//    engine's runtime defense-in-depth independent of lint. ─────────────────
 
 const makeScriptedExecutor = (
   outcomeForCall: (call: number) => StepOutcome,

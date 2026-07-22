@@ -5,7 +5,19 @@ export const describeDryRunHop = (
   hop: WorkflowDryRunHop,
   laneName: (key: string) => string,
 ): string => {
-  const route = `${laneName(hop.fromLane as string)} → ${laneName(hop.toLane as string)}`;
+  const from = laneName(hop.fromLane);
+  // Branch on `park` first: a park hop carries no `toLane` (the walk stayed
+  // in `fromLane`), so it must never fall into the lane-move phrasing below.
+  if (hop.park !== undefined) {
+    const label = hop.park.label === undefined ? "" : ` — ${hop.park.label}`;
+    return `${from} — parked (${hop.park.substate})${label}`;
+  }
+  if (hop.toLane === undefined) {
+    // Producer invariant: exactly one of toLane/park is present, so this is
+    // unreachable in practice — keeps the function total without a cast.
+    return `${from} — unknown route`;
+  }
+  const route = `${from} → ${laneName(hop.toLane)}`;
   if (hop.source === "step_on") {
     return `${route} — step "${hop.viaStepKey ?? "?"}" ${hop.result} route`;
   }
@@ -19,7 +31,7 @@ export const describeDryRunEnd = (
   run: WorkflowDryRunResult,
   laneName: (key: string) => string,
 ): string => {
-  const lane = laneName(run.endLane as string);
+  const lane = laneName(run.endLane);
   switch (run.end) {
     case "terminal":
       return `Reached terminal lane "${lane}".`;
@@ -29,9 +41,15 @@ export const describeDryRunEnd = (
       return `Stuck in "${lane}" — no route matched. Add a transition or fallback.`;
     case "cycle_cap":
       return `Still looping after ${run.hops.length} hops (ended in "${lane}") — likely an unbounded cycle.`;
-    case "parked":
-      // TODO(park): Task 10/17 — a plain label is enough until dry-run park
-      // hops carry substate/reason detail through this formatter.
-      return `Parked in "${lane}".`;
+    case "parked": {
+      // The walk's final hop is the park hop that produced this end state —
+      // surface its substate/label instead of a bare lane name.
+      const park = run.hops[run.hops.length - 1]?.park;
+      if (park === undefined) {
+        return `Parked in "${lane}".`;
+      }
+      const label = park.label === undefined ? "" : ` — ${park.label}`;
+      return `Parked in "${lane}" (${park.substate})${label}.`;
+    }
   }
 };

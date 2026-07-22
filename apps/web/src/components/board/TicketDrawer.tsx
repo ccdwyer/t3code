@@ -429,10 +429,13 @@ export function TicketDrawer({
         </div>
       </header>
 
-      {/* Parked banner: sits right after the header, ahead of both the
-          collapsed and fullscreen bodies, so a parked ticket's status/reason/
-          actions are visible regardless of view mode. */}
-      {detail.ticket.parked !== undefined ? (
+      {/* Parked banner (collapsed view): sits right after the header, ahead
+          of the collapsed body. TicketFullscreen renders its own copy of this
+          banner under its own header — the fullscreen view is a portal to
+          document.body (see WorkflowEditorFullscreen) and #root is inert
+          while it's open, so this collapsed-view render is NOT reachable when
+          fullscreen is true. */}
+      {!fullscreen && detail.ticket.parked !== undefined ? (
         <TicketParkedBanner
           ticketId={detail.ticket.ticketId}
           parked={detail.ticket.parked}
@@ -512,6 +515,8 @@ export function TicketDrawer({
           onEditMessage={onEditMessage}
           onMove={onMove}
           onRunLane={onRunLane}
+          onParkAction={onParkAction}
+          now={now}
           onClose={() => setFullscreen(false)}
         />
       ) : (
@@ -1513,7 +1518,10 @@ interface TicketFullscreenApprovalState {
 // and focus-trap behaviour.
 // ---------------------------------------------------------------------------
 
-function TicketFullscreen({
+/** Exported for direct testing — the parent `TicketDrawer`'s `fullscreen`
+ *  state can only be reached via a button click, which the test suite here
+ *  (Node, no DOM) cannot dispatch through `renderToStaticMarkup`. */
+export function TicketFullscreen({
   api,
   detail,
   lanes,
@@ -1536,6 +1544,8 @@ function TicketFullscreen({
   onEditMessage,
   onMove,
   onRunLane,
+  onParkAction,
+  now,
   onClose,
 }: {
   readonly api?: EnvironmentApi | undefined;
@@ -1561,6 +1571,10 @@ function TicketFullscreen({
   readonly onEditMessage?: ((messageId: string, body: string) => Promise<void>) | undefined;
   readonly onMove?: ((toLane: string) => void) | undefined;
   readonly onRunLane: () => void;
+  readonly onParkAction?:
+    | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+    | undefined;
+  readonly now: number;
   readonly onClose: () => void;
 }) {
   const ticket = detail.ticket;
@@ -1623,6 +1637,20 @@ function TicketFullscreen({
           </Button>
         </div>
       </header>
+
+      {/* Parked banner (fullscreen view): the fullscreen overlay is a portal
+          to document.body (WorkflowEditorFullscreen) rendered while the
+          drawer's own `<aside>` (and its collapsed-view banner) is inert and
+          eclipsed — so this fullscreen view needs its own copy, right under
+          its own header, to keep label/reason/age/actions reachable. */}
+      {ticket.parked !== undefined ? (
+        <TicketParkedBanner
+          ticketId={ticket.ticketId}
+          parked={ticket.parked}
+          now={now}
+          onParkAction={onParkAction}
+        />
+      ) : null}
 
       {/* Body — two-column on wide screens */}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row">

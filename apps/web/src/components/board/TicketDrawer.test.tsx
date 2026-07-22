@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { TicketDiffContent } from "./TicketDiff";
-import { TicketDrawer, isTicketSourceOwned } from "./TicketDrawer";
+import { TicketDrawer, TicketFullscreen, isTicketSourceOwned } from "./TicketDrawer";
 
 vi.mock("@pierre/diffs/react", () => {
   const FileDiff = (props: {
@@ -544,6 +544,68 @@ describe("TicketDrawer parked banner", () => {
     expect(markup).not.toContain("Send reply");
     // The plain comment composer (not the step-answer UI) is still available.
     expect(markup).toContain("Add a comment");
+  });
+});
+
+// `TicketDrawer`'s `fullscreen` state is only reachable via a button click,
+// which this Node-only (no DOM) test suite cannot dispatch through
+// `renderToStaticMarkup` — so the fullscreen banner is exercised by rendering
+// the exported `TicketFullscreen` sub-component directly.
+describe("TicketFullscreen parked banner", () => {
+  const laneDisplayName = (key: string): string => key;
+  const baseFullscreenProps = {
+    lanes: [],
+    laneDisplayName,
+    laneActions: [],
+    canRunLane: false,
+    runLaneTitle: "",
+    routeHistory: [],
+    latestRouteDecision: null,
+    ticketDescription: "",
+    editState: null,
+    sourceOwned: false,
+    replyState: {
+      canReply: false,
+      replyText: "",
+      setReplyText: () => {},
+      replyAttachments: [],
+      setReplyAttachments: () => {},
+      replyError: null,
+      replySubmitting: false,
+      attachReplyImages: async () => {},
+      sendReply: async () => {},
+    },
+    approvalState: {
+      approvalSubmittingStepRunId: null,
+      approvalError: null,
+      submitApproval: async () => {},
+    },
+    waitingStepCount: 0,
+    onRunLane: () => {},
+    now: Date.now(),
+    onClose: () => {},
+  };
+
+  it("renders the parked banner (label + an action) inside the fullscreen markup", () => {
+    const markup = renderToStaticMarkup(
+      <TicketFullscreen
+        {...baseFullscreenProps}
+        detail={parkedTicketDetail}
+        onParkAction={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="ticket-parked-banner"');
+    expect(markup).toContain("Issue encountered");
+    expect(markup).toContain(">Retry<");
+  });
+
+  it("renders no parked banner in fullscreen for a non-parked ticket", () => {
+    const markup = renderToStaticMarkup(
+      <TicketFullscreen {...baseFullscreenProps} detail={ticketDetail} />,
+    );
+
+    expect(markup).not.toContain('data-testid="ticket-parked-banner"');
   });
 });
 

@@ -61,6 +61,7 @@ import {
   WorkflowRoutingContextBuilder,
   type WorkflowRoutingContext,
 } from "../Services/WorkflowRoutingContextBuilder.ts";
+import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
 
@@ -257,46 +258,15 @@ const stepRouteDecision = (step: WorkflowStep, result: PipelineResult): RouteDec
       target,
       source: "step_on",
       parkOrigin: buildParkOrigin({ src: "step", target, stepKey: step.key, key: routingKey }),
-    };
+    } satisfies RouteDecision;
   }
-  return { kind: "lane", toLane: target, source: "step_on" };
+  return { kind: "lane", toLane: target, source: "step_on" } satisfies RouteDecision;
 };
 
 const PARK_REASON_MAX_LENGTH = 200;
 
 const truncateReason = (text: string): string =>
   text.length > PARK_REASON_MAX_LENGTH ? text.slice(0, PARK_REASON_MAX_LENGTH) : text;
-
-const isJsonObject = (value: unknown): value is { readonly [key: string]: unknown } =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-// Walks a JsonLogic rule tree looking for an EXACT `{ var: "lane.runCount" }`
-// reference (also the array form `{ var: ["lane.runCount", <default>] }`). A
-// substring match would false-positive on a sibling var like "lane.runCountish"
-// — this compares the var value by string equality. Exported for unit testing.
-export const rulReferencesRunCount = (rule: unknown): boolean => {
-  if (Array.isArray(rule)) {
-    return rule.some(rulReferencesRunCount);
-  }
-  if (!isJsonObject(rule)) {
-    return false;
-  }
-  for (const key of Object.keys(rule)) {
-    const value = rule[key];
-    if (key === "var") {
-      if (value === "lane.runCount") {
-        return true;
-      }
-      if (Array.isArray(value) && value[0] === "lane.runCount") {
-        return true;
-      }
-    }
-    if (rulReferencesRunCount(value)) {
-      return true;
-    }
-  }
-  return false;
-};
 
 // The human-readable reason recorded on a park. Sourced from the actual cause:
 // the failing step's error/blocked text, the review-budget exhaustion count, or
@@ -313,7 +283,7 @@ const parkReason = (
     const transition = index === undefined ? undefined : (lane.transitions ?? [])[index];
     // A transition whose predicate consults lane.runCount is a review-budget
     // guard — report the exhaustion with the pass count from the eval context.
-    const isBudgetGuard = transition !== undefined && rulReferencesRunCount(transition.when);
+    const isBudgetGuard = transition !== undefined && ruleReferencesRunCount(transition.when);
     if (isBudgetGuard) {
       return `review budget exhausted after ${context.lane.runCount} passes`;
     }
@@ -337,8 +307,9 @@ interface StepRunOutcome {
   // User rejections (approval reject / awaiting-user reject) and explicit
   // cancellations must never be retried — the user already said no.
   readonly noRetry: boolean;
-  // Human-readable cause of a non-success outcome: the failure error text or the
-  // blocked reason. Used to build a park reason when the pipeline parks in place.
+  // Human-readable cause of a non-success outcome: the failure error text, the
+  // blocked reason, or a fixed marker like `rejected`. Used to build a park
+  // reason when the pipeline parks in place.
   readonly detail?: string;
 }
 
@@ -806,9 +777,9 @@ const make = Effect.gen(function* () {
         target,
         source: "lane_on",
         parkOrigin: buildParkOrigin({ src: "lane_on", target, key: routingKey }),
-      };
+      } satisfies RouteDecision;
     }
-    return { kind: "lane", toLane: target, source: "lane_on" };
+    return { kind: "lane", toLane: target, source: "lane_on" } satisfies RouteDecision;
   };
 
   const routeDecisionEvent = (

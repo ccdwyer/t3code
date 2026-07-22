@@ -17,6 +17,7 @@ import * as Stream from "effect/Stream";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
 import { parkTargetFingerprint, parseParkOrigin } from "../parkOrigin.ts";
 import { BoardRegistry, type BoardRegistryShape } from "../Services/BoardRegistry.ts";
 import { ScriptCancelRegistry } from "../Services/ScriptCancelRegistry.ts";
@@ -30,7 +31,7 @@ import { ApprovalGateLive } from "./ApprovalGate.ts";
 import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import { WorkflowBoardSaveLocksLive } from "./WorkflowBoardSaveLocks.ts";
 import { WorkflowEventCommitterLive } from "./WorkflowEventCommitter.ts";
-import { rulReferencesRunCount, WorkflowEngineLayer } from "./WorkflowEngine.ts";
+import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 
@@ -814,18 +815,18 @@ blockedParkLayer("blocked park reason", (it) => {
 // Budget-reason detection walks the JsonLogic tree for an EXACT var match
 // ---------------------------------------------------------------------------
 
-describe("rulReferencesRunCount", () => {
+describe("ruleReferencesRunCount", () => {
   it("matches an exact { var: 'lane.runCount' } reference", () => {
-    assert.isTrue(rulReferencesRunCount({ "<": [{ var: "lane.runCount" }, 3] }));
+    assert.isTrue(ruleReferencesRunCount({ "<": [{ var: "lane.runCount" }, 3] }));
   });
 
   it("matches the array var form { var: ['lane.runCount', default] }", () => {
-    assert.isTrue(rulReferencesRunCount({ "==": [{ var: ["lane.runCount", 0] }, 2] }));
+    assert.isTrue(ruleReferencesRunCount({ "==": [{ var: ["lane.runCount", 0] }, 2] }));
   });
 
   it("matches a deeply nested reference", () => {
     assert.isTrue(
-      rulReferencesRunCount({
+      ruleReferencesRunCount({
         and: [
           { "==": [{ var: "steps.review.output.verdict" }, "revise"] },
           { "<": [{ var: "lane.runCount" }, 2] },
@@ -835,12 +836,12 @@ describe("rulReferencesRunCount", () => {
   });
 
   it("does NOT match a similarly-named var (no substring false-positive)", () => {
-    assert.isFalse(rulReferencesRunCount({ "<": [{ var: "lane.runCountish" }, 3] }));
+    assert.isFalse(ruleReferencesRunCount({ "<": [{ var: "lane.runCountish" }, 3] }));
   });
 
   it("returns false for undefined / non-runCount rules", () => {
-    assert.isFalse(rulReferencesRunCount(undefined));
-    assert.isFalse(rulReferencesRunCount({ "==": [{ var: "status" }, "done"] }));
+    assert.isFalse(ruleReferencesRunCount(undefined));
+    assert.isFalse(ruleReferencesRunCount({ "==": [{ var: "status" }, "done"] }));
   });
 });
 

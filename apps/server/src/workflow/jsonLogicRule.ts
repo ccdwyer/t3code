@@ -94,3 +94,31 @@ export const inspectJsonLogicRule = (rule: unknown): JsonLogicRuleInspection => 
   inspectNode(rule, variablePaths, new Set(), issues);
   return { variablePaths, issues };
 };
+
+// Walks a JsonLogic rule tree looking for an EXACT `{ var: "lane.runCount" }`
+// reference (also the array form `{ var: ["lane.runCount", <default>] }`). A
+// substring match would false-positive on a sibling var like "lane.runCountish"
+// — this compares the var value by string equality.
+export const ruleReferencesRunCount = (rule: unknown): boolean => {
+  if (Array.isArray(rule)) {
+    return rule.some(ruleReferencesRunCount);
+  }
+  if (!isRecord(rule)) {
+    return false;
+  }
+  for (const key of Object.keys(rule)) {
+    const value = rule[key];
+    if (key === "var") {
+      if (value === "lane.runCount") {
+        return true;
+      }
+      if (Array.isArray(value) && value[0] === "lane.runCount") {
+        return true;
+      }
+    }
+    if (ruleReferencesRunCount(value)) {
+      return true;
+    }
+  }
+  return false;
+};

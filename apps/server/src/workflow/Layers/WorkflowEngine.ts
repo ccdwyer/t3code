@@ -13,6 +13,7 @@ import type {
   TurnId,
   WorkflowEventId,
   WorkflowLane,
+  WorkflowParkTarget,
   WorkflowStep,
   WorkflowStepUsage,
 } from "@t3tools/contracts";
@@ -60,6 +61,7 @@ import {
   WorkflowRoutingContextBuilder,
   type WorkflowRoutingContext,
 } from "../Services/WorkflowRoutingContextBuilder.ts";
+import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
 
 type PipelineResult = "success" | "failure" | "blocked";
@@ -180,11 +182,28 @@ interface ActiveProviderTurnRow {
   readonly turnId: TurnId | null;
 }
 
-interface RouteDecision {
+// The engine-local routing decision. A plain lane move is `kind: "lane"`; a
+// park-in-place is `kind: "park"`, carrying the resolved park target and its
+// built origin JSON. Only lane decisions ever become a `TicketRouteDecided`
+// event — a park is recorded solely by `TicketParked` (see parkTicket).
+interface LaneRouteDecision {
+  readonly kind: "lane";
   readonly toLane: LaneKey;
   readonly source: RouteSource;
   readonly matchedTransitionIndex?: number;
 }
+
+interface ParkRouteDecision {
+  readonly kind: "park";
+  readonly target: WorkflowParkTarget;
+  readonly source: RouteSource;
+  // Informational only — never trusted for identity/re-resolution (the origin
+  // fingerprint is identity). Kept so the reason string can name the transition.
+  readonly matchedTransitionIndex?: number;
+  readonly parkOrigin: string;
+}
+
+type RouteDecision = LaneRouteDecision | ParkRouteDecision;
 
 interface CaptureTurn {
   readonly threadId: ThreadId;
@@ -199,7 +218,7 @@ interface PipelineStartAction {
 }
 
 interface RoutedEnterLaneOptions {
-  readonly routeDecision: RouteDecision;
+  readonly routeDecision: LaneRouteDecision;
   readonly contextSnapshot: WorkflowRoutingContext;
   readonly expectedToken: LaneEntryToken;
   readonly pipelineRunId: PipelineRunId;
@@ -227,12 +246,60 @@ const routingKeyForResult = (result: PipelineResult): "success" | "failure" | "b
   result === "failure" ? "failure" : result;
 
 const stepRouteDecision = (step: WorkflowStep, result: PipelineResult): RouteDecision | null => {
-  const target = step.on?.[routingKeyForResult(result)];
-  if (target === undefined || isParkTarget(target)) {
-    // TODO(park): full handling in plan Task 5 — treat park target as no decision for now.
+  const routingKey = routingKeyForResult(result);
+  const target = step.on?.[routingKey];
+  if (target === undefined) {
     return null;
   }
-  return { toLane: target, source: "step_on" };
+  if (isParkTarget(target)) {
+    return {
+      kind: "park",
+      target,
+      source: "step_on",
+      parkOrigin: buildParkOrigin({ src: "step", target, stepKey: step.key, key: routingKey }),
+    };
+  }
+  return { kind: "lane", toLane: target, source: "step_on" };
+};
+
+const PARK_REASON_MAX_LENGTH = 200;
+
+const truncateReason = (text: string): string =>
+  text.length > PARK_REASON_MAX_LENGTH ? text.slice(0, PARK_REASON_MAX_LENGTH) : text;
+
+// The human-readable reason recorded on a park. Sourced from the actual cause:
+// the failing step's error/blocked text, the review-budget exhaustion count, or
+// the malformed-verdict "no matching transition" case.
+const parkReason = (
+  decision: ParkRouteDecision,
+  result: PipelineResult,
+  failureDetail: string | undefined,
+  lane: WorkflowLane,
+  context: WorkflowRoutingContext,
+): string => {
+  if (decision.source === "lane_transition") {
+    const index = decision.matchedTransitionIndex;
+    const transition = index === undefined ? undefined : (lane.transitions ?? [])[index];
+    // A transition whose predicate consults lane.runCount is a review-budget
+    // guard — report the exhaustion with the pass count from the eval context.
+    const isBudgetGuard =
+      transition !== undefined && JSON.stringify(transition.when ?? null).includes("lane.runCount");
+    if (isBudgetGuard) {
+      return `review budget exhausted after ${context.lane.runCount} passes`;
+    }
+    return index === undefined ? "transition matched" : `transition matched (index ${index})`;
+  }
+  // step_on / lane_on parks: report the failing step's cause, or the
+  // no-matching-transition case when the pipeline succeeded.
+  if (result === "blocked") {
+    return truncateReason(failureDetail ?? "pipeline blocked with no route");
+  }
+  if (result === "failure") {
+    return truncateReason(failureDetail ?? "pipeline failed with no route");
+  }
+  return decision.source === "step_on"
+    ? "step routed on success"
+    : "pipeline succeeded with no matching transition";
 };
 
 interface StepRunOutcome {
@@ -240,6 +307,9 @@ interface StepRunOutcome {
   // User rejections (approval reject / awaiting-user reject) and explicit
   // cancellations must never be retried — the user already said no.
   readonly noRetry: boolean;
+  // Human-readable cause of a non-success outcome: the failure error text or the
+  // blocked reason. Used to build a park reason when the pipeline parks in place.
+  readonly detail?: string;
 }
 
 // Defensive clamp so a hand-edited workflow file cannot retry unboundedly;
@@ -673,10 +743,18 @@ const make = Effect.gen(function* () {
         const evaluation = yield* evaluateTransition(transition.when, context);
         if (evaluation.result) {
           if (isParkTarget(transition.to)) {
-            // TODO(park): full handling in plan Task 5 — treat as no route for now, keep evaluating.
-            continue;
+            return {
+              kind: "park",
+              target: transition.to,
+              source: "lane_transition",
+              matchedTransitionIndex: index,
+              // No index in the origin — identity is the fingerprint so a
+              // transition inserted above cannot silently rebind the park.
+              parkOrigin: buildParkOrigin({ src: "transition", target: transition.to }),
+            } satisfies RouteDecision;
           }
           return {
+            kind: "lane",
             toLane: transition.to,
             source: "lane_transition",
             matchedTransitionIndex: index,
@@ -687,19 +765,27 @@ const make = Effect.gen(function* () {
     });
 
   const laneOnDecision = (lane: WorkflowLane, result: PipelineResult): RouteDecision | null => {
-    const target = lane.on?.[routingKeyForResult(result)];
-    if (target === undefined || isParkTarget(target)) {
-      // TODO(park): full handling in plan Task 5 — treat park target as no decision for now.
+    const routingKey = routingKeyForResult(result);
+    const target = lane.on?.[routingKey];
+    if (target === undefined) {
       return null;
     }
-    return { toLane: target, source: "lane_on" };
+    if (isParkTarget(target)) {
+      return {
+        kind: "park",
+        target,
+        source: "lane_on",
+        parkOrigin: buildParkOrigin({ src: "lane_on", target, key: routingKey }),
+      };
+    }
+    return { kind: "lane", toLane: target, source: "lane_on" };
   };
 
   const routeDecisionEvent = (
     ticketId: TicketId,
     pipelineRunId: PipelineRunId,
     lane: WorkflowLane,
-    decision: RouteDecision,
+    decision: LaneRouteDecision,
     contextSnapshot: WorkflowRoutingContext,
   ): UnstampedWorkflowEventInput =>
     ({
@@ -882,7 +968,7 @@ const make = Effect.gen(function* () {
             ticketId,
             payload: stepFailedPayload(stepRunId, "rejected", undefined, false),
           });
-          return { result: "failed", noRetry: true };
+          return { result: "failed", noRetry: true, detail: "rejected" };
         }
         yield* commit({
           type: "StepCompleted",
@@ -938,7 +1024,7 @@ const make = Effect.gen(function* () {
             ticketId,
             payload: stepFailedPayload(stepRunId, "rejected", undefined, false),
           });
-          return { result: "failed", noRetry: true };
+          return { result: "failed", noRetry: true, detail: "rejected" };
         }
         if (outcome.providerThreadId !== undefined) {
           const terminalResult = yield* awaitProviderTerminalForStep(
@@ -952,7 +1038,7 @@ const make = Effect.gen(function* () {
               ticketId,
               payload: stepFailedPayload(stepRunId, terminalResult.error, terminalResult.usage),
             });
-            return { result: "failed", noRetry: false };
+            return { result: "failed", noRetry: false, detail: terminalResult.error };
           }
           if (terminalResult._tag === "blocked") {
             yield* commit({
@@ -960,7 +1046,7 @@ const make = Effect.gen(function* () {
               ticketId,
               payload: { stepRunId, reason: terminalResult.reason },
             });
-            return { result: "blocked", noRetry: false };
+            return { result: "blocked", noRetry: false, detail: terminalResult.reason };
           }
           yield* commit({
             type: "StepCompleted",
@@ -987,7 +1073,7 @@ const make = Effect.gen(function* () {
             outcome.retryable === false ? false : undefined,
           ),
         });
-        return { result: "failed", noRetry: outcome.retryable === false };
+        return { result: "failed", noRetry: outcome.retryable === false, detail: outcome.error };
       }
       if (outcome._tag === "blocked") {
         yield* commit({
@@ -995,7 +1081,7 @@ const make = Effect.gen(function* () {
           ticketId,
           payload: { stepRunId, reason: outcome.reason },
         });
-        return { result: "blocked", noRetry: false };
+        return { result: "blocked", noRetry: false, detail: outcome.reason };
       }
 
       yield* commit({
@@ -1056,6 +1142,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       let result: PipelineResult = initialResult;
       let routeDecision: RouteDecision | null = initialRouteDecision ?? null;
+      // The error text / blocked reason of the step that ended the pipeline —
+      // sourced from the step outcome so a park can report why it happened.
+      let failureDetail: string | undefined;
       const laneStepKeys = steps.map((s) => s.key);
 
       if (routeDecision === null) {
@@ -1089,6 +1178,9 @@ const make = Effect.gen(function* () {
             );
           }
           result = pipelineResultForStep(stepOutcome.result);
+          if (result !== "success") {
+            failureDetail = stepOutcome.detail;
+          }
           routeDecision = stepRouteDecision(step, result);
           if (routeDecision !== null || result !== "success") {
             break;
@@ -1113,6 +1205,19 @@ const make = Effect.gen(function* () {
       });
 
       if (routeDecision !== null) {
+        if (routeDecision.kind === "park") {
+          yield* parkTicket(
+            ticketId,
+            boardId,
+            lane.key,
+            laneEntryToken,
+            routeDecision.target,
+            routeDecision.parkOrigin,
+            parkReason(routeDecision, result, failureDetail, lane, contextSnapshot),
+            pipelineRunId,
+          );
+          return;
+        }
         yield* enterLane(ticketId, boardId, routeDecision.toLane, "routed", {
           routeDecision,
           contextSnapshot,
@@ -1570,6 +1675,56 @@ const make = Effect.gen(function* () {
     reason: MoveReason,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     enterLane(ticketId, boardId, toLane, reason).pipe(Effect.asVoid);
+
+  // Parks a ticket in place. The ENTIRE critical section runs under the board
+  // admission lock (uninterruptible), mirroring enterLaneCore's idiom: re-read
+  // the lane-entry token in-lock and bail if it changed (a concurrent move
+  // supersedes the park — no TOCTOU), emit TicketParked (its token-null
+  // projection frees this lane's WIP occupancy), then admit the next queued
+  // ticket. Collected starts run AFTER the lock releases, exactly like
+  // enterLane. `expectedToken` is the ticket's lane-entry token captured before
+  // the lock (string form so the projection value passes without a cast).
+  const parkTicket = (
+    ticketId: TicketId,
+    boardId: BoardId,
+    laneKey: LaneKey,
+    expectedToken: string | null,
+    target: WorkflowParkTarget,
+    parkOrigin: string,
+    reason: string,
+    pipelineRunId?: PipelineRunId,
+  ): Effect.Effect<void, WorkflowEventStoreError> =>
+    Effect.gen(function* () {
+      const starts: Array<PipelineStartAction> = [];
+      yield* withAdmissionLock(
+        boardId,
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const token = yield* currentToken(ticketId);
+            if (token !== expectedToken) {
+              // Superseded by a concurrent move — do not park.
+              return;
+            }
+            const label =
+              target.label ?? (target.park === "issue" ? "Issue encountered" : "Waiting on you");
+            yield* commit({
+              type: "TicketParked",
+              ticketId,
+              payload: {
+                substate: target.park,
+                label,
+                reason,
+                parkOrigin,
+                ...(pipelineRunId === undefined ? {} : { pipelineRunId }),
+                actionsSnapshot: target.actions,
+              },
+            });
+            starts.push(...(yield* admitNext(boardId, laneKey, lockedEmit)));
+          }),
+        ),
+      );
+      yield* runPipelineStarts(starts);
+    });
 
   // Budgets are advisory caps — clamp junk client input instead of failing.
   const normalizeTokenBudget = (value: number | null | undefined): number | null | undefined => {
@@ -2366,6 +2521,17 @@ const make = Effect.gen(function* () {
           code: WorkflowEventStoreErrorCode.ticketNotOnBoard,
         });
       }
+      // onEvent routing is suspended for a parked ticket in v1: a human-parked
+      // outcome must not be silently overridden. Record the event as skipped
+      // (history only) and do not evaluate matchers or move.
+      if (detail.ticket.status === "parked") {
+        yield* commit({
+          type: "TicketExternalEventSkipped",
+          ticketId: input.ticketId,
+          payload: { eventName: input.name, reason: "parked" },
+        });
+        return { outcome: "noop" as const };
+      }
       const fromLaneKey = detail.ticket.currentLaneKey as LaneKey;
       // Read once; revalidate reuses this snapshot — do not re-read.
       // resolveTarget closes over the eventContext built below, so the lock-guarded
@@ -2400,16 +2566,28 @@ const make = Effect.gen(function* () {
               continue;
             }
           }
-          if (isParkTarget(matcher.to)) {
-            // TODO(park): full handling in plan Task 5 — treat as no match for now, keep evaluating.
-            continue;
-          }
           return matcher.to;
         }
         return null;
       });
       const target = yield* resolveTarget;
       if (target === null) {
+        return { outcome: "noop" as const };
+      }
+
+      // A matched onEvent target may park in place instead of moving lanes.
+      // Never build a TicketRouteDecided from a park target — park is recorded
+      // solely by TicketParked.
+      if (isParkTarget(target)) {
+        yield* parkTicket(
+          input.ticketId,
+          input.boardId,
+          fromLaneKey,
+          detail.ticket.currentLaneEntryToken,
+          target,
+          buildParkOrigin({ src: "event", target, name: input.name }),
+          `external event '${input.name}'`,
+        );
         return { outcome: "noop" as const };
       }
 

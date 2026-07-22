@@ -26,6 +26,34 @@ const FOCUS_INSTRUCTION = [
   "proposedDefinition is the full WorkflowDefinition serialized as a JSON string (JSON.stringify of the definition object).",
 ].join(" ");
 
+// A route target (`transitions[].to`, `lane.on.*`, `step.on.*`) can be a bare
+// lane key string OR a park target object. Prefer park targets over adding a
+// dedicated issue/review/parking lane — a ticket that hits a problem or needs
+// a human should park in place in its current lane instead of moving.
+const PARK_TARGET_PROSE = [
+  "A route target (`transitions[].to`, `lane.on.success/failure/blocked`) can be a bare lane key",
+  'string OR a park target object: `{ "park": "issue" | "waiting", "label"?: string, "actions":',
+  '[{ "label": string, "to": "<lane key>", "hint"?: string }, ...] }` (`actions` is REQUIRED and',
+  "non-empty; a park cannot route into another park — `actions[].to` is always a lane key).",
+  "Prefer park targets over dedicated issue/review/parking lanes — a ticket that hits a problem",
+  'or needs a human should park in place in its current lane rather than move to one. Use `"issue"`',
+  'for a failure/error/blocked outcome and `"waiting"` for an intentional human checkpoint. If the',
+  "board already has a dedicated needs-attention-style lane, prefer converting its incoming routes",
+  "to park targets over adding more routes into it. Example — a pipeline lane's `on.failure`",
+  "parking a failure as an issue instead of moving to an issues lane:",
+].join(" ");
+
+const PARK_TARGET_GUIDANCE = [
+  "## Routing guidance",
+  PARK_TARGET_PROSE,
+  "```json",
+  '{ "on": { "failure": { "park": "issue", "actions": [',
+  '  { "label": "Retry planning", "to": "planning", "hint": "Run planning and specification again." },',
+  '  { "label": "Back to backlog", "to": "backlog", "hint": "Park the ticket; nothing runs until you start it again." }',
+  "] } } }",
+  "```",
+].join("\n");
+
 /**
  * Build a numeric, title-free metrics summary. Every value here is a number or
  * a lane/step key — never a ticket title or other free text.
@@ -99,6 +127,8 @@ export const buildProposalPrompt = ({
     "```json",
     definitionJson,
     "```",
+    "",
+    PARK_TARGET_GUIDANCE,
     "",
     "## Task",
     FOCUS_INSTRUCTION,

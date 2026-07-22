@@ -37,9 +37,9 @@ const SHAPE_SPEC = [
   '- `name` (REQUIRED, non-empty string — the human label, e.g. "To do")',
   '- `entry` (REQUIRED, EXACTLY one of the two strings "auto" or "manual" — no other value)',
   '- `pipeline` (optional array of Step; ONLY meaningful on an "auto" lane)',
-  '- `transitions` (optional array of `{ "when": <json-logic>, "to": "<lane key>" }`)',
+  '- `transitions` (optional array of `{ "when": <json-logic>, "to": "<lane key>" | ParkTarget }`)',
   '- `actions` (optional array of `{ "label": string (≤48 chars), "to": "<lane key>" }` — buttons on a manual lane)',
-  '- `on` (optional `{ "success": "<lane key>", "failure": "<lane key>", "blocked": "<lane key>" }` — where the pipeline routes by outcome)',
+  '- `on` (optional `{ "success": <lane key>|ParkTarget, "failure": <lane key>|ParkTarget, "blocked": <lane key>|ParkTarget }` — where the pipeline routes by outcome; prefer a ParkTarget over a dedicated issue/review lane for failure/blocked outcomes — see "Park targets" below)',
   "- `terminal` (optional boolean; set `true` on the lane(s) where tickets are done)",
   "Each Step in a `pipeline` is an object with:",
   '- `key` (REQUIRED, non-empty string, unique per pipeline — e.g. "implement", "review")',
@@ -49,6 +49,26 @@ const SHAPE_SPEC = [
   "Rules: every `to`/`on` target must be a `key` of a lane you define; at least one lane MUST have `terminal: true` and be reachable.",
   "A bounded review loop (run a step again until a budget is hit) uses this transition (note the `lane.runCount` guard, REQUIRED for a self-loop so it terminates):",
   '`{ "when": { "and": [ { "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, { "<": [{ "var": "lane.runCount" }, 3] } ] }, "to": "<same auto lane>" }`',
+].join("\n");
+
+// Teaches the park-target route shape and states the preference explicitly —
+// otherwise the model keeps regenerating a dedicated "needs-attention"/"issues"
+// lane, which is the exact pattern this prompt is meant to steer away from.
+const PARK_TARGET_PROSE = [
+  "A `to`/`on.success`/`on.failure`/`on.blocked` value can be a bare lane key string OR a ParkTarget",
+  'object: `{ "park": "issue" | "waiting", "label"?: string (≤80 chars), "actions": [{ "label": string',
+  '(≤48 chars), "to": "<lane key>", "hint"?: string }, ...] }` (`actions` is REQUIRED and non-empty; a',
+  'park cannot route into another park — `actions[].to` is always a lane key). Use `"issue"` for a',
+  'failure/error/blocked outcome and `"waiting"` for an intentional human checkpoint (e.g. a review-loop',
+  "budget running out). Prefer park targets over dedicated issue/review/parking lanes — a ticket that",
+  "hits a problem or needs a human should park in place in its current lane rather than move to one.",
+  "A dedicated manual lane is still valid schema and fine for a real step the user explicitly wants",
+  "(e.g. an owner-review gate before Done) — just don't default to one for failure/blocked handling.",
+].join(" ");
+
+const PARK_TARGET_SPEC = [
+  "## Park targets (prefer these over a dedicated issue/review/parking lane)",
+  PARK_TARGET_PROSE,
 ].join("\n");
 
 // A complete, decode-valid, lint-clean worked example the model can pattern-match.
@@ -73,16 +93,14 @@ const WORKED_EXAMPLE = `## Worked example of a valid definition object
       ],
       "transitions": [
         { "when": { "and": [{ "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, { "<": [{ "var": "lane.runCount" }, 3] }] }, "to": "working" },
-        { "when": { "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, "to": "needs-attention" },
+        { "when": { "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, "to": { "park": "issue", "actions": [{ "label": "Retry", "to": "working" }] } },
         { "when": { "==": [{ "var": "steps.review.output.verdict" }, "approve"] }, "to": "done" }
       ],
-      "on": { "success": "needs-attention", "failure": "needs-attention", "blocked": "needs-attention" }
-    },
-    {
-      "key": "needs-attention",
-      "name": "Needs attention",
-      "entry": "manual",
-      "actions": [{ "label": "Retry", "to": "working" }]
+      "on": {
+        "success": { "park": "issue", "actions": [{ "label": "Retry", "to": "working" }] },
+        "failure": { "park": "issue", "actions": [{ "label": "Retry", "to": "working" }] },
+        "blocked": { "park": "issue", "actions": [{ "label": "Retry", "to": "working" }] }
+      }
     },
     { "key": "done", "name": "Done", "entry": "manual", "terminal": true }
   ]
@@ -133,6 +151,8 @@ export const buildCreatePrompt = ({
     "`terminal: true`) so tickets can complete.",
     "",
     SHAPE_SPEC,
+    "",
+    PARK_TARGET_SPEC,
     "",
     WORKED_EXAMPLE,
     "",

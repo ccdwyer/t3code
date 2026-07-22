@@ -47,6 +47,18 @@ describe("buildCreatePrompt", () => {
     assert.include(prompt, '"terminal": true');
   });
 
+  it("teaches the park-target shape and prefers it over a dedicated issue/review/parking lane", () => {
+    const prompt = buildCreatePrompt({ name: "B", description: "d", agent });
+    assert.include(prompt, "Park targets");
+    assert.include(prompt, '"park": "issue" | "waiting"');
+    assert.include(prompt, "Prefer park targets over dedicated issue/review/parking lanes");
+    assert.include(prompt, "park in place in its current lane");
+    // The worked example itself parks in place instead of routing to a
+    // dedicated needs-attention/issues lane.
+    assert.include(prompt, '"park": "issue"');
+    assert.notInclude(prompt, "needs-attention");
+  });
+
   it("redacts a high-entropy token seeded into the description (defence-in-depth)", () => {
     // sk- pattern triggers the OpenAI key redaction in redactSensitiveText.
     const token = "sk-" + "ABCdef0123456789ABCdef0123456789";

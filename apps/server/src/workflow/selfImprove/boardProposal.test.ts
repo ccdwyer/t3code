@@ -91,6 +91,15 @@ describe("buildProposalPrompt", () => {
     assert.include(prompt, '"proposedDefinition"');
   });
 
+  it("teaches the park-target shape and prefers it over a dedicated issue/review/parking lane", () => {
+    const prompt = buildProposalPrompt({ definition: baseDefinition, metrics });
+    assert.include(prompt, '"park": "issue" | "waiting"');
+    assert.include(prompt, "Prefer park targets over dedicated issue/review/parking lanes");
+    assert.include(prompt, "park in place in its current lane");
+    // A concrete example the model can pattern-match.
+    assert.include(prompt, '"park": "issue"');
+  });
+
   it("redacts a seeded credential token from the assembled prompt", () => {
     const withToken = {
       name: "Board A",

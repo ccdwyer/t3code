@@ -108,12 +108,17 @@ export function computeAgentKeySlots(
   previousSlots: AgentKeySlots,
   rankedThreadRefs: readonly ScopedThreadRef[],
 ): AgentKeySlots {
+  // Dedupe BEFORE assigning ranks: a duplicate entry must not inflate the
+  // indices of the unique threads behind it, or an in-window thread could be
+  // pushed past the hysteresis boundary and falsely evicted.
+  const uniqueRefs: ScopedThreadRef[] = [];
   const rankByKey = new Map<string, number>();
-  rankedThreadRefs.forEach((ref, index) => {
-    const key = scopedThreadKey(ref);
-    // First occurrence wins if the caller ever passes a duplicate.
-    if (!rankByKey.has(key)) rankByKey.set(key, index);
-  });
+  for (const candidate of rankedThreadRefs) {
+    const key = scopedThreadKey(candidate);
+    if (rankByKey.has(key)) continue;
+    rankByKey.set(key, uniqueRefs.length);
+    uniqueRefs.push(candidate);
+  }
 
   const claimedKeys = new Set<string>();
   const nextSlots: AgentKeySlot[] = Array.from({ length: AGENT_KEY_SLOT_COUNT }, () => null);
@@ -125,7 +130,7 @@ export function computeAgentKeySlots(
     const key = scopedThreadKey(previous);
     const rank = rankByKey.get(key);
     if (rank !== undefined && rank < HYSTERESIS_WINDOW && !claimedKeys.has(key)) {
-      nextSlots[slot] = rankedThreadRefs[rank] ?? previous;
+      nextSlots[slot] = uniqueRefs[rank] ?? previous;
       claimedKeys.add(key);
     }
   }
@@ -135,14 +140,11 @@ export function computeAgentKeySlots(
   let cursor = 0;
   for (let slot = 0; slot < AGENT_KEY_SLOT_COUNT; slot++) {
     if (nextSlots[slot] !== null) continue;
-    while (
-      cursor < rankedThreadRefs.length &&
-      claimedKeys.has(scopedThreadKey(rankedThreadRefs[cursor]!))
-    ) {
+    while (cursor < uniqueRefs.length && claimedKeys.has(scopedThreadKey(uniqueRefs[cursor]!))) {
       cursor++;
     }
-    if (cursor >= rankedThreadRefs.length) break;
-    const ref = rankedThreadRefs[cursor]!;
+    if (cursor >= uniqueRefs.length) break;
+    const ref = uniqueRefs[cursor]!;
     nextSlots[slot] = ref;
     claimedKeys.add(scopedThreadKey(ref));
     cursor++;

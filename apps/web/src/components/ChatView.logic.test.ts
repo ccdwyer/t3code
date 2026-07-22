@@ -764,12 +764,40 @@ describe("resolveApprovalKeybindingOutcome", () => {
     expect(outcome).toEqual({ kind: "ignore" });
   });
 
-  it("rejects a duplicate decision while the target request is in flight", () => {
+  it("rejects a duplicate decision while the only pending request is in flight", () => {
     const outcome = resolveApprovalKeybindingOutcome({
       command: "approval.decline",
       isRepeat: false,
       pendingApprovals: [{ requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" }],
       respondingRequestIds: [requestA],
+    });
+    expect(outcome).toEqual({ kind: "in-flight" });
+  });
+
+  it("targets the next-oldest pending approval when the oldest is already in flight", () => {
+    // The in-flight set is a per-request duplicate guard, not a global mutex:
+    // a second press while A is submitting acts on B.
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [
+        { requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" },
+        { requestId: requestB, createdAt: "2026-03-29T00:00:05.000Z" },
+      ],
+      respondingRequestIds: [requestA],
+    });
+    expect(outcome).toEqual({ kind: "respond", requestId: requestB, decision: "accept" });
+  });
+
+  it("reports in-flight when every pending approval is already being submitted", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [
+        { requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" },
+        { requestId: requestB, createdAt: "2026-03-29T00:00:05.000Z" },
+      ],
+      respondingRequestIds: [requestA, requestB],
     });
     expect(outcome).toEqual({ kind: "in-flight" });
   });

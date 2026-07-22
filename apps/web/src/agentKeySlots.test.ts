@@ -160,6 +160,27 @@ describe("computeAgentKeySlots — invariants", () => {
     expect(nonNull).toContain("env-a:dup");
   });
 
+  it("dedupes duplicate ranked refs before assigning window ranks (no false eviction)", () => {
+    const initial = computeAgentKeySlots(EMPTY, rankedRefs(6));
+    // t5 sits at raw index 10 ONLY because of duplicate entries ahead of it;
+    // after dedupe its true rank is 8 (in-window) → it must keep slot 5.
+    const withDupes: ScopedThreadRef[] = [
+      ref("t0"),
+      ref("t0"),
+      ref("t1"),
+      ref("t1"),
+      ref("t2"),
+      ref("t3"),
+      ref("t4"),
+      ref("n0"),
+      ref("n1"),
+      ref("n2"),
+      ref("t5"), // raw index 10, deduped rank 8
+    ];
+    const next = computeAgentKeySlots(initial, withDupes);
+    expect(next[5] && scopedThreadKey(next[5])).toBe("env-a:t5");
+  });
+
   it("dedupes by (environmentId, threadId) — same threadId across environments are distinct", () => {
     const sameIdOtherEnv = ref("same", OTHER_ENV);
     const next = computeAgentKeySlots(EMPTY, [ref("same"), sameIdOtherEnv]);

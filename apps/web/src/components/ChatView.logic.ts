@@ -115,16 +115,17 @@ export function resolveApprovalKeybindingOutcome(input: {
   // fan out into multiple decisions.
   if (input.isRepeat) return { kind: "ignore" };
 
-  const oldest = [...input.pendingApprovals].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  )[0];
-  if (!oldest) return { kind: "no-pending" };
+  if (input.pendingApprovals.length === 0) return { kind: "no-pending" };
 
-  if (input.respondingRequestIds.includes(oldest.requestId)) {
-    return { kind: "in-flight" };
-  }
+  // Oldest pending approval whose decision is NOT already in flight: a second
+  // press while approval A is being submitted targets approval B (the in-flight
+  // set is a per-request duplicate guard, not a global mutex on the command).
+  const oldestActionable = [...input.pendingApprovals]
+    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .find((approval) => !input.respondingRequestIds.includes(approval.requestId));
+  if (!oldestActionable) return { kind: "in-flight" };
 
-  return { kind: "respond", requestId: oldest.requestId, decision };
+  return { kind: "respond", requestId: oldestActionable.requestId, decision };
 }
 
 export function buildLocalDraftThread(

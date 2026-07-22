@@ -1302,6 +1302,10 @@ function ChatViewContent(props: ChatViewProps) {
   // before a re-render. Both the composer buttons and the keybinding commands
   // funnel through `onRespondToApproval`, so this single guard covers both.
   const inFlightApprovalRequestIdsRef = useRef<Set<ApprovalRequestId>>(new Set());
+  const pendingApprovalsRef = useRef<
+    ReadonlyArray<{ requestId: ApprovalRequestId; createdAt: string }>
+  >([]);
+  const respondingRequestIdsRef = useRef<ReadonlyArray<ApprovalRequestId>>([]);
   // Latest-value ref so the window keydown listener (registered above
   // `onRespondToApproval`'s declaration) can invoke the current send callback
   // without re-subscribing or hitting a temporal-dead-zone reference.
@@ -2068,6 +2072,12 @@ function ChatViewContent(props: ChatViewProps) {
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
   );
+  // Latest-value mirrors for the window keydown listener: it must never act
+  // on a stale closure (during thread navigation the outgoing listener can
+  // fire once more before cleanup and would otherwise target the previous
+  // thread's approvals).
+  pendingApprovalsRef.current = pendingApprovals;
+  respondingRequestIdsRef.current = respondingRequestIds;
   const pendingUserInputs = useMemo(
     () => derivePendingUserInputs(threadActivities),
     [threadActivities],
@@ -4477,12 +4487,23 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "modelPicker.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        composerRef.current?.toggleModelPicker();
+        return;
+      }
+
       if (command === "approval.accept" || command === "approval.decline") {
+        // Read via latest-value refs, not the effect closure: during a
+        // thread-to-thread navigation the old listener can fire one last time
+        // before its cleanup runs, and a stale closure would target thread A's
+        // approval while dispatching through thread B's send callback.
         const outcome = resolveApprovalKeybindingOutcome({
           command,
           isRepeat: event.repeat,
-          pendingApprovals,
-          respondingRequestIds,
+          pendingApprovals: pendingApprovalsRef.current,
+          respondingRequestIds: respondingRequestIdsRef.current,
         });
         if (outcome.kind === "ignore") {
           // Auto-repeat keydown for an approval command: swallow it so the
@@ -4531,8 +4552,6 @@ function ChatViewContent(props: ChatViewProps) {
     toggleRightPanel,
     toggleTerminalVisibility,
     composerRef,
-    pendingApprovals,
-    respondingRequestIds,
   ]);
 
   const onRevertToTurnCount = useCallback(
@@ -5014,6 +5033,10 @@ function ChatViewContent(props: ChatViewProps) {
       setRespondingRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
+      const releaseApprovalGuard = () => {
+        inFlightApprovalRequestIdsRef.current.delete(requestId);
+        setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
+      };
       try {
         const result = await respondToThreadApproval({
           environmentId,
@@ -5023,22 +5046,46 @@ function ChatViewContent(props: ChatViewProps) {
             decision,
           },
         });
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          setThreadError(
-            activeThreadId,
-            error instanceof Error ? error.message : "Failed to submit approval decision.",
-          );
+        if (result._tag === "Failure") {
+          // Only a failed (or interrupted) submission releases the guard — a
+          // retry is legitimate then. On success the request stays guarded so
+          // it can never be decided twice, even while the server still lists
+          // it as pending; the prune effect below clears the entry once the
+          // approval leaves the pending list.
+          releaseApprovalGuard();
+          if (!isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            setThreadError(
+              activeThreadId,
+              error instanceof Error ? error.message : "Failed to submit approval decision.",
+            );
+          }
         }
         return result;
-      } finally {
-        inFlightApprovalRequestIdsRef.current.delete(requestId);
-        setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
+      } catch (error) {
+        releaseApprovalGuard();
+        throw error;
       }
     },
     [activeThreadId, environmentId, respondToThreadApproval, setThreadError],
   );
   onRespondToApprovalRef.current = onRespondToApproval;
+
+  useEffect(() => {
+    // Housekeeping for the duplicate-decision guard: once an approval leaves
+    // the pending list (the server acknowledged the decision), its guard
+    // entries are no longer needed and must not accumulate over the session.
+    const pendingIds = new Set(pendingApprovals.map((approval) => approval.requestId));
+    for (const requestId of inFlightApprovalRequestIdsRef.current) {
+      if (!pendingIds.has(requestId)) {
+        inFlightApprovalRequestIdsRef.current.delete(requestId);
+      }
+    }
+    setRespondingRequestIds((existing) => {
+      const next = existing.filter((requestId) => pendingIds.has(requestId));
+      return next.length === existing.length ? existing : next;
+    });
+  }, [pendingApprovals]);
 
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {

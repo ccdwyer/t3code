@@ -511,6 +511,8 @@ function WorkflowBoardRouteView() {
         { ticketId, actionIndex, parkedEventId },
         {
           pendingTicketIds: pendingParkActionTicketIdsRef.current,
+          // Board/strip surfaces update via the live board subscription; this
+          // reload only refreshes the open drawer's detail.
           reloadTicketDetailIfOpen: () => {
             if (selectedTicketIdRef.current === TicketId.make(ticketId)) {
               reloadTicketDetail();

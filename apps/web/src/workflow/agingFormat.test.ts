@@ -22,6 +22,32 @@ describe("ticketAging", () => {
     expect(alert?.label).toContain("blocked");
   });
 
+  it("ages parked tickets, taking the verb from the parked substate", () => {
+    const issue = ticketAging(
+      { status: "parked", updatedAt: minutesAgo(45), parked: { substate: "issue" } },
+      NOW,
+    );
+    expect(issue?.level).toBe("warn");
+    expect(issue?.label).toContain("issue");
+    expect(issue?.durationLabel).toBe(issue?.label.split(" · ")[1]);
+
+    const waiting = ticketAging(
+      { status: "parked", updatedAt: minutesAgo(180), parked: { substate: "waiting" } },
+      NOW,
+    );
+    expect(waiting?.level).toBe("alert");
+    expect(waiting?.label).toContain("needs you");
+  });
+
+  it("leaves fresh parked tickets un-aged", () => {
+    expect(
+      ticketAging(
+        { status: "parked", updatedAt: minutesAgo(5), parked: { substate: "issue" } },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
   it("counts tickets needing attention", () => {
     expect(
       countNeedsAttention(

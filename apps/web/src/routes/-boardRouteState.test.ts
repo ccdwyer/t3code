@@ -218,6 +218,25 @@ describe("submitParkActionFromBoardRoute", () => {
     expect(pendingTicketIds.has("ticket-parked")).toBe(false);
   });
 
+  it("reloads without a toast on a 'queued' result (re-admitted behind a WIP slot)", async () => {
+    const api = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => "queued" as const),
+      },
+    } as unknown as EnvironmentApi;
+    const reloadTicketDetailIfOpen = vi.fn();
+    const pendingTicketIds = new Set<string>();
+
+    await submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds,
+    });
+
+    expect(reloadTicketDetailIfOpen).toHaveBeenCalledOnce();
+    expect(toastManager.add).not.toHaveBeenCalled();
+    expect(pendingTicketIds.has("ticket-parked")).toBe(false);
+  });
+
   it("surfaces an informational toast and still reloads on a 'stale' result", async () => {
     const api = {
       workflow: {

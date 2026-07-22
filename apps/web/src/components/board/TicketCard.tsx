@@ -1,12 +1,30 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { cva } from "class-variance-authority";
-import type { CSSProperties } from "react";
+import { MoreHorizontalIcon } from "lucide-react";
+import { type CSSProperties, useRef, useState } from "react";
 
+import { Button } from "~/components/ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { cn } from "~/lib/utils";
 import { ticketAging } from "~/workflow/agingFormat";
 import { useNowTick } from "~/workflow/useNowTick";
 import { ticketUsageSummary } from "~/workflow/usageFormat";
+
+interface TicketParkAction {
+  readonly label: string;
+  readonly to: string;
+  readonly hint?: string | undefined;
+}
+
+interface TicketParkedView {
+  readonly substate: "issue" | "waiting";
+  readonly label: string;
+  readonly reason: string;
+  readonly parkedAt: string;
+  readonly parkedEventId: string;
+  readonly actions?: ReadonlyArray<TicketParkAction> | undefined;
+}
 
 export interface TicketCardView {
   readonly ticketId: string;
@@ -26,6 +44,13 @@ export interface TicketCardView {
         readonly ciState?: "pending" | "success" | "failure" | undefined;
       }
     | undefined;
+  readonly attentionKind?: string | undefined;
+  readonly currentStepLabel?: string | undefined;
+  // Park-in-place details — present while status is "parked". `actions` is
+  // re-resolved from the current board definition at read time; absent means
+  // the definition changed and inline recovery is unavailable (the drawer
+  // stays the escape hatch).
+  readonly parked?: TicketParkedView | undefined;
 }
 
 interface TicketStatusMeta {
@@ -36,16 +61,105 @@ interface TicketStatusMeta {
   readonly live?: boolean;
 }
 
+/**
+ * Theo's attention tiers: a card's *color* tells you what it needs at a
+ * glance. Parking wins over runtime status (a parked ticket holds no token,
+ * so it is neither running nor queued); `waiting_on_user` shares the waiting
+ * tier because an agent question is the same "needs you" ask.
+ */
+export type TicketTier = "issue" | "waiting" | "processing" | "enqueued" | "neutral";
+
+export const ticketTier = (ticket: Pick<TicketCardView, "status" | "parked">): TicketTier => {
+  if (ticket.parked?.substate === "issue") {
+    return "issue";
+  }
+  if (ticket.parked?.substate === "waiting" || ticket.status === "waiting_on_user") {
+    return "waiting";
+  }
+  if (ticket.status === "running") {
+    return "processing";
+  }
+  if (ticket.status === "queued") {
+    return "enqueued";
+  }
+  return "neutral";
+};
+
+interface IndexedParkAction {
+  readonly action: TicketParkAction;
+  readonly index: number;
+}
+
+/**
+ * The first re-resolved action is the primary button; the rest collapse into
+ * an overflow menu. Each carries its original index so dispatch stays keyed to
+ * the definition order (the server re-resolves by index).
+ */
+export const splitParkActions = (
+  actions: ReadonlyArray<TicketParkAction>,
+): {
+  readonly primary: IndexedParkAction | undefined;
+  readonly overflow: ReadonlyArray<IndexedParkAction>;
+} => {
+  const [first, ...rest] = actions;
+  return {
+    primary: first === undefined ? undefined : { action: first, index: 0 },
+    overflow: rest.map((action, i) => ({ action, index: i + 1 })),
+  };
+};
+
+interface ParkActionGuard {
+  readonly isInFlight: () => boolean;
+  readonly begin: () => void;
+  readonly end: () => void;
+}
+
+/**
+ * Fires a park action once, ignoring re-entry while the RPC is in flight — a
+ * local double-click guard layered on top of the route-side pending set, so a
+ * doubled click never dispatches two RPCs even before the disabled prop lands.
+ */
+export const dispatchParkAction = (
+  args: {
+    readonly onParkAction?:
+      | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+      | undefined;
+    readonly ticketId: string;
+    readonly actionIndex: number;
+    readonly parkedEventId: string | undefined;
+  },
+  guard: ParkActionGuard,
+): void => {
+  if (args.onParkAction === undefined || args.parkedEventId === undefined || guard.isInFlight()) {
+    return;
+  }
+  guard.begin();
+  void args.onParkAction(args.ticketId, args.actionIndex, args.parkedEventId).finally(() => {
+    guard.end();
+  });
+};
+
 const ticketCardVariants = cva(
-  "group w-full cursor-grab rounded-md border border-border/70 bg-card px-3 py-2.5 text-left text-sm text-card-foreground shadow-xs transition-[border-color,box-shadow,background-color] hover:border-border hover:shadow-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/35 disabled:cursor-default",
+  "group relative w-full rounded-md border bg-card text-left text-sm text-card-foreground shadow-xs transition-[border-color,box-shadow,background-color]",
   {
     variants: {
+      // Color signals, not noise: a subtle border/ring in the tier hue, never a
+      // full fill. Issue borrows the amber `warning` family; waiting borrows the
+      // blue `info` family (the theme carries no dedicated violet token).
+      tier: {
+        neutral: "border-border/70",
+        issue: "border-warning/50 ring-1 ring-warning/25",
+        waiting: "border-info/50 ring-1 ring-info/25",
+        processing: "border-border/70",
+        enqueued: "border-border/70 opacity-60",
+      },
       dragging: {
         false: "",
         true: "opacity-50 shadow-md",
       },
     },
     defaultVariants: {
+      tier: "neutral",
       dragging: false,
     },
   },
@@ -91,11 +205,7 @@ const statusMetaByStatus: Record<string, TicketStatusMeta | undefined> = {
 export function TicketCard({
   ticket,
   onOpen,
-  // Accepted but not yet consumed — the parked inline action row that calls
-  // this lands in Task 15 (plan `2026-07-22-workflow-substates.md`), which
-  // restructures this card's shell. Threaded now so that Task 15 doesn't need
-  // a second prop-drilling pass through BoardView/LaneColumn.
-  onParkAction: _onParkAction,
+  onParkAction,
 }: {
   readonly ticket: TicketCardView;
   readonly onOpen: (id: string) => void;
@@ -110,101 +220,253 @@ export function TicketCard({
   const usageSummary = ticketUsageSummary(ticket);
   const unresolvedDependencies = ticket.unresolvedDependencyCount ?? 0;
   const aging = ticketAging(ticket, useNowTick(60_000));
+  const tier = ticketTier(ticket);
+  const parked = ticket.parked;
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
   };
-  // A ticket stuck on a human escalates in place: the aging label replaces the
-  // plain status word rather than stacking a second indicator on the card.
-  const statusLabel = aging?.label ?? meta?.label ?? null;
-  const statusClassName =
-    aging === null
-      ? meta?.textClassName
-      : aging.level === "alert"
-        ? "text-destructive-foreground"
-        : "text-warning-foreground";
+
+  // Status word + tone. Priority: parked label (aging duration appended) →
+  // aging nag → runtime status. A parked ticket escalates via aging too, so an
+  // aged park flips to the destructive tone while keeping its own label.
+  let statusLabel: string | null;
+  let statusTone: string | undefined;
+  let statusClassName: string | undefined;
+  if (parked !== undefined) {
+    statusLabel = aging === null ? parked.label : `${parked.label} · ${aging.durationLabel}`;
+    const escalated = aging?.level === "alert";
+    statusTone = escalated ? "destructive" : tier === "issue" ? "warning" : "info";
+    statusClassName = escalated
+      ? "text-destructive-foreground"
+      : tier === "issue"
+        ? "text-warning-foreground"
+        : "text-info-foreground";
+  } else if (aging !== null) {
+    statusLabel = aging.label;
+    statusTone = aging.level === "alert" ? "destructive" : "warning";
+    statusClassName =
+      aging.level === "alert" ? "text-destructive-foreground" : "text-warning-foreground";
+  } else if (meta !== null) {
+    // A running card names its live step ("running · implement") so the board
+    // reads like a status line, not just a spinner.
+    statusLabel =
+      ticket.status === "running" && ticket.currentStepLabel
+        ? `${meta.label} · ${ticket.currentStepLabel}`
+        : meta.label;
+    statusTone = meta.tone;
+    statusClassName = meta.textClassName;
+  } else {
+    statusLabel = null;
+    statusTone = undefined;
+    statusClassName = undefined;
+  }
+
+  const showLiveDot = meta?.live === true && parked === undefined && aging === null;
   const showFooter = statusLabel !== null || usageSummary !== null || ticket.pr !== undefined;
+  // Parked cards surface the reason (the park's explanation); everyone else
+  // shows the description. Only ever one secondary line, to keep the card calm.
+  const secondaryText = parked?.reason ?? ticket.description;
+  const isProcessing = tier === "processing";
+  const parkActions = parked?.actions;
+  const { primary: primaryAction, overflow: overflowActions } =
+    parkActions !== undefined
+      ? splitParkActions(parkActions)
+      : { primary: undefined, overflow: [] };
+
+  const inFlightRef = useRef(false);
+  const [pending, setPending] = useState(false);
+  const runAction = (index: number): void => {
+    dispatchParkAction(
+      {
+        onParkAction,
+        ticketId: ticket.ticketId,
+        actionIndex: index,
+        parkedEventId: parked?.parkedEventId,
+      },
+      {
+        isInFlight: () => inFlightRef.current,
+        begin: () => {
+          inFlightRef.current = true;
+          setPending(true);
+        },
+        end: () => {
+          inFlightRef.current = false;
+          setPending(false);
+        },
+      },
+    );
+  };
+
+  // Keep pointer/click events off the sortable drag listeners and the open
+  // target — an action press must never start a drag or open the drawer.
+  const stopEvent = (event: { stopPropagation: () => void }): void => {
+    event.stopPropagation();
+  };
 
   return (
-    <button
+    <div
       ref={setNodeRef}
-      type="button"
       style={style}
-      className={ticketCardVariants({ dragging: isDragging })}
+      className={ticketCardVariants({ tier, dragging: isDragging })}
       data-status={ticket.status}
-      onClick={() => onOpen(ticket.ticketId)}
-      {...attributes}
-      {...listeners}
+      data-tier={tier}
+      data-testid="ticket-card"
     >
-      <span className="block truncate font-medium leading-5">{ticket.title}</span>
-      {ticket.description ? (
-        <span className="mt-1 block line-clamp-2 text-xs leading-4 text-muted-foreground">
-          {ticket.description}
-        </span>
-      ) : null}
-      {unresolvedDependencies > 0 ? (
-        <span
-          className="mt-1.5 block text-[11px] leading-4 text-warning-foreground"
-          data-testid="ticket-dependency-badge"
-        >
-          waiting on {unresolvedDependencies} dependenc
-          {unresolvedDependencies === 1 ? "y" : "ies"}
-        </span>
-      ) : null}
-      {showFooter ? (
-        <span className="mt-2 flex items-baseline gap-1.5">
-          {statusLabel !== null ? (
-            <span
-              className={cn(
-                "flex min-w-0 items-baseline gap-1.5 truncate text-[11px] font-medium leading-4",
-                statusClassName,
-              )}
-              data-status-tone={
-                aging === null ? meta?.tone : aging.level === "alert" ? "destructive" : "warning"
-              }
-              data-testid="ticket-status"
-            >
-              {meta?.live ? (
-                <span aria-hidden="true" className="relative flex size-1.5 self-center">
-                  <span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-60 motion-safe:animate-ping" />
-                  <span className="relative inline-flex size-1.5 rounded-full bg-success" />
-                </span>
-              ) : null}
-              {statusLabel}
-            </span>
-          ) : null}
-          {usageSummary ? (
-            <span
-              className="ml-auto shrink-0 font-mono text-[10px] leading-4 tabular-nums text-muted-foreground/90"
-              data-testid="ticket-usage-summary"
-            >
-              {usageSummary}
-            </span>
-          ) : null}
-          {ticket.pr !== undefined ? (
-            <span
-              className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[10px] leading-4 tabular-nums text-muted-foreground/90"
-              data-testid="ticket-pr-chip"
-            >
+      {/* Drag region + open target: the whole body is draggable, and a plain
+          keyboard-focusable button opens the drawer. dnd-kit's activation
+          distance keeps a click a click and a drag a drag. */}
+      <button
+        type="button"
+        className="block w-full cursor-grab rounded-md px-3 py-2.5 text-left outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring/35"
+        onClick={() => onOpen(ticket.ticketId)}
+        data-testid="ticket-open"
+        {...attributes}
+        {...listeners}
+      >
+        <span className="block truncate font-medium leading-5">{ticket.title}</span>
+        {secondaryText ? (
+          <span
+            className="mt-1 block line-clamp-2 text-xs leading-4 text-muted-foreground"
+            {...(parked !== undefined ? { title: parked.reason } : {})}
+            data-testid={parked !== undefined ? "ticket-parked-reason" : undefined}
+          >
+            {secondaryText}
+          </span>
+        ) : null}
+        {unresolvedDependencies > 0 ? (
+          <span
+            className="mt-1.5 block text-[11px] leading-4 text-warning-foreground"
+            data-testid="ticket-dependency-badge"
+          >
+            waiting on {unresolvedDependencies} dependenc
+            {unresolvedDependencies === 1 ? "y" : "ies"}
+          </span>
+        ) : null}
+        {showFooter ? (
+          <span className="mt-2 flex items-baseline gap-1.5">
+            {statusLabel !== null ? (
               <span
                 className={cn(
-                  "inline-block size-1.5 rounded-full",
-                  ticket.pr.state === "merged"
-                    ? "bg-muted-foreground/50"
-                    : ticket.pr.state === "closed"
-                      ? "bg-muted-foreground/40"
-                      : ticket.pr.ciState === "failure"
-                        ? "bg-destructive"
-                        : ticket.pr.ciState === "success"
-                          ? "bg-success"
-                          : "bg-muted-foreground/40",
+                  "flex min-w-0 items-baseline gap-1.5 truncate text-[11px] font-medium leading-4",
+                  statusClassName,
                 )}
-              />
-              #{ticket.pr.number}
-            </span>
-          ) : null}
-        </span>
+                data-status-tone={statusTone}
+                data-testid="ticket-status"
+              >
+                {showLiveDot ? (
+                  <span aria-hidden="true" className="relative flex size-1.5 self-center">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-success opacity-60 motion-safe:animate-ping" />
+                    <span className="relative inline-flex size-1.5 rounded-full bg-success" />
+                  </span>
+                ) : null}
+                {statusLabel}
+              </span>
+            ) : null}
+            {usageSummary ? (
+              <span
+                className="ml-auto shrink-0 font-mono text-[10px] leading-4 tabular-nums text-muted-foreground/90"
+                data-testid="ticket-usage-summary"
+              >
+                {usageSummary}
+              </span>
+            ) : null}
+            {ticket.pr !== undefined ? (
+              <span
+                className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[10px] leading-4 tabular-nums text-muted-foreground/90"
+                data-testid="ticket-pr-chip"
+              >
+                <span
+                  className={cn(
+                    "inline-block size-1.5 rounded-full",
+                    ticket.pr.state === "merged"
+                      ? "bg-muted-foreground/50"
+                      : ticket.pr.state === "closed"
+                        ? "bg-muted-foreground/40"
+                        : ticket.pr.ciState === "failure"
+                          ? "bg-destructive"
+                          : ticket.pr.ciState === "success"
+                            ? "bg-success"
+                            : "bg-muted-foreground/40",
+                  )}
+                />
+                #{ticket.pr.number}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
+      </button>
+
+      {/* Action zone: a sibling of the open target (never nested), so a click
+          here can never bubble into onOpen or the drag listeners. */}
+      {parked !== undefined ? (
+        parkActions !== undefined && primaryAction !== undefined ? (
+          <div
+            className="flex items-center gap-1.5 px-3 pb-2.5"
+            data-testid="ticket-actions"
+            onClick={stopEvent}
+            onPointerDown={stopEvent}
+          >
+            <Button
+              size="xs"
+              variant="secondary"
+              disabled={pending}
+              onClick={() => runAction(primaryAction.index)}
+              {...(primaryAction.action.hint !== undefined
+                ? { title: primaryAction.action.hint }
+                : {})}
+            >
+              {primaryAction.action.label}
+            </Button>
+            {overflowActions.length > 0 ? (
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      disabled={pending}
+                      aria-label="More recovery actions"
+                      data-testid="ticket-actions-overflow"
+                    />
+                  }
+                >
+                  <MoreHorizontalIcon className="size-3.5" />
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  {overflowActions.map(({ action, index }) => (
+                    <MenuItem
+                      key={action.to + index}
+                      onClick={() => runAction(index)}
+                      {...(action.hint !== undefined ? { title: action.hint } : {})}
+                    >
+                      {action.label}
+                    </MenuItem>
+                  ))}
+                </MenuPopup>
+              </Menu>
+            ) : null}
+          </div>
+        ) : (
+          <p
+            className="px-3 pb-2.5 text-[11px] leading-4 text-muted-foreground"
+            data-testid="ticket-actions-unavailable"
+          >
+            Actions unavailable — board changed. Open the ticket to recover.
+          </p>
+        )
       ) : null}
-    </button>
+
+      {/* Processing bar: a thin sweeping gradient pinned to the bottom edge.
+          Reduced-motion users keep a static gradient (still a "working" cue)
+          via motion-safe. */}
+      {isProcessing ? (
+        <span
+          aria-hidden="true"
+          data-testid="ticket-processing-bar"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden rounded-b-md motion-safe:animate-skeleton [background:linear-gradient(90deg,transparent_0%,var(--color-success)_50%,transparent_100%)_0_0/200%_100%]"
+        />
+      ) : null}
+    </div>
   );
 }

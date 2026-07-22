@@ -941,6 +941,7 @@ export const WsWorkflowMoveTicketRpc = Rpc.make(WORKFLOW_WS_METHODS.moveTicket, 
 // Unpark recovery: compare-and-act on `parkedEventId` so a stale/concurrent
 // invocation is reported rather than silently moving the wrong ticket.
 export const WorkflowParkActionResult = Schema.Literals(["moved", "queued", "stale"]);
+export type WorkflowParkActionResult = typeof WorkflowParkActionResult.Type;
 export const WsWorkflowInvokeParkActionRpc = Rpc.make(WORKFLOW_WS_METHODS.invokeParkAction, {
   payload: Schema.Struct({
     ticketId: TicketId,

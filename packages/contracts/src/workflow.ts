@@ -1086,6 +1086,7 @@ export type WorkflowRouteStepSnapshotView = typeof WorkflowRouteStepSnapshotView
 export const WorkflowRouteDecisionView = Schema.Struct({
   occurredAt: IsoDateTime,
   fromLane: Schema.optional(LaneKey),
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
   // Absent for a park variant (see `park` below) — the ticket never left
   // its lane, so there is no destination lane to report.
   toLane: Schema.optional(LaneKey),
@@ -1103,6 +1104,7 @@ export const WorkflowRouteDecisionView = Schema.Struct({
   pipelineResult: Schema.optional(Schema.Literals(["success", "failure", "blocked"])),
   laneRunCount: Schema.optional(Schema.Int),
   steps: Schema.optional(Schema.Record(Schema.String, WorkflowRouteStepSnapshotView)),
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
   // Present when this entry renders a `TicketParked` event rather than a
   // `TicketRouteDecided` one — the ticket parked in place instead of moving.
   park: Schema.optional(
@@ -1251,6 +1253,7 @@ export type WorkflowDryRunScenario = typeof WorkflowDryRunScenario.Type;
 
 export const WorkflowDryRunHop = Schema.Struct({
   fromLane: LaneKey,
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
   // Absent for a park hop (see `park` below) — the walk stayed in `fromLane`.
   toLane: Schema.optional(LaneKey),
   source: Schema.Literals(["step_on", "lane_transition", "lane_on"]),
@@ -1261,6 +1264,7 @@ export const WorkflowDryRunHop = Schema.Struct({
   // NonNegativeInt, so the constraint is consistent across the conceptual field.
   matchedTransitionIndex: Schema.optional(Schema.Int),
   result: WorkflowDryRunScenario,
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
   // Present when this hop parks the ticket in place instead of moving it.
   park: Schema.optional(
     Schema.Struct({

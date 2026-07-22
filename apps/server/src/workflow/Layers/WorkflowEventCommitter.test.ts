@@ -844,6 +844,80 @@ layer("WorkflowEventCommitter", (it) => {
       }),
   );
 
+  it.effect(
+    "supersedes an in-flight publishing row when the ticket LEAVES needs-you via StepUserResolved",
+    () =>
+      Effect.gen(function* () {
+        const boardId = "b-leave-supersede";
+        const ticketId = "t-leave-supersede";
+        const committer = yield* WorkflowEventCommitter;
+        const sql = yield* SqlClient.SqlClient;
+        yield* registerBoard(boardId);
+        yield* insertProjectedTicket({ ticketId, boardId, title: "Leave", status: "running" });
+
+        // 1) waiting_on_user → outbox row A (pending).
+        yield* committer.commit({
+          type: "StepAwaitingUser",
+          eventId: "e-leave-1" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T00:00:01.000Z" as never,
+          payload: {
+            stepRunId: "step-leave" as never,
+            waitingReason: "answer me",
+            providerResponseKind: "user-input",
+          },
+        });
+        // Simulate the dispatcher atomically claiming row A for delivery: it now
+        // sits in 'publishing' for the duration of the relay round-trip.
+        yield* sql`
+          UPDATE workflow_notification_outbox
+          SET delivery_state = 'publishing'
+          WHERE ticket_id = ${ticketId}
+        `;
+
+        // 2) StepUserResolved crosses the ticket OUT of needs-you (waiting_on_user
+        //    → running). The leave-supersede must flip the in-flight row without
+        //    inserting a replacement.
+        yield* committer.commit({
+          type: "StepUserResolved",
+          eventId: "e-leave-2" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T00:00:02.000Z" as never,
+          payload: { stepRunId: "step-leave" as never },
+        });
+
+        const rows = yield* outboxRows(ticketId);
+        // No new row inserted; the single obsolete row is now superseded (never
+        // 'sent'), so a subsequent dispatcher markSent CAS finds it already gone.
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0]?.status, "waiting_on_user");
+        assert.equal(rows[0]?.deliveryState, "superseded");
+      }),
+  );
+
+  it.effect("does not touch outbox rows when StepUserResolved is not a leave transition", () =>
+    Effect.gen(function* () {
+      const boardId = "b-leave-noop";
+      const ticketId = "t-leave-noop";
+      const committer = yield* WorkflowEventCommitter;
+      yield* registerBoard(boardId);
+      // Ticket is 'running' (NOT a needs-you status) — a StepUserResolved here is
+      // not a leave transition (prev not in the set), so it inserts nothing and
+      // supersedes nothing. Regression guard for the fast/leave gate.
+      yield* insertProjectedTicket({ ticketId, boardId, title: "Noop", status: "running" });
+
+      yield* committer.commit({
+        type: "StepUserResolved",
+        eventId: "e-leave-noop-1" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:01.000Z" as never,
+        payload: { stepRunId: "step-leave-noop" as never },
+      });
+
+      assert.equal(yield* outboxCount(ticketId), 0);
+    }),
+  );
+
   it.effect("writes exactly one outbox row when a ticket parks with substate=issue", () =>
     Effect.gen(function* () {
       const boardId = "b-outbox-park-issue";

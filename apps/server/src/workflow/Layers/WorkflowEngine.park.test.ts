@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -1243,6 +1244,160 @@ answerParkLayer("answer while parked", (it) => {
       assert.equal(detail?.ticket.status, "parked");
       assert.notEqual(detail?.ticket.parkedEventId, null);
     }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F1e (gate-1 round-3 NEW-1): a park landing AFTER answerTicketStep's early
+// check is caught by the IN-LOCK precondition on the message append, so no
+// phantom user answer is ever durably recorded. The answer's commit takes the
+// board save lock; we interpose that lock to drop an external park (a projection
+// flip to 'parked') the instant the lock is acquired — i.e. after the early
+// check, before the precondition and append. The precondition re-reads under the
+// lock, sees parked, and fails the whole commit typed with NO TicketMessagePosted
+// appended (so the provider respond that would follow the append never runs).
+// ---------------------------------------------------------------------------
+
+const answerRaceControl: { armed: boolean; ticketId: string | null } = {
+  armed: false,
+  ticketId: null,
+};
+
+const answerRaceExecutor = makeScriptedExecutor(
+  () =>
+    ({
+      _tag: "awaiting_user",
+      waitingReason: "need input",
+      providerResponseKind: "user-input",
+      providerThreadId: "thread-answer-race",
+      providerRequestId: "req-answer-race",
+    }) as StepOutcome,
+);
+
+// A save-lock layer that, when armed, simulates an external park committing the
+// instant the answer's commit acquires the lock — one-shot, before the locked
+// effect (the in-lock precondition + append) runs.
+const answerRaceSaveLockLayer = Layer.effect(
+  WorkflowBoardSaveLocks,
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return {
+      withSaveLock: (_boardId, effect) =>
+        Effect.gen(function* () {
+          if (answerRaceControl.armed && answerRaceControl.ticketId !== null) {
+            answerRaceControl.armed = false;
+            yield* sql`
+              UPDATE projection_ticket
+              SET status = 'parked', parked_event_id = 'evt-answer-race-park'
+              WHERE ticket_id = ${answerRaceControl.ticketId}
+            `.pipe(Effect.orDie);
+          }
+          return yield* effect;
+        }),
+    } satisfies WorkflowBoardSaveLocks["Service"];
+  }),
+);
+
+const answerRaceLayer = it.layer(
+  WorkflowEngineLayer.pipe(
+    Layer.provideMerge(WorkflowEventCommitterLive),
+    Layer.provideMerge(
+      Layer.succeed(ScriptCancelRegistry, {
+        register: () => Effect.void,
+        unregister: () => Effect.void,
+        cancel: () => Effect.void,
+      }),
+    ),
+    Layer.provideMerge(answerRaceExecutor.layer),
+    Layer.provideMerge(ApprovalGateLive),
+    Layer.provideMerge(LintFreeBoardRegistry),
+    Layer.provideMerge(PredicateEvaluatorLive),
+    Layer.provideMerge(WorkflowRoutingContextBuilderLive),
+    Layer.provideMerge(answerRaceSaveLockLayer),
+    Layer.provideMerge(DeterministicWorkflowIds),
+    Layer.provideMerge(WorkflowFoundationLive),
+    Layer.provideMerge(MigrationsLive),
+    Layer.provideMerge(SqlitePersistenceMemory),
+  ),
+);
+
+answerRaceLayer("answer race: park after early check", (it) => {
+  it.effect(
+    "a park landing after the early check is caught by the in-lock precondition; no TicketMessagePosted, typed failure",
+    () =>
+      Effect.gen(function* () {
+        const registry = yield* BoardRegistry;
+        yield* registry.register(
+          "b-answerrace" as never,
+          {
+            name: "answerrace",
+            lanes: [
+              {
+                key: "impl",
+                name: "Impl",
+                entry: "auto",
+                pipeline: [
+                  {
+                    key: "code",
+                    type: "agent",
+                    agent: { instance: "claude_main", model: "sonnet" },
+                    instruction: "do it",
+                  },
+                ],
+              },
+            ],
+          } as never,
+        );
+        const engine = yield* WorkflowEngine;
+        const store = yield* WorkflowEventStore;
+
+        const ticketId = yield* engine.createTicket({
+          boardId: "b-answerrace" as never,
+          title: "Race",
+          initialLane: "impl" as never,
+        });
+
+        // The step awaits user input → ticket is waiting_on_user (NOT parked), so
+        // the answer's early check passes.
+        yield* awaitTicketWhere(
+          ticketId as string,
+          (detail) => detail?.ticket.status === "waiting_on_user",
+        );
+
+        const events = yield* Stream.runCollect(store.readByTicket(ticketId)).pipe(
+          Effect.map((chunk) => Array.from(chunk)),
+        );
+        const awaiting = events.find((event) => event.type === "StepAwaitingUser");
+        assert.ok(awaiting?.type === "StepAwaitingUser");
+        const stepRunId =
+          awaiting.type === "StepAwaitingUser" ? awaiting.payload.stepRunId : undefined;
+        assert.isDefined(stepRunId);
+
+        // Arm the interposition: the NEXT save-lock acquisition (the answer's
+        // TicketMessagePosted commit) parks the ticket after the early check but
+        // before the in-lock precondition + append.
+        answerRaceControl.ticketId = ticketId as string;
+        answerRaceControl.armed = true;
+
+        const failure = yield* engine
+          .answerTicketStep({ stepRunId: stepRunId as never, text: "here you go" })
+          .pipe(Effect.flip);
+        assert.include(failure.message, "parked");
+        // The one-shot fired exactly once (the commit did reach the save lock).
+        assert.isFalse(answerRaceControl.armed);
+
+        // No phantom answer was durably recorded: the stream has no USER-authored
+        // TicketMessagePosted despite the API call reaching the commit point. (The
+        // agent-authored user-input PROMPT message is expected and unrelated.)
+        const after = yield* Stream.runCollect(store.readByTicket(ticketId)).pipe(
+          Effect.map((chunk) => Array.from(chunk)),
+        );
+        assert.isUndefined(
+          after.find(
+            (event) => event.type === "TicketMessagePosted" && event.payload.author === "user",
+          ),
+        );
+      }),
   );
 });
 

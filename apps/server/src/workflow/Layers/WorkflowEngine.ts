@@ -2282,35 +2282,45 @@ const make = Effect.gen(function* () {
       }
       yield* ensureLiveProviderUserInputWait(pending);
 
-      // Authoritative parked re-check at the commit point: the early check above
-      // is a fast pre-validation, but an external park can land between it and
-      // here (interrupting/cancelling the wait and nulling the token). Re-read
-      // immediately before the first side effect (the user message post and the
-      // provider respond that follow) so we never post an answer onto — or
-      // respond into — a since-parked ticket. Residual: a park landing AFTER this
-      // check but before respond()/resolve is harmless — StepUserResolved is
+      // Serialized parked precondition on the message append. The early check
+      // above is a fast pre-validation only; an external park can land between it
+      // and this append (interrupting/cancelling the wait and nulling the token).
+      // A plain re-read here would still race: the park could commit between the
+      // read and the append and durably record a user answer the provider never
+      // received. Instead hand the committer a precondition that re-reads the
+      // ticket INSIDE the board save lock, immediately before the append — the
+      // park's own TicketParked commit takes that same lock, so the two are
+      // serialized. If the ticket is parked at that point the whole commit fails
+      // typed with NOTHING appended: no phantom TicketMessagePosted enters the
+      // stream, and the provider respond() below never runs. Residual: a park
+      // landing AFTER this append commits is harmless — StepUserResolved is
       // refused by the projection on a parked row, and respond() targets a
       // provider request the park's supersede already cancelled (a no-op turn).
-      const parkedAtCommit = yield* read.getTicketDetail(ticketId);
-      if (parkedAtCommit?.ticket.status === "parked") {
-        return yield* new WorkflowEventStoreError({
-          message: "ticket is parked",
-        });
-      }
+      const parkedAppendPrecondition = Effect.gen(function* () {
+        const parkedAtAppend = yield* read.getTicketDetail(ticketId);
+        if (parkedAtAppend?.ticket.status === "parked") {
+          return yield* new WorkflowEventStoreError({
+            message: "ticket is parked",
+          });
+        }
+      });
 
       const messageId = yield* ids.messageId();
-      yield* commit({
-        type: "TicketMessagePosted",
-        ticketId,
-        payload: {
-          messageId,
-          stepRunId: input.stepRunId,
-          author: "user",
-          body: text,
-          attachments,
-          createdAt: (yield* nowIso) as never,
+      yield* commit(
+        {
+          type: "TicketMessagePosted",
+          ticketId,
+          payload: {
+            messageId,
+            stepRunId: input.stepRunId,
+            author: "user",
+            body: text,
+            attachments,
+            createdAt: (yield* nowIso) as never,
+          },
         },
-      });
+        parkedAppendPrecondition,
+      );
 
       const { providerResponses } = yield* getOptionalServices;
       if (

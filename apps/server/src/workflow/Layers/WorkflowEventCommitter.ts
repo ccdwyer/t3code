@@ -52,6 +52,19 @@ const NEEDS_YOU_STATUSES = new Set(["waiting_on_user", "blocked", "parked"]);
 // free of the two extra projection_ticket point-reads.
 const NOTIFIABLE_EVENT_TYPES = new Set(["StepAwaitingUser", "TicketBlocked", "TicketParked"]);
 
+// Events that move a ticket OUT of a needs-you status but are NOT already read by
+// the notifiable/outbound gates. Crossing OUT of needs-you must supersede any
+// obsolete in-flight (pending/publishing) attention row, independent of inserting
+// a replacement (gate-1 round-3 NEW-2). TicketMovedToLane and TicketAdmitted
+// already flow through the status-diff reads via OUTBOUND_EVENT_TYPES, so they get
+// the leave-supersede for free; these are the remaining resolution events that
+// otherwise hit the fast path: waiting_on_user → running (answer/approval via
+// StepUserResolved) and parked/blocked → queued (unpark/unblock via TicketQueued).
+// The hot step-loop events (StepStarted/PipelineStarted → running) only reach a
+// needs-you row AFTER a preceding move/admit that already superseded it, so they
+// stay on the fast path.
+const RESOLVES_NEEDS_YOU_EVENT_TYPES = new Set(["StepUserResolved", "TicketQueued"]);
+
 const isWorkflowEventStoreError = Schema.is(WorkflowEventStoreError);
 const toCommitterError = (cause: unknown) =>
   isWorkflowEventStoreError(cause)
@@ -121,9 +134,11 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const needsNotification = NOTIFIABLE_EVENT_TYPES.has(event.type);
       const needsOutbound = OUTBOUND_EVENT_TYPES.has(event.type);
-      // Fast path: events that can never notify nor fire an outbound rule skip the
-      // two projection_ticket point-reads and the insert(s) entirely.
-      if (!needsNotification && !needsOutbound) {
+      const needsLeaveSupersede = RESOLVES_NEEDS_YOU_EVENT_TYPES.has(event.type);
+      // Fast path: events that can never notify, fire an outbound rule, nor resolve
+      // a needs-you status skip the two projection_ticket point-reads and the
+      // insert(s)/supersede entirely.
+      if (!needsNotification && !needsOutbound && !needsLeaveSupersede) {
         const persisted = yield* store.append(event);
         yield* pipeline.projectEvent(persisted);
         return persisted;
@@ -215,6 +230,34 @@ const make = Effect.gen(function* () {
             ${outboxId}, ${event.ticketId}, ${next.boardId}, ${persisted.sequence}, ${next.status},
             ${next.attentionKind}, ${notificationReason}, 'pending', 0, ${createdAt}
           )
+        `;
+      }
+      // Leaving needs-you supersedes obsolete in-flight rows, independent of any
+      // insert (gate-1 round-3 NEW-2). When this event crosses the ticket OUT of a
+      // needs-you status (prev in the set, next not), any pending/publishing
+      // attention row for the ticket is now obsolete — the human no longer needs to
+      // act — so supersede it here even though this event inserts NO replacement
+      // row. Without this, a row already claimed 'publishing' by the dispatcher
+      // would survive the transition and its post-relay markSent CAS would win,
+      // ending a stale push 'sent'. Same pending+publishing guard as the
+      // crossing-INTO supersede above, but with no insert, so the insert path's
+      // exactly-once semantics stay untouched. The prev-in / next-not gate makes
+      // this and the crossing-INTO block mutually exclusive per event (next cannot
+      // be both in and not in NEEDS_YOU). The `sequence != persisted.sequence`
+      // guard is vacuously true here (this event appended no outbox row at its own
+      // sequence) but kept for symmetry with the insert-path supersede.
+      if (
+        next !== undefined &&
+        prevStatus !== null &&
+        NEEDS_YOU_STATUSES.has(prevStatus) &&
+        !NEEDS_YOU_STATUSES.has(next.status)
+      ) {
+        yield* sql`
+          UPDATE workflow_notification_outbox
+          SET delivery_state = 'superseded'
+          WHERE ticket_id = ${event.ticketId}
+            AND delivery_state IN ('pending', 'publishing')
+            AND sequence != ${persisted.sequence}
         `;
       }
       // Outbound delivery: for the broader OUTBOUND_EVENT_TYPES gate, evaluate the

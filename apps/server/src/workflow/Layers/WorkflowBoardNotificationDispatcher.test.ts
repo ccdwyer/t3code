@@ -686,6 +686,81 @@ describe.sequential("WorkflowBoardNotificationDispatcher", () => {
   );
 
   it.effect(
+    "CAS success-mark loses to a LEAVE-needs-you supersede mid-publish (no replacement row); row ends superseded, never sent (gate-1 round-3 NEW-2)",
+    () => {
+      // Models the committer's LEAVE-needs-you supersede (NEW-2): a
+      // waiting_on_user row A is claimed 'publishing', then — while the relay
+      // call is in flight — the ticket LEAVES needs-you (e.g. StepUserResolved →
+      // running). The real committer runs the SAME pending+publishing supersede
+      // UPDATE but, unlike the crossing-INTO path, inserts NO replacement row.
+      // (The real leave path is proven end-to-end in WorkflowEventCommitter.test.
+      // "supersedes an in-flight publishing row when the ticket LEAVES needs-you
+      // via StepUserResolved"; here we assert the dispatcher's CAS loses to it.)
+      // Even though the publish succeeds, the post-publish CAS
+      // (`SET delivery_state='sent' WHERE ... AND delivery_state='publishing'`)
+      // must lose: the row ends 'superseded', never clobbered back to 'sent'.
+      const leaveSupersedeRelayLayer = Layer.effect(
+        WorkflowBoardNotificationRelay,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            // Exact replica of the committer's leave-supersede UPDATE — note the
+            // deliberate absence of any follow-up INSERT (a leave supersede
+            // inserts no replacement row, unlike the crossing-INTO path).
+            publishTicket: () =>
+              sql`
+                UPDATE workflow_notification_outbox
+                SET delivery_state = 'superseded'
+                WHERE ticket_id = ${"ticket-leave-cas"}
+                  AND delivery_state IN ('pending', 'publishing')
+                  AND sequence != 999
+              `.pipe(Effect.asVoid, Effect.orDie),
+          } satisfies WorkflowBoardNotificationRelay["Service"];
+        }),
+      );
+
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-leave-cas-a",
+          ticketId: "ticket-leave-cas",
+          boardId: "board-1",
+          sequence: 40,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "stale",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        assert.strictEqual(result.superseded, 1);
+        assert.strictEqual(result.sent, 0);
+
+        const rowA = yield* readOutbox("ob-leave-cas-a");
+        assert.strictEqual(
+          rowA.delivery_state,
+          "superseded",
+          "the CAS must not clobber the leave-supersede with 'sent'",
+        );
+      }).pipe(
+        Effect.provide(
+          makeWorkflowBoardNotificationDispatcherLive({ sweepIntervalMs: 60_000 }).pipe(
+            Layer.provideMerge(leaveSupersedeRelayLayer),
+            Layer.provideMerge(
+              stubReadModelLayer({
+                "ticket-leave-cas": detail(
+                  makeTicketRow({ ticketId: "ticket-leave-cas", status: "waiting_on_user" }),
+                ),
+              }),
+            ),
+            Layer.provideMerge(serverEnvironmentLayer),
+            Layer.provideMerge(SqlitePersistenceMemory),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect(
     "reschedule no-ops after the committer's widened supersede mid-publish + a failed push; row stays superseded and is never re-delivered (gate-1 re-gate NEW-1/NEW-3)",
     () => {
       // Same real-committer race as the previous test, but the in-flight push

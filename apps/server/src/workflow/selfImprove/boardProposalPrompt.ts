@@ -31,7 +31,8 @@ const FOCUS_INSTRUCTION = [
 // dedicated issue/review/parking lane — a ticket that hits a problem or needs
 // a human should park in place in its current lane instead of moving.
 const PARK_TARGET_PROSE = [
-  "A route target (`transitions[].to`, `lane.on.success/failure/blocked`) can be a bare lane key",
+  "A route target (`transitions[].to`, `lane.on.success/failure/blocked`, or",
+  "`step.on.success/failure/blocked`) can be a bare lane key",
   'string OR a park target object: `{ "park": "issue" | "waiting", "label"?: string, "actions":',
   '[{ "label": string, "to": "<lane key>", "hint"?: string }, ...] }` (`actions` is REQUIRED and',
   "non-empty; a park cannot route into another park — `actions[].to` is always a lane key).",

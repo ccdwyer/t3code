@@ -54,8 +54,11 @@ describe("buildCreatePrompt", () => {
     assert.include(prompt, "Prefer park targets over dedicated issue/review/parking lanes");
     assert.include(prompt, "park in place in its current lane");
     // The worked example itself parks in place instead of routing to a
-    // dedicated needs-attention/issues lane.
-    assert.include(prompt, '"park": "issue"');
+    // dedicated needs-attention/issues lane: the budget-exhausted revise
+    // checkpoint parks as "waiting" (an intentional human checkpoint), and
+    // the on.success/failure/blocked fallbacks park as "issue".
+    assert.include(prompt, '"park": "waiting", "label": "Needs manual review"');
+    assert.include(prompt, '"success": { "park": "issue"');
     assert.notInclude(prompt, "needs-attention");
   });
 

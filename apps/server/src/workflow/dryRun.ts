@@ -217,6 +217,12 @@ export const simulateBoardRoute = ({
         // No concrete transition matched and no lane.on fallback will be tried
         // below: rather than mislabel an output-only routed lane as a dead end,
         // optimistically follow the first output-gated transition and flag it.
+        // Fidelity note: when `lane.on[result]` DOES exist, this optimistic
+        // follow is skipped entirely (see the `lane.on?.[result] === undefined`
+        // guard below), matching the engine's real precedence — so a success
+        // dry-run from a lane with output-only transitions plus an `on.success`
+        // park ends parked rather than following the transition. This is
+        // pre-existing precedence, mirrored from the engine, not a dry-run bug.
         if (decision === null && outputGatedFallback !== null && lane.on?.[result] === undefined) {
           pushNote(
             `Lane "${currentKey as string}" routes out only via captured step output the dry run cannot evaluate — assuming transition #${outputGatedFallback.index + 1} can match.`,

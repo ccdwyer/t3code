@@ -46,7 +46,8 @@ const SHAPE_SPEC = [
   '- `type` (REQUIRED, EXACTLY "agent" or "approval" — script/merge/pullRequest are forbidden)',
   '- for `type:"agent"`: `instruction` (REQUIRED string — what the agent should do; use {{ticket.title}}/{{ticket.description}} placeholders). Do NOT include an `agent` field; the server injects it.',
   '- optional `captureOutput` (boolean) — set `true` on a step whose JSON output a later transition reads via `{ "var": "steps.<stepKey>.output.<field>" }`',
-  "Rules: every `to`/`on` target must be a `key` of a lane you define; at least one lane MUST have `terminal: true` and be reachable.",
+  '- optional `on` (`{ "success": <lane key>|ParkTarget, "failure": <lane key>|ParkTarget, "blocked": <lane key>|ParkTarget }` — a step-level fallback route, checked before the lane\'s own `transitions`/`on`)',
+  "Rules: a route target (a bare `to`, or `on.success`/`on.failure`/`on.blocked`, at the step level or the lane level) may be a lane key OR a ParkTarget object; only a park's `actions[].to` and a manual lane's `actions[].to` must be a `key` of a lane you define. At least one lane MUST have `terminal: true` and be reachable.",
   "A bounded review loop (run a step again until a budget is hit) uses this transition (note the `lane.runCount` guard, REQUIRED for a self-loop so it terminates):",
   '`{ "when": { "and": [ { "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, { "<": [{ "var": "lane.runCount" }, 3] } ] }, "to": "<same auto lane>" }`',
 ].join("\n");
@@ -93,7 +94,7 @@ const WORKED_EXAMPLE = `## Worked example of a valid definition object
       ],
       "transitions": [
         { "when": { "and": [{ "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, { "<": [{ "var": "lane.runCount" }, 3] }] }, "to": "working" },
-        { "when": { "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, "to": { "park": "issue", "actions": [{ "label": "Retry", "to": "working" }] } },
+        { "when": { "==": [{ "var": "steps.review.output.verdict" }, "revise"] }, "to": { "park": "waiting", "label": "Needs manual review", "actions": [{ "label": "Retry", "to": "working" }] } },
         { "when": { "==": [{ "var": "steps.review.output.verdict" }, "approve"] }, "to": "done" }
       ],
       "on": {
@@ -127,7 +128,8 @@ export const buildCreatePrompt = ({
     "A t3 workflow board is a state machine: tickets flow between lanes. Each lane",
     'either accepts tickets manually (`entry: "manual"`) or runs an automated',
     'pipeline of steps when a ticket enters it (`entry: "auto"`). Routing on a',
-    "step's outcome (success/failure/blocked) moves the ticket to another lane.",
+    "step's outcome (success/failure/blocked) routes the ticket — either to",
+    "another lane, or by parking it in place in its current lane.",
     "",
     "## Board name",
     name,

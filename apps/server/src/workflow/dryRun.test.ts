@@ -272,6 +272,58 @@ layer("simulateBoardRoute", (it) => {
     }),
   );
 
+  it.effect("an output-gated fallback that resolves to a park ends the walk as parked", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      // The ONLY exit is an output-gated transition whose target is a park
+      // (not a lane), and there is no lane.on fallback — the optimistic
+      // output-gated follow (Task 5's fix) must resolve to a park hop with no
+      // toLane, exactly like a concretely-matched output-gated park would.
+      const outputGatedParkBoard = {
+        name: "Output gated park",
+        lanes: [
+          {
+            key: "review",
+            name: "Review",
+            entry: "auto",
+            pipeline: [
+              {
+                key: "review",
+                type: "agent",
+                agent: { instance: "claude_main", model: "sonnet" },
+                instruction: "review",
+                captureOutput: true,
+              },
+            ],
+            transitions: [
+              {
+                when: { "==": [{ var: "steps.review.output.verdict" }, "revise"] },
+                to: {
+                  park: "waiting",
+                  label: "Needs manual review",
+                  actions: [{ label: "Retry", to: "review" }],
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: outputGatedParkBoard,
+        startLane: "review" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "parked");
+      assert.equal(run.endLane, "review");
+      assert.lengthOf(run.hops, 1);
+      const hop = run.hops[0];
+      assert.isUndefined(hop?.toLane);
+      assert.equal(hop?.park?.substate, "waiting");
+      assert.isTrue(run.notes.some((note) => note.includes("captured step output")));
+    }),
+  );
+
   // ── Park-target dry-run tests (Task 10) ──────────────────────────────────
 
   const parkBoard = {

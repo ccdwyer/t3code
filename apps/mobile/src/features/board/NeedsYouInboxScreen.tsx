@@ -11,23 +11,11 @@ import { getEnvironmentClient } from "../../state/environment-session-registry";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { InboxSkeleton } from "./InboxSkeleton";
 import { deriveInboxViewState } from "./inboxViewState";
+import { attentionLabel } from "./needsYouAttentionLabel";
 
 interface NeedsYouRow {
   readonly environmentId: EnvironmentId;
   readonly ticket: WorkflowNeedsAttentionTicketView;
-}
-
-function attentionLabel(ticket: WorkflowNeedsAttentionTicketView): string {
-  switch (ticket.attentionKind) {
-    case "waiting_for_approval":
-      return "Needs approval";
-    case "waiting_for_input":
-      return "Needs input";
-    case "blocked":
-      return "Blocked";
-    default:
-      return ticket.status;
-  }
 }
 
 function formatRelative(updatedAt: string): string {

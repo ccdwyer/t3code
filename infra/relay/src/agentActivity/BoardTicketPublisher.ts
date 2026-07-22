@@ -86,6 +86,22 @@ function notificationAllowedForState(input: {
       return preferences.notifyOnInput;
     case "blocked":
       return preferences.notifyOnBlocked ?? true;
+    // Carried Task-8/19 finding: parked_issue is outbound's blocked-family (a
+    // park target hit on a failure/blocked transition) — a user who muted
+    // blocked pushes via notifyOnBlocked stays muted for parked-issue pushes
+    // too, rather than being surprised by a "new" push channel they never
+    // opted into.
+    case "parked_issue":
+      return preferences.notifyOnBlocked ?? true;
+    // parked_waiting means "waiting on you" but is NOT an approval request
+    // (no stepRunId, no resolveApproval RPC), so it doesn't map onto
+    // notifyOnApproval/notifyOnInput. No dedicated preference exists for it
+    // yet. Documented v1 decision: always-notify, matching the spec's
+    // explicit acknowledgment that previously-silent parked tickets now
+    // notify — that's the point of the feature. Revisit with a dedicated
+    // preference if users ask to mute it.
+    case "parked_waiting":
+      return true;
     // A future WorkflowTicketAttentionKind value (the relay copy in relay.ts is a
     // manual "keep in sync" mirror) has no per-kind toggle yet. Default to
     // notifying — consistent with `blocked`'s `?? true` and so a new attention

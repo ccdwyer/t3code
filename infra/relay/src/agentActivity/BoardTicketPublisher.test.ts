@@ -245,6 +245,97 @@ describe("BoardTicketPublisher", () => {
     },
   );
 
+  it.effect(
+    "does not enqueue when notifyOnBlocked is false for a parked_issue state (blocked family)",
+    () => {
+      const capture: Array<EnqueueArgs> = [];
+      const state = boardTicketState({ attentionKind: "parked_issue" });
+      return Effect.gen(function* () {
+        const publisher = yield* BoardTicketPublisher.BoardTicketPublisher;
+        const response = yield* publisher.publish({
+          environmentId: "env",
+          environmentPublicKey: "public-key",
+          boardId: state.boardId,
+          ticketId: state.ticketId,
+          state,
+        });
+        expect(response.deliveries).toHaveLength(0);
+        expect(capture).toHaveLength(0);
+      }).pipe(
+        Effect.provide(
+          provide({
+            targets: [target({ preferences_json: preferences({ notifyOnBlocked: false }) })],
+            capture,
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "enqueues for a parked_issue state when notifyOnBlocked is absent (defaults true)",
+    () => {
+      const capture: Array<EnqueueArgs> = [];
+      const state = boardTicketState({ attentionKind: "parked_issue" });
+      return Effect.gen(function* () {
+        const publisher = yield* BoardTicketPublisher.BoardTicketPublisher;
+        const response = yield* publisher.publish({
+          environmentId: "env",
+          environmentPublicKey: "public-key",
+          boardId: state.boardId,
+          ticketId: state.ticketId,
+          state,
+        });
+        expect(response.deliveries).toHaveLength(1);
+        expect(capture).toHaveLength(1);
+      }).pipe(
+        Effect.provide(
+          provide({
+            targets: [target({ preferences_json: preferences() })],
+            capture,
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "always enqueues for a parked_waiting state (no dedicated preference exists yet, v1 default)",
+    () => {
+      const capture: Array<EnqueueArgs> = [];
+      const state = boardTicketState({ attentionKind: "parked_waiting" });
+      return Effect.gen(function* () {
+        const publisher = yield* BoardTicketPublisher.BoardTicketPublisher;
+        const response = yield* publisher.publish({
+          environmentId: "env",
+          environmentPublicKey: "public-key",
+          boardId: state.boardId,
+          ticketId: state.ticketId,
+          state,
+        });
+        expect(response.deliveries).toHaveLength(1);
+        expect(capture).toHaveLength(1);
+      }).pipe(
+        Effect.provide(
+          provide({
+            // notifyOnBlocked (and every other per-kind toggle) is off — none
+            // of them gate parked_waiting, so the push still goes out.
+            targets: [
+              target({
+                preferences_json: preferences({
+                  notifyOnBlocked: false,
+                  notifyOnApproval: false,
+                  notifyOnInput: false,
+                }),
+              }),
+            ],
+            capture,
+          }),
+        ),
+      );
+    },
+  );
+
   it.effect("does not enqueue when notificationsEnabled is false", () => {
     const capture: Array<EnqueueArgs> = [];
     const state = boardTicketState();

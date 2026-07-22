@@ -5,6 +5,7 @@ import {
   StepRunId,
   StepKey,
   TicketId,
+  WorkflowEventId,
   type BoardTicketView,
   type WorkflowCurrentLaneView,
   type WorkflowLaneActionView,
@@ -166,6 +167,117 @@ describe("selectTicketAffordance", () => {
     if (result.kind !== "approve") throw new Error("expected approve");
     expect(result.stepRunId).toBe(StepRunId.make("step-approve"));
     expect(result.question).toBe("Approve this?");
+  });
+
+  it("maps parked_issue attention to parked with substate issue, sourcing label/reason from ticket.parked", () => {
+    const detail = makeDetail({
+      ticket: {
+        status: "parked",
+        attentionKind: "parked_issue",
+        attentionReason: "fallback reason",
+        parked: {
+          substate: "issue",
+          label: "Retry implementation",
+          reason: "The plan step failed twice",
+          parkedAt: "2026-07-22T00:00:00.000Z",
+          parkedEventId: WorkflowEventId.make("event-1"),
+          actions: LANE_ACTIONS,
+        },
+      },
+      steps: [],
+    });
+
+    const result = selectTicketAffordance(detail);
+
+    expect(result.kind).toBe("parked");
+    if (result.kind !== "parked") throw new Error("expected parked");
+    expect(result.substate).toBe("issue");
+    expect(result.label).toBe("Retry implementation");
+    expect(result.reason).toBe("The plan step failed twice");
+    expect(result.laneActions).toEqual(LANE_ACTIONS);
+  });
+
+  it("maps parked_waiting attention to parked with substate waiting", () => {
+    const detail = makeDetail({
+      ticket: {
+        status: "parked",
+        attentionKind: "parked_waiting",
+        parked: {
+          substate: "waiting",
+          label: "Needs manual review",
+          reason: "Budget exhausted after 3 revisions",
+          parkedAt: "2026-07-22T00:00:00.000Z",
+          parkedEventId: WorkflowEventId.make("event-2"),
+        },
+      },
+      steps: [],
+    });
+
+    const result = selectTicketAffordance(detail);
+
+    expect(result.kind).toBe("parked");
+    if (result.kind !== "parked") throw new Error("expected parked");
+    expect(result.substate).toBe("waiting");
+    expect(result.label).toBe("Needs manual review");
+    expect(result.reason).toBe("Budget exhausted after 3 revisions");
+  });
+
+  it("falls back to attentionReason for parked reason when ticket.parked.reason is absent", () => {
+    const detail = makeDetail({
+      ticket: {
+        status: "parked",
+        attentionKind: "parked_issue",
+        attentionReason: "fallback reason",
+      },
+      steps: [],
+    });
+
+    const result = selectTicketAffordance(detail);
+
+    expect(result.kind).toBe("parked");
+    if (result.kind !== "parked") throw new Error("expected parked");
+    expect(result.label).toBeNull();
+    expect(result.reason).toBe("fallback reason");
+  });
+
+  it("treats ticket.status === parked with no attentionKind as parked (fallback), substate from ticket.parked", () => {
+    const detail = makeDetail({
+      ticket: {
+        status: "parked",
+        attentionKind: undefined,
+        parked: {
+          substate: "waiting",
+          label: "Needs manual review",
+          reason: "Budget exhausted",
+          parkedAt: "2026-07-22T00:00:00.000Z",
+          parkedEventId: WorkflowEventId.make("event-3"),
+        },
+      },
+      steps: [],
+    });
+
+    const result = selectTicketAffordance(detail);
+
+    expect(result.kind).toBe("parked");
+    if (result.kind !== "parked") throw new Error("expected parked");
+    expect(result.substate).toBe("waiting");
+  });
+
+  it("prefers answer over parked when attentionKind is absent but status is parked and the awaiting step wants input", () => {
+    const detail = makeDetail({
+      ticket: { attentionKind: undefined, status: "parked" },
+      steps: [
+        makeAwaitingStep({
+          stepRunId: StepRunId.make("step-input"),
+          providerResponseKind: "user-input",
+          waitingReason: "Pick a target",
+        }),
+      ],
+    });
+
+    const result = selectTicketAffordance(detail);
+
+    expect(result.kind).toBe("answer");
   });
 
   it("maps blocked attention to blocked with blockReason and laneActions", () => {

@@ -33,6 +33,20 @@ describe("WorkflowTicketAttentionKind", () => {
     }),
   );
 
+  it.effect("decodes parked_issue", () =>
+    Effect.gen(function* () {
+      const kind = yield* decode("parked_issue");
+      assert.equal(kind, "parked_issue");
+    }),
+  );
+
+  it.effect("decodes parked_waiting", () =>
+    Effect.gen(function* () {
+      const kind = yield* decode("parked_waiting");
+      assert.equal(kind, "parked_waiting");
+    }),
+  );
+
   it.effect("rejects an invalid kind", () =>
     Effect.gen(function* () {
       const result = yield* Effect.exit(decode("bogus"));
@@ -58,6 +72,38 @@ describe("RelayBoardTicketState", () => {
       });
       assert.equal(state.attentionKind, "blocked");
       assert.equal(state.ticketId, "t1");
+    }),
+  );
+
+  it.effect("decodes a valid board ticket state with attentionKind parked_issue", () =>
+    Effect.gen(function* () {
+      const state = yield* decode({
+        environmentId: "env-1",
+        boardId: "b1",
+        ticketId: "t1",
+        attentionKind: "parked_issue",
+        title: "Ticket hit an issue",
+        body: "The plan step failed twice",
+        deepLink: "/tickets/env-1/b1/t1",
+        transitionId: "42",
+      });
+      assert.equal(state.attentionKind, "parked_issue");
+    }),
+  );
+
+  it.effect("decodes a valid board ticket state with attentionKind parked_waiting", () =>
+    Effect.gen(function* () {
+      const state = yield* decode({
+        environmentId: "env-1",
+        boardId: "b1",
+        ticketId: "t1",
+        attentionKind: "parked_waiting",
+        title: "Ticket needs manual review",
+        body: "Budget exhausted after 3 revisions",
+        deepLink: "/tickets/env-1/b1/t1",
+        transitionId: "42",
+      });
+      assert.equal(state.attentionKind, "parked_waiting");
     }),
   );
 });

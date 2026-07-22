@@ -14,12 +14,16 @@ import {
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
+import { cn } from "../../lib/cn";
 import {
   getEnvironmentClient,
   subscribeEnvironmentConnections,
 } from "../../state/environment-session-registry";
 import { useEnvironmentRuntime } from "../../state/use-environment-runtime";
-import { useSavedRemoteConnections, useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
+import {
+  useSavedRemoteConnections,
+  useRemoteConnectionStatus,
+} from "../../state/use-remote-environment-registry";
 import { isTicketSourceOwned, selectTicketAffordance } from "./ticketAffordance";
 
 type TicketActionSheetScreenProps = StaticScreenProps<{
@@ -333,6 +337,49 @@ export function TicketActionSheetScreen(props: TicketActionSheetScreenProps) {
                 onPress={() => onResolveApproval(affordance.stepRunId, false)}
               />
             </View>
+          </View>
+        ) : null}
+
+        {affordance.kind === "parked" ? (
+          // Substate-tinted banner: amber ("issue" — mirrors the warning tone
+          // used elsewhere on mobile, e.g. ReviewSheet/ThreadFilesRouteScreen)
+          // vs sky ("waiting" — mirrors the info tone used for
+          // PendingUserInputCard). Label prominent, reason below; no
+          // park-action invocation from mobile in v1 (spec: "Attention,
+          // notifications, mobile — honest surface") — recovery actions stay
+          // web-only for now, so only the label/reason render here, with the
+          // comment composer still available underneath.
+          <View
+            className={cn(
+              "gap-2 rounded-[22px] border p-4",
+              affordance.substate === "issue"
+                ? "border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/40"
+                : "border-sky-200 bg-sky-50 dark:border-sky-900/60 dark:bg-sky-950/40",
+            )}
+          >
+            <Text
+              className={cn(
+                "font-t3-bold text-base",
+                affordance.substate === "issue"
+                  ? "text-amber-800 dark:text-amber-200"
+                  : "text-sky-800 dark:text-sky-200",
+              )}
+            >
+              {affordance.label ??
+                (affordance.substate === "issue" ? "This ticket hit an issue" : "Waiting on you")}
+            </Text>
+            {affordance.reason ? (
+              <Text
+                className={cn(
+                  "font-sans text-sm",
+                  affordance.substate === "issue"
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-sky-700 dark:text-sky-300",
+                )}
+              >
+                {affordance.reason}
+              </Text>
+            ) : null}
           </View>
         ) : null}
 

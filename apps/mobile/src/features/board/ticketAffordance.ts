@@ -1,6 +1,7 @@
 import type {
   StepRunId,
   WorkflowLaneActionView,
+  WorkflowParkSubstate,
   WorkflowStepRunView,
   WorkflowTicketDetailView,
 } from "@t3tools/contracts";
@@ -42,6 +43,13 @@ export type TicketAffordance =
       readonly laneActions: readonly WorkflowLaneActionView[];
     }
   | {
+      readonly kind: "parked";
+      readonly substate: WorkflowParkSubstate;
+      readonly label: string | null;
+      readonly reason: string | null;
+      readonly laneActions: readonly WorkflowLaneActionView[];
+    }
+  | {
       readonly kind: "comment";
       readonly laneActions: readonly WorkflowLaneActionView[];
     };
@@ -59,6 +67,11 @@ function findAwaitingStep(detail: WorkflowTicketDetailView): WorkflowStepRunView
  *   when no awaiting step is present.
  * - `waiting_for_approval` (or `providerResponseKind === "request"`) → `approve`,
  *   same `stepRunId` requirement / degrade.
+ * - `parked_issue`/`parked_waiting` attention (or `ticket.status === "parked"`
+ *   fallback when attentionKind is absent, e.g. an older payload) → `parked`,
+ *   sourcing `label`/`reason` from the ticket's `parked` object when present,
+ *   falling back to `attentionReason` for `reason` (no invoke affordance in
+ *   v1 — see spec "Attention, notifications, mobile — honest surface").
  * - `blocked` attention OR `ticket.status === "blocked"` → `blocked`.
  * - otherwise → `comment`.
  */
@@ -81,6 +94,21 @@ export function selectTicketAffordance(detail: WorkflowTicketDetailView): Ticket
         // approval step awaiting the user with no providerResponseKind is
         // still an approval request.
         (awaitingStep?.stepType === "approval" && providerResponseKind === null)));
+  // Not blocked's fourth+fifth attention kinds and not `comment` — a distinct
+  // variant so callers can't confuse a park-in-place ticket with a genuinely
+  // blocked one (codex #13 review requirement). Resolve substate off the
+  // attentionKind first; only fall back to `ticket.status === "parked"` (using
+  // the re-resolved `ticket.parked.substate` when the server includes it) for
+  // an older/degraded payload that lost its attentionKind.
+  const parkedSubstate: WorkflowParkSubstate | null =
+    attentionKind === "parked_issue"
+      ? "issue"
+      : attentionKind === "parked_waiting"
+        ? "waiting"
+        : attentionKind === undefined && ticket.status === "parked"
+          ? (ticket.parked?.substate ?? "issue")
+          : null;
+
   const isBlocked = attentionKind === "blocked" || ticket.status === "blocked";
 
   if (wantsInput) {
@@ -105,6 +133,16 @@ export function selectTicketAffordance(detail: WorkflowTicketDetailView): Ticket
       };
     }
     return { kind: "comment", laneActions };
+  }
+
+  if (parkedSubstate !== null) {
+    return {
+      kind: "parked",
+      substate: parkedSubstate,
+      label: ticket.parked?.label ?? null,
+      reason: ticket.parked?.reason ?? ticket.attentionReason ?? null,
+      laneActions,
+    };
   }
 
   if (isBlocked) {

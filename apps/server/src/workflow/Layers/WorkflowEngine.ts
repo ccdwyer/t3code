@@ -655,18 +655,23 @@ const make = Effect.gen(function* () {
 
   const commit = (
     event: UnstampedWorkflowEventInput,
+    precondition?: Effect.Effect<void, WorkflowEventStoreError>,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const eventId = yield* ids.eventId();
-      yield* committer.commit({
-        ...event,
-        eventId: eventId as WorkflowEventId,
-        occurredAt: (yield* nowIso) as never,
-      } as WorkflowEventInput);
+      yield* committer.commit(
+        {
+          ...event,
+          eventId: eventId as WorkflowEventId,
+          occurredAt: (yield* nowIso) as never,
+        } as WorkflowEventInput,
+        precondition,
+      );
     });
 
   const commitMany = (
     events: ReadonlyArray<UnstampedWorkflowEventInput>,
+    precondition?: Effect.Effect<void, WorkflowEventStoreError>,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const stamped: Array<WorkflowEventInput> = [];
@@ -678,7 +683,7 @@ const make = Effect.gen(function* () {
           occurredAt: (yield* nowIso) as never,
         } as WorkflowEventInput);
       }
-      yield* committer.commitMany(stamped);
+      yield* committer.commitMany(stamped, precondition);
     });
 
   const userInputPromptMessageEvent = (
@@ -1153,6 +1158,14 @@ const make = Effect.gen(function* () {
     startIndex: number,
     initialResult: PipelineResult,
     initialRouteDecision?: RouteDecision,
+    // Whether the FIRST dispatched step may skip the inter-step token guard.
+    // The live start (runPipelineBody) passes `true`: the pipeline was just
+    // admitted on this exact token, so re-checking cannot catch a race the
+    // start-guard already covered. The RECOVERY entry passes `false`: its token
+    // was read before a restart/continuation and an external park can have
+    // nulled it in the interim, so even the first recovered step must token-check
+    // before starting new agent/script work.
+    exemptFirstStep = true,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       let result: PipelineResult = initialResult;
@@ -1168,16 +1181,15 @@ const make = Effect.gen(function* () {
           if (result !== "success") {
             break;
           }
-          // Inter-step supersession guard: before dispatching any step after the
-          // first, re-read the ticket's lane-entry token. An external park (or a
-          // manual move) can null/rotate the token mid-pipeline; continuing would
-          // run further agent/script work and StepStarted writes against a
-          // parked/moved row. If the token no longer matches this run's entry
-          // token, abort SILENTLY — emit nothing, so we never write onto the
-          // superseded row. The first step is exempt: the pipeline was just
-          // admitted on this exact token, and re-checking there cannot catch a
-          // race the start-guard already covered.
-          if (!firstStep) {
+          // Inter-step supersession guard: before dispatching a step, re-read the
+          // ticket's lane-entry token. An external park (or a manual move) can
+          // null/rotate the token mid-pipeline; continuing would run further
+          // agent/script work and StepStarted writes against a parked/moved row.
+          // If the token no longer matches this run's entry token, abort SILENTLY
+          // — emit nothing, so we never write onto the superseded row. The first
+          // step is guarded UNLESS `exemptFirstStep` (see the param doc): the live
+          // start just minted this token, but a recovered continuation did not.
+          if (!firstStep || !exemptFirstStep) {
             const tokenNow = yield* currentToken(ticketId);
             if (tokenNow !== laneEntryToken) {
               return;
@@ -1397,16 +1409,22 @@ const make = Effect.gen(function* () {
   // through the committer's appendManyUnlocked, which ASSUMES the caller already
   // holds the board save lock + an open transaction and does NOT publish; the
   // committer publishes after releasing the lock.
+  // `precondition`, when supplied, runs IN the board save lock right before the
+  // append (see the committer contract) — used by the unpark path to serialize a
+  // board-definition-drift recheck with the emit. The unlocked emitter already
+  // runs inside the caller's save lock, so its precondition simply runs before
+  // the append there too.
   type EmitEvents = (
     events: ReadonlyArray<UnstampedWorkflowEventInput>,
+    precondition?: Effect.Effect<void, WorkflowEventStoreError>,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
 
-  const lockedEmit: EmitEvents = (events) =>
+  const lockedEmit: EmitEvents = (events, precondition) =>
     events.length === 0
       ? Effect.void
       : events.length === 1
-        ? commit(events[0] as UnstampedWorkflowEventInput)
-        : commitMany(events);
+        ? commit(events[0] as UnstampedWorkflowEventInput, precondition)
+        : commitMany(events, precondition);
 
   const stampEvent = (event: UnstampedWorkflowEventInput) =>
     Effect.gen(function* () {
@@ -1421,10 +1439,15 @@ const make = Effect.gen(function* () {
   // Append+project through the caller's already-held board save lock + open
   // transaction. Asserts (via the committer's contract) that the caller opened
   // the lock + tx — it never acquires either itself.
-  const unlockedEmit: EmitEvents = (events) =>
+  const unlockedEmit: EmitEvents = (events, precondition) =>
     Effect.gen(function* () {
       if (events.length === 0) {
         return;
+      }
+      // Caller already holds the save lock; running the precondition here keeps
+      // it in-lock before the append, matching the locked path's guarantee.
+      if (precondition !== undefined) {
+        yield* precondition;
       }
       const stamped: Array<WorkflowEventInput> = [];
       for (const event of events) {
@@ -1602,6 +1625,12 @@ const make = Effect.gen(function* () {
           // definition IN-LOCK before emitting. A board save that changed or
           // removed the action between the caller's pre-lock resolution and here
           // fails this typed (definition drift), so we never enter a stale lane.
+          // This run is a fast pre-check (fail before the supersede side effect);
+          // the SAME revalidate is also handed to the emit below as a save-lock
+          // precondition, which is the authoritative recheck — a board save
+          // (`register`) cannot interleave between that recheck and the append
+          // because both hold the board save lock (the admission lock alone does
+          // not serialize saves).
           if (parkedGuard.revalidate !== undefined) {
             yield* parkedGuard.revalidate;
           }
@@ -1673,6 +1702,11 @@ const make = Effect.gen(function* () {
         const unresolvedDeps = detail?.ticket.unresolvedDependencyCount ?? 0;
         const dependencyGated = targetLane?.entry === "auto" && unresolvedDeps > 0;
 
+        // The unpark path re-checks board-definition drift IN the save lock at
+        // append time (see the parkedGuard comment above): pass its revalidate as
+        // the emit precondition so a concurrent save cannot slip a changed/removed
+        // action past the append. Other paths carry no precondition.
+        const emitPrecondition = parkedGuard?.revalidate;
         let acted: "moved" | "queued" = "moved";
         if ((limit !== undefined && admittedCount - selfInTarget >= limit) || dependencyGated) {
           acted = "queued";
@@ -1681,7 +1715,10 @@ const make = Effect.gen(function* () {
             ticketId,
             payload: { lane: toLane },
           } as UnstampedWorkflowEventInput;
-          yield* emit(routeEvent === null ? [queueEvent] : [routeEvent, queueEvent]);
+          yield* emit(
+            routeEvent === null ? [queueEvent] : [routeEvent, queueEvent],
+            emitPrecondition,
+          );
         } else {
           const laneEntryToken = yield* ids.token();
           const moveEvent = {
@@ -1689,7 +1726,10 @@ const make = Effect.gen(function* () {
             ticketId,
             payload: { toLane, laneEntryToken, reason },
           } as UnstampedWorkflowEventInput;
-          yield* emit(routeEvent === null ? [moveEvent] : [routeEvent, moveEvent]);
+          yield* emit(
+            routeEvent === null ? [moveEvent] : [routeEvent, moveEvent],
+            emitPrecondition,
+          );
           collectStartAction(starts, ticketId, boardId, targetLane, laneEntryToken);
         }
 
@@ -1834,10 +1874,15 @@ const make = Effect.gen(function* () {
     reason: string,
     pipelineRunId?: PipelineRunId,
     supersedeRunningWork?: Effect.Effect<void, WorkflowEventStoreError>,
-  ): Effect.Effect<void, WorkflowEventStoreError> =>
+    // Returns whether the ticket was actually parked: `true` when the in-lock
+    // token+lane guard held and `TicketParked` was emitted, `false` when a
+    // concurrent move/re-queue superseded the park (nothing emitted). Callers
+    // that report an outcome (external event ingest) must not claim "parked"
+    // when the guard lost its race.
+  ): Effect.Effect<boolean, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const starts: Array<PipelineStartAction> = [];
-      yield* withAdmissionLock(
+      const parked = yield* withAdmissionLock(
         boardId,
         Effect.uninterruptible(
           Effect.gen(function* () {
@@ -1847,7 +1892,7 @@ const make = Effect.gen(function* () {
             if (token !== expectedToken || laneNow !== (laneKey as string)) {
               // Superseded by a concurrent move/re-queue (token OR lane drifted)
               // — do not park.
-              return;
+              return false;
             }
             // Only a confirmed-fresh park may kill the ticket's running work;
             // a superseded park must have zero side effects.
@@ -1869,10 +1914,12 @@ const make = Effect.gen(function* () {
               },
             });
             starts.push(...(yield* admitNext(boardId, laneKey, lockedEmit)));
+            return true;
           }),
         ),
       );
       yield* runPipelineStarts(starts);
+      return parked;
     });
 
   // Budgets are advisory caps — clamp junk client input instead of failing.
@@ -2234,6 +2281,22 @@ const make = Effect.gen(function* () {
         });
       }
       yield* ensureLiveProviderUserInputWait(pending);
+
+      // Authoritative parked re-check at the commit point: the early check above
+      // is a fast pre-validation, but an external park can land between it and
+      // here (interrupting/cancelling the wait and nulling the token). Re-read
+      // immediately before the first side effect (the user message post and the
+      // provider respond that follow) so we never post an answer onto — or
+      // respond into — a since-parked ticket. Residual: a park landing AFTER this
+      // check but before respond()/resolve is harmless — StepUserResolved is
+      // refused by the projection on a parked row, and respond() targets a
+      // provider request the park's supersede already cancelled (a no-op turn).
+      const parkedAtCommit = yield* read.getTicketDetail(ticketId);
+      if (parkedAtCommit?.ticket.status === "parked") {
+        return yield* new WorkflowEventStoreError({
+          message: "ticket is parked",
+        });
+      }
 
       const messageId = yield* ids.messageId();
       yield* commit({
@@ -2839,7 +2902,7 @@ const make = Effect.gen(function* () {
       // token+lane guard confirms the park still applies — mirroring the
       // external lane-move branch in enterLaneCore.
       if (isParkTarget(target)) {
-        yield* parkTicket(
+        const parked = yield* parkTicket(
           input.ticketId,
           input.boardId,
           fromLaneKey,
@@ -2850,7 +2913,10 @@ const make = Effect.gen(function* () {
           undefined,
           supersedeRunningWorkFor(input.ticketId),
         );
-        return { outcome: "parked" as const };
+        // Only report "parked" when the in-lock guard actually emitted
+        // TicketParked. A concurrent move that superseded the park emitted
+        // nothing, so this event was effectively a no-op.
+        return { outcome: parked ? ("parked" as const) : ("noop" as const) };
       }
 
       const routeEvent = {
@@ -3042,16 +3108,29 @@ const make = Effect.gen(function* () {
         }
       }
 
-      // Never continue a pipeline the ticket has already left: a manual move
-      // or re-route invalidated this lane entry token, so running more steps
-      // or routing from here would act on stale state. The terminal step
-      // event above is still recorded; the pipeline run closes superseded.
+      // Close the recovered pipeline run as superseded and stop. Shared by every
+      // token-drift guard below.
+      //
+      // A recovered continuation is NOT registered in `runningPipelines` (it runs
+      // inline on the recovery/approval fiber, not a forked pipeline fiber), so
+      // `supersedeRunningWorkFor` cannot `Fiber.interrupt` it. That is why each
+      // dispatch point here RE-CHECKS the lane-entry token: an external park nulls
+      // the token, so any drift means the continuation must abandon before it can
+      // emit a new StepStarted or route against the parked/moved row. (Supersede
+      // still cancels the ticket's in-flight provider turns, which unblocks an
+      // agent step this continuation is awaiting; the token guard then trips.)
+      const abandonSuperseded = commit({
+        type: "PipelineCompleted",
+        ticketId: recovered.stepStarted.ticketId,
+        payload: { pipelineRunId, result: "superseded" },
+      });
+
+      // Never continue a pipeline the ticket has already left: a manual move,
+      // re-route, or external park invalidated this lane entry token, so running
+      // more steps or routing from here would act on stale state. The terminal
+      // step event above is still recorded; the pipeline run closes superseded.
       if ((yield* currentToken(recovered.stepStarted.ticketId)) !== laneEntryToken) {
-        yield* commit({
-          type: "PipelineCompleted",
-          ticketId: recovered.stepStarted.ticketId,
-          payload: { pipelineRunId, result: "superseded" },
-        });
+        yield* abandonSuperseded;
         return;
       }
 
@@ -3075,6 +3154,13 @@ const make = Effect.gen(function* () {
         let attempt = recovered.stepStarted.payload.attempt ?? 1;
         let outcome: StepRunOutcome = { result: "failed", noRetry: false };
         while (outcome.result === "failed" && !outcome.noRetry && attempt < maxAttempts) {
+          // Each retry attempt is a NEW StepStarted + fresh agent/script work.
+          // Re-check the token immediately before dispatching it: an external park
+          // landing between attempts must stop the loop before it starts new work.
+          if ((yield* currentToken(recovered.stepStarted.ticketId)) !== laneEntryToken) {
+            yield* abandonSuperseded;
+            return;
+          }
           attempt += 1;
           outcome = yield* runStep(
             recovered.stepStarted.ticketId,
@@ -3097,6 +3183,16 @@ const make = Effect.gen(function* () {
         ? stepRouteDecision(recoveredStep, recoveredResult)
         : null;
 
+      // Guard once more before handing off to completePipelineFrom: a park may
+      // have landed during the retry loop's final attempt. completePipelineFrom
+      // is entered non-exempt (below), so its first dispatched step also
+      // token-checks; this early bail additionally covers the route-only entry
+      // (no further steps) so we never route a superseded run.
+      if ((yield* currentToken(recovered.stepStarted.ticketId)) !== laneEntryToken) {
+        yield* abandonSuperseded;
+        return;
+      }
+
       yield* completePipelineFrom(
         recovered.stepStarted.ticketId,
         boardId,
@@ -3109,6 +3205,10 @@ const make = Effect.gen(function* () {
           : steps.length,
         recoveredResult,
         initialRouteDecision ?? undefined,
+        // Recovery entry: do NOT exempt the first step from the token guard — its
+        // token was read before this continuation and an external park can have
+        // nulled it since.
+        false,
       );
     });
 
@@ -3225,6 +3325,21 @@ const make = Effect.gen(function* () {
           return yield* new WorkflowEventStoreError({
             message: "provider user-input waits must be answered with answerTicketStep",
           });
+        }
+        // Authoritative parked re-check immediately before the provider respond
+        // (the first side effect): an external park can land between the check
+        // above and here, cancelling the wait and nulling the token. Re-read so
+        // we never respond into / resolve a since-parked ticket. Residual: a park
+        // landing after this check is harmless — StepUserResolved is refused by
+        // the projection on a parked row, and respond() targets a request the
+        // park's supersede already cancelled.
+        if (approvalTicketId !== null) {
+          const approvalTicketNow = yield* read.getTicketDetail(approvalTicketId);
+          if (approvalTicketNow?.ticket.status === "parked") {
+            return yield* new WorkflowEventStoreError({
+              message: "ticket is parked",
+            });
+          }
         }
         if (
           pending?.payload.providerThreadId &&

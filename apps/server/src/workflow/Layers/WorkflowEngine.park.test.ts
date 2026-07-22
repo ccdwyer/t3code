@@ -26,6 +26,7 @@ import { StepExecutor, type StepExecutorShape } from "../Services/StepExecutor.t
 import { WorkflowEngine } from "../Services/WorkflowEngine.ts";
 import { WorkflowEventCommitter } from "../Services/WorkflowEventCommitter.ts";
 import { WorkflowEventStore } from "../Services/WorkflowEventStore.ts";
+import { WorkflowBoardSaveLocks } from "../Services/WorkflowBoardSaveLocks.ts";
 import { WorkflowReadModel, type TicketDetail } from "../Services/WorkflowReadModel.ts";
 import { WorkflowFoundationLive } from "../WorkflowFoundationLive.ts";
 import { ApprovalGateLive } from "./ApprovalGate.ts";
@@ -1230,6 +1231,13 @@ answerParkLayer("answer while parked", (it) => {
         .pipe(Effect.flip);
       assert.include(failure.message, "parked");
 
+      // resolveApproval on the same parked ticket is refused too (NEW-3: the
+      // parked check guards the approval commit path as well).
+      const approvalFailure = yield* engine
+        .resolveApproval(stepRunId as never, true)
+        .pipe(Effect.flip);
+      assert.include(approvalFailure.message, "parked");
+
       // Still parked, no orphaned parked_* left over a running status.
       const detail = yield* read.getTicketDetail(ticketId);
       assert.equal(detail?.ticket.status, "parked");
@@ -1521,6 +1529,184 @@ f3Layer("in-lock action re-resolution", (it) => {
       const detail = yield* read.getTicketDetail(ticketId);
       assert.equal(detail?.ticket.status, "parked");
       assert.equal(detail?.ticket.currentLaneKey, "impl");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F3b (NEW-2): a board save that lands AFTER the admission-lock pre-check but
+// BEFORE the move is appended must still make invokeParkAction fail typed. The
+// move's emit re-runs the action re-resolution as a precondition INSIDE the
+// board save lock, so a `register` cannot slip a changed action past the
+// append (both hold the save lock). Barrier: a holder keeps the SAVE lock so
+// invoke's commit blocks on it; V2 is registered during the block (after the
+// pre-check has already read V1); on release the in-lock precondition reads V2
+// and fails.
+// ---------------------------------------------------------------------------
+
+const f3bActionParkExecutor = makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" }));
+const f3bLayer = it.layer(baseLayer(f3bActionParkExecutor.layer));
+
+f3bLayer("emit-time in-save-lock action re-resolution", (it) => {
+  it.effect(
+    "a board save landing after the pre-check but before the append fails typed, no move",
+    () =>
+      Effect.gen(function* () {
+        const registry = yield* BoardRegistry;
+        const read = yield* WorkflowReadModel;
+        const saveLocks = yield* WorkflowBoardSaveLocks;
+        yield* registry.register("b-f3b" as never, f3DefinitionWith("Approve & land"));
+        const engine = yield* WorkflowEngine;
+
+        const ticketId = yield* engine.createTicket({
+          boardId: "b-f3b" as never,
+          title: "Parks",
+          initialLane: "impl" as never,
+        });
+        const parked = yield* awaitParked(ticketId as string);
+        const parkedEventId = parked?.ticket.parkedEventId;
+        assert.isDefined(parkedEventId);
+
+        // Holder grabs the SAVE lock (the same lock the move's append acquires) and
+        // holds it, so invoke will pass its admission-lock pre-check on V1 and then
+        // block at the commit's save-lock acquisition.
+        const saveLockHeld = yield* Deferred.make<void>();
+        const releaseSaveLock = yield* Deferred.make<void>();
+        const holderFiber = yield* saveLocks
+          .withSaveLock(
+            "b-f3b" as never,
+            Effect.gen(function* () {
+              yield* Deferred.succeed(saveLockHeld, undefined);
+              yield* Deferred.await(releaseSaveLock);
+            }),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(saveLockHeld);
+
+        // Invoke: pre-lock + admission-lock pre-check resolve against V1 (still
+        // registered), then the commit blocks on the held save lock.
+        const invokeFiber = yield* engine
+          .invokeParkAction(ticketId, 0, parkedEventId as never)
+          .pipe(Effect.flip, Effect.forkChild);
+
+        // By now invoke has passed the pre-check (read V1) and is parked on the
+        // save-lock wait. Install V2 (same origin, different action) and release
+        // the save lock: invoke's in-lock precondition now reads V2 and fails.
+        yield* promiseSleep(40);
+        yield* registry.register("b-f3b" as never, f3DefinitionWith("Send back"));
+        yield* Deferred.succeed(releaseSaveLock, undefined);
+        yield* Fiber.join(holderFiber);
+
+        const error = yield* Fiber.join(invokeFiber);
+        assert.include(error.message, "board definition changed");
+
+        const detail = yield* read.getTicketDetail(ticketId);
+        assert.equal(detail?.ticket.status, "parked");
+        assert.equal(detail?.ticket.currentLaneKey, "impl");
+      }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F4 (NEW-4): when an external park's in-lock token/lane guard loses its race
+// to a concurrent move, parkTicket emits nothing — ingestExternalEvent must
+// then report "noop", NOT "parked" (there is no TicketParked event / parked
+// projection to back the claim). Barrier: a holder keeps the admission lock and
+// re-tokens the ticket while ingest is blocked; parkTicket's guard then sees a
+// drifted token and no-ops.
+// ---------------------------------------------------------------------------
+
+const f4Executor = makeScriptedExecutor(() => ({ _tag: "completed" }));
+const f4Layer = it.layer(baseLayer(f4Executor.layer));
+
+f4Layer("external park lost-race outcome", (it) => {
+  it.effect("a concurrent move superseding the park makes ingest return noop, not parked", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      const read = yield* WorkflowReadModel;
+      const committer = yield* WorkflowEventCommitter;
+      yield* registry.register(
+        "b-f4" as never,
+        {
+          name: "f4",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "manual",
+              onEvent: [
+                {
+                  name: "e",
+                  to: {
+                    park: "issue",
+                    label: "Parked by event",
+                    actions: [{ label: "Retry", to: "impl" }],
+                  },
+                },
+              ],
+            },
+            { key: "elsewhere", name: "Elsewhere", entry: "manual" },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-f4" as never,
+        title: "Racing park",
+        initialLane: "impl" as never,
+      });
+      const admitted = yield* awaitTicketWhere(
+        ticketId as string,
+        (detail) => detail?.ticket.currentLaneEntryToken !== null,
+      );
+      assert.isNotNull(admitted?.ticket.currentLaneEntryToken);
+
+      // Holder keeps the admission lock and, on signal, re-tokens the ticket
+      // (direct move to "elsewhere") so parkTicket's in-lock guard drifts.
+      const admHeld = yield* Deferred.make<void>();
+      const doMove = yield* Deferred.make<void>();
+      const holderFiber = yield* engine
+        .withBoardAdmissionLock(
+          "b-f4" as never,
+          Effect.gen(function* () {
+            yield* Deferred.succeed(admHeld, undefined);
+            yield* Deferred.await(doMove);
+            yield* committer.commit({
+              type: "TicketMovedToLane",
+              eventId: "evt-f4-move",
+              ticketId,
+              occurredAt: "2026-07-22T00:10:00.000Z",
+              payload: { toLane: "elsewhere", laneEntryToken: "tok-f4-moved", reason: "manual" },
+            } as never);
+          }),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(admHeld);
+
+      // Ingest reads the current (pre-move) token, then blocks on the admission
+      // lock inside parkTicket.
+      const resultFiber = yield* engine
+        .ingestExternalEvent({ boardId: "b-f4" as never, name: "e", ticketId, payload: null })
+        .pipe(Effect.forkChild);
+
+      // Ingest has now read the pre-move token and is parked on the lock. Trigger
+      // the move + release the lock.
+      yield* promiseSleep(40);
+      yield* Deferred.succeed(doMove, undefined);
+      yield* Fiber.join(holderFiber);
+
+      const result = yield* Fiber.join(resultFiber);
+      // The park lost the race: nothing parked, so the honest outcome is "noop".
+      assert.equal(result.outcome, "noop");
+
+      const detail = yield* read.getTicketDetail(ticketId);
+      assert.notEqual(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneKey, "elsewhere");
+      const events = yield* Stream.runCollect(
+        (yield* WorkflowEventStore).readByTicket(ticketId),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.isUndefined(events.find((event) => event.type === "TicketParked"));
     }),
   );
 });

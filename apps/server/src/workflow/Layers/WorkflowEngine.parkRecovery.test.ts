@@ -6,7 +6,9 @@
 // occupying its WIP slot, never released as if it were merely queued.
 import { assert, it } from "@effect/vitest";
 import { WorkflowDefinition, type StepOutcome } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -468,6 +470,250 @@ admitLayer("recoverBoardWip admits a queued ticket behind a parked one", (it) =>
       const finalA = yield* read.getTicketDetail(ticketA);
       assert.equal(finalA?.ticket.status, "parked");
       assert.equal(finalA?.ticket.currentLaneEntryToken, null);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// (A.5 / NEW-1) A recovered pipeline continuation cannot start NEW work after
+// an external park. completeRecoveredStep re-checks the lane-entry token before
+// EVERY retry dispatch and enters completePipelineFrom non-exempt (its first
+// recovered step token-checks too), so a park landing mid-continuation aborts
+// it: no further StepStarted, the run closes superseded, the ticket stays
+// parked. The recovered continuation is not registered in runningPipelines, so
+// these token guards — not fiber interruption — are what stop it.
+// ---------------------------------------------------------------------------
+
+interface GatedRetryExecutor extends StepExecutorShape {
+  readonly releaseGate: () => Effect.Effect<boolean>;
+  readonly calls: { count: number };
+}
+
+const gatedRetryExecutorLayer = Layer.effect(
+  StepExecutor,
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const calls = { count: 0 };
+    const shape: GatedRetryExecutor = {
+      // Each dispatched retry attempt records a StepStarted, then blocks here
+      // until the test releases the gate; it then "fails" so the retry loop
+      // considers dispatching the next attempt.
+      execute: () =>
+        Effect.gen(function* () {
+          calls.count += 1;
+          yield* Deferred.await(gate);
+          return { _tag: "failed", error: "boom" } satisfies StepOutcome;
+        }),
+      releaseGate: () => Deferred.succeed(gate, undefined),
+      calls,
+    };
+    return shape;
+  }),
+);
+
+const recoverGuardLayer = it.layer(baseLayer(gatedRetryExecutorLayer));
+
+const commitRecoveredCodeContext = (boardId: string, ticketId: string, token: string) =>
+  Effect.gen(function* () {
+    const committer = yield* WorkflowEventCommitter;
+    yield* committer.commit({
+      type: "TicketCreated",
+      eventId: `${ticketId}-created`,
+      ticketId,
+      occurredAt: "2026-07-22T00:00:00.000Z",
+      payload: { boardId, title: "Recovered", laneKey: "impl" },
+    } as never);
+    yield* committer.commit({
+      type: "TicketMovedToLane",
+      eventId: `${ticketId}-moved`,
+      ticketId,
+      occurredAt: "2026-07-22T00:00:01.000Z",
+      payload: { toLane: "impl", laneEntryToken: token, reason: "initial" },
+    } as never);
+    yield* committer.commit({
+      type: "PipelineStarted",
+      eventId: `${ticketId}-pipeline`,
+      ticketId,
+      occurredAt: "2026-07-22T00:00:02.000Z",
+      payload: { pipelineRunId: `${ticketId}-pipe`, laneKey: "impl", laneEntryToken: token },
+    } as never);
+    yield* committer.commit({
+      type: "StepStarted",
+      eventId: `${ticketId}-step`,
+      ticketId,
+      occurredAt: "2026-07-22T00:00:03.000Z",
+      payload: {
+        pipelineRunId: `${ticketId}-pipe`,
+        stepRunId: `${ticketId}-run`,
+        stepKey: "code",
+        stepType: "agent",
+        attempt: 1,
+      },
+    } as never);
+  });
+
+recoverGuardLayer("recovered continuation aborts on external park", (it) => {
+  it.effect("no StepStarted after the park; retry loop stops; ticket stays parked", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-recover-guard" as never,
+        {
+          name: "recover-guard",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                  // Three attempts: attempt 1 is the recovered (pre-committed) one,
+                  // attempt 2 gates in the executor, and the guard must stop
+                  // attempt 3 once the park lands.
+                  retry: { maxAttempts: 3 },
+                  on: {
+                    failure: {
+                      park: "issue",
+                      label: "Hit a snag",
+                      actions: [{ label: "Retry", to: "impl" }],
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        } as never,
+      );
+
+      const engine = yield* WorkflowEngine;
+      const committer = yield* WorkflowEventCommitter;
+      const read = yield* WorkflowReadModel;
+      yield* commitRecoveredCodeContext("b-recover-guard", "ticket-rg", "tok-rg");
+
+      const executor = (yield* StepExecutor) as GatedRetryExecutor;
+
+      // Drive the recovered continuation on a child fiber: it records StepFailed
+      // for attempt 1, then dispatches retry attempt 2 (which gates).
+      const fiber = yield* engine
+        .completeRecoveredStep(
+          "ticket-rg-run" as never,
+          { _tag: "failed", error: "attempt-1" },
+          undefined,
+        )
+        .pipe(Effect.forkChild);
+
+      // Wait until attempt 2 has been dispatched (its StepStarted committed, now
+      // gated inside the executor).
+      yield* awaitTicketWhere("ticket-rg", () => executor.calls.count >= 1);
+      const startsAtGate = (yield* eventsFor("ticket-rg")).filter(
+        (event) => event.type === "StepStarted",
+      ).length;
+      assert.equal(startsAtGate, 2);
+
+      // Land an external park mid-continuation: nulls the token, status=parked.
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "evt-rg-park",
+        ticketId: "ticket-rg",
+        occurredAt: "2026-07-22T00:00:04.000Z",
+        payload: {
+          substate: "issue",
+          label: "Externally parked",
+          reason: "external park",
+          parkOrigin: '{"src":"event","fp":"fp-rg"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      // Release: attempt 2 fails, then the retry loop's pre-dispatch token guard
+      // sees the nulled token and abandons — attempt 3 never starts.
+      yield* executor.releaseGate();
+      yield* Fiber.join(fiber).pipe(Effect.exit);
+      yield* settle;
+
+      const events = yield* eventsFor("ticket-rg");
+      const startsAfter = events.filter((event) => event.type === "StepStarted").length;
+      assert.equal(startsAfter, 2);
+      assert.isDefined(
+        events.find(
+          (event) => event.type === "PipelineCompleted" && event.payload.result === "superseded",
+        ),
+      );
+
+      const detail = yield* read.getTicketDetail("ticket-rg" as never);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneEntryToken, null);
+    }),
+  );
+});
+
+// Regression: with NO park, a recovered continuation still runs its retries to
+// completion — the non-exempt first-step guard must not spuriously abort a
+// still-current recovered run.
+const recoverNormalLayer = it.layer(
+  baseLayer(makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" })).layer),
+);
+
+recoverNormalLayer("recovered continuation runs retries normally when not parked", (it) => {
+  it.effect("retry attempt 2 dispatches and the ticket parks via the normal failure route", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-recover-normal" as never,
+        {
+          name: "recover-normal",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                  retry: { maxAttempts: 2 },
+                  on: {
+                    failure: {
+                      park: "issue",
+                      label: "Hit a snag",
+                      actions: [{ label: "Retry", to: "impl" }],
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        } as never,
+      );
+
+      const engine = yield* WorkflowEngine;
+      const read = yield* WorkflowReadModel;
+      yield* commitRecoveredCodeContext("b-recover-normal", "ticket-rn", "tok-rn");
+
+      yield* engine.completeRecoveredStep(
+        "ticket-rn-run" as never,
+        { _tag: "failed", error: "attempt-1" },
+        undefined,
+      );
+      yield* settle;
+
+      const events = yield* eventsFor("ticket-rn");
+      // Attempt 1 (pre-committed) + attempt 2 (retry dispatched) = 2 StepStarted.
+      const starts = events.filter((event) => event.type === "StepStarted").length;
+      assert.equal(starts, 2);
+
+      const detail = yield* read.getTicketDetail("ticket-rn" as never);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneEntryToken, null);
+      // Parked via the normal failure route (not superseded): a TicketParked with
+      // the lane_on failure origin exists.
+      assert.isDefined(events.find((event) => event.type === "TicketParked"));
     }),
   );
 });

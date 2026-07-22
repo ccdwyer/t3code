@@ -525,25 +525,23 @@ const replayEvents = (ticketId: string) =>
     },
   ] as const;
 
-const projectAllAndReadTicket = (ticketId: string) =>
+type ReplayTicketRow = {
+  readonly status: string;
+  readonly currentLaneKey: string;
+  readonly currentLaneEntryToken: string | null;
+  readonly parkedSubstate: string | null;
+  readonly parkedLabel: string | null;
+  readonly parkedReason: string | null;
+  readonly parkedEventId: string | null;
+  readonly parkOrigin: string | null;
+  readonly attentionKind: string | null;
+  readonly queuedAt: string | null;
+};
+
+const readReplayTicketRow = (ticketId: string) =>
   Effect.gen(function* () {
-    const pipeline = yield* WorkflowProjectionPipeline;
     const sql = yield* SqlClient.SqlClient;
-    for (const event of replayEvents(ticketId)) {
-      yield* pipeline.projectEvent(event as never);
-    }
-    const rows = yield* sql<{
-      readonly status: string;
-      readonly currentLaneKey: string;
-      readonly currentLaneEntryToken: string | null;
-      readonly parkedSubstate: string | null;
-      readonly parkedLabel: string | null;
-      readonly parkedReason: string | null;
-      readonly parkedEventId: string | null;
-      readonly parkOrigin: string | null;
-      readonly attentionKind: string | null;
-      readonly queuedAt: string | null;
-    }>`
+    const rows = yield* sql<ReplayTicketRow>`
       SELECT
         status,
         current_lane_key AS "currentLaneKey",
@@ -561,56 +559,63 @@ const projectAllAndReadTicket = (ticketId: string) =>
     return rows[0] ?? null;
   });
 
+// Project the replay events and snapshot the projection twice: the INTERMEDIATE
+// state right after `TicketParked` (index 2, before the skip + trailing unpark
+// move) and the FINAL state. The intermediate snapshot is what proves the
+// TicketParked projection actually wrote the parked_* columns — a no-op
+// TicketParked projection would still reach the same final (unparked) row.
+const PARKED_EVENT_INDEX = 2;
+
+const projectAllAndSnapshot = (ticketId: string) =>
+  Effect.gen(function* () {
+    const pipeline = yield* WorkflowProjectionPipeline;
+    const events = replayEvents(ticketId);
+    let afterPark: ReplayTicketRow | null = null;
+    for (const [index, event] of events.entries()) {
+      yield* pipeline.projectEvent(event as never);
+      if (index === PARKED_EVENT_INDEX) {
+        afterPark = yield* readReplayTicketRow(ticketId);
+      }
+    }
+    const final = yield* readReplayTicketRow(ticketId);
+    return { afterPark, final };
+  });
+
+const projectAllAndReadTicket = (ticketId: string) =>
+  projectAllAndSnapshot(ticketId).pipe(Effect.map((snapshot) => snapshot.final));
+
 it.layer(replayProjectionLayer)("replay rebuild parity (TicketParked + skip + unpark)", (it) => {
   it.effect(
     "sequential projectEvent over a fresh DB reaches the same final row as an incremental apply",
     () =>
       Effect.gen(function* () {
         // "Incremental": events applied one at a time as they would land live,
-        // yielding between each (this test's own DB instance).
-        const incremental = yield* Effect.gen(function* () {
+        // yielding between each (this test's own DB instance). Snapshot both the
+        // intermediate post-park row and the final row.
+        const incrementalSnapshot = yield* Effect.gen(function* () {
           const pipeline = yield* WorkflowProjectionPipeline;
-          const sql = yield* SqlClient.SqlClient;
-          for (const event of replayEvents("ticket-replay-incremental")) {
+          const events = replayEvents("ticket-replay-incremental");
+          let afterPark: ReplayTicketRow | null = null;
+          for (const [index, event] of events.entries()) {
             yield* pipeline.projectEvent(event as never);
             yield* Effect.yieldNow;
+            if (index === PARKED_EVENT_INDEX) {
+              afterPark = yield* readReplayTicketRow("ticket-replay-incremental");
+            }
           }
-          const rows = yield* sql<{
-            readonly status: string;
-            readonly currentLaneKey: string;
-            readonly currentLaneEntryToken: string | null;
-            readonly parkedSubstate: string | null;
-            readonly parkedLabel: string | null;
-            readonly parkedReason: string | null;
-            readonly parkedEventId: string | null;
-            readonly parkOrigin: string | null;
-            readonly attentionKind: string | null;
-            readonly queuedAt: string | null;
-          }>`
-            SELECT
-              status,
-              current_lane_key AS "currentLaneKey",
-              current_lane_entry_token AS "currentLaneEntryToken",
-              parked_substate AS "parkedSubstate",
-              parked_label AS "parkedLabel",
-              parked_reason AS "parkedReason",
-              parked_event_id AS "parkedEventId",
-              park_origin AS "parkOrigin",
-              attention_kind AS "attentionKind",
-              queued_at AS "queuedAt"
-            FROM projection_ticket
-            WHERE ticket_id = 'ticket-replay-incremental'
-          `;
-          return rows[0] ?? null;
+          const final = yield* readReplayTicketRow("ticket-replay-incremental");
+          return { afterPark, final };
         });
+        const incremental = incrementalSnapshot.final;
 
         // "Rebuild from scratch": the identical event list, in the same
         // order, projected in one uninterrupted pass into a BRAND NEW
         // in-memory database (a fresh Layer build below) — modeling a
         // startup rebuild reading workflow_events from sequence 0.
-        const rebuilt = yield* projectAllAndReadTicket("ticket-replay-rebuild").pipe(
+        const rebuiltSnapshot = yield* projectAllAndSnapshot("ticket-replay-rebuild").pipe(
           Effect.provide(replayProjectionLayer),
         );
+        const rebuilt = rebuiltSnapshot.final;
 
         assert.isNotNull(incremental);
         assert.isNotNull(rebuilt);
@@ -618,6 +623,32 @@ it.layer(replayProjectionLayer)("replay rebuild parity (TicketParked + skip + un
         // different ids only so a shared DB — if one were ever introduced —
         // couldn't collide them).
         assert.deepEqual(rebuilt, incremental);
+
+        // INTERMEDIATE PARKED PROJECTION (the CODEX-5 gap): assert the row state
+        // right AFTER TicketParked (before the skip + trailing unpark move) in
+        // BOTH the incremental and rebuild paths. A no-op TicketParked projection
+        // would leave these columns unset and fail here, even though the final
+        // (unparked) rows above would still match.
+        for (const afterPark of [incrementalSnapshot.afterPark, rebuiltSnapshot.afterPark]) {
+          assert.isNotNull(afterPark);
+          assert.equal(afterPark?.status, "parked");
+          assert.equal(afterPark?.currentLaneKey, "impl");
+          assert.equal(afterPark?.currentLaneEntryToken, null);
+          assert.equal(afterPark?.parkedSubstate, "issue");
+          assert.equal(afterPark?.parkedLabel, "Hit a snag");
+          assert.equal(afterPark?.parkedReason, "code blew up");
+          // parked_event_id is the TicketParked event's own id (per-ticket).
+          assert.isNotNull(afterPark?.parkedEventId ?? null);
+          assert.equal(afterPark?.attentionKind, "parked_issue");
+        }
+        assert.equal(incrementalSnapshot.afterPark?.parkedEventId, "ticket-replay-incremental-c");
+        assert.equal(rebuiltSnapshot.afterPark?.parkedEventId, "ticket-replay-rebuild-c");
+        // The two intermediate snapshots must also agree structurally, save for
+        // the ticket-scoped parked_event_id (different ticket ids per run).
+        assert.deepEqual(
+          { ...incrementalSnapshot.afterPark, parkedEventId: null },
+          { ...rebuiltSnapshot.afterPark, parkedEventId: null },
+        );
 
         // Pin the actual expected final shape too, not just "the two agree":
         // parked, in "impl", token NULL, substate/label/reason/origin from

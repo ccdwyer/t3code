@@ -5,9 +5,20 @@ import type { WorkflowEventStoreError } from "./Errors.ts";
 import type { PersistedWorkflowEvent, WorkflowEventInput } from "./WorkflowEventStore.ts";
 
 export interface WorkflowEventCommitterShape {
-  readonly commit: (event: WorkflowEventInput) => Effect.Effect<void, WorkflowEventStoreError>;
+  // `precondition`, when supplied, runs INSIDE the board save lock immediately
+  // before the append — the same lock a concurrent board-definition save
+  // (`register`) must hold to install a new definition. It therefore serializes
+  // a definition-drift recheck with the append: if it fails typed, nothing is
+  // committed. This is the only sound point to revalidate against a save, since
+  // the save lock is non-reentrant (the caller cannot hold it across the emit)
+  // and reads outside it can race the register.
+  readonly commit: (
+    event: WorkflowEventInput,
+    precondition?: Effect.Effect<void, WorkflowEventStoreError>,
+  ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly commitMany: (
     events: ReadonlyArray<WorkflowEventInput>,
+    precondition?: Effect.Effect<void, WorkflowEventStoreError>,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
   // Lock-free append+project core. CALLER MUST already hold the board save lock
   // for every affected board AND be inside an open `sql.withTransaction`. Unlike

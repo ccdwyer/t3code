@@ -318,6 +318,7 @@ const make = Effect.gen(function* () {
 
   const appendAndProject = (
     event: CommitEvent,
+    precondition?: Effect.Effect<void, WorkflowEventStoreError>,
   ): Effect.Effect<PersistedWorkflowEvent | null, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const boardId = yield* resolveBoardId(event);
@@ -327,6 +328,13 @@ const make = Effect.gen(function* () {
       return yield* saveLocks.withSaveLock(
         boardId,
         Effect.gen(function* () {
+          // Definition-drift recheck IN-LOCK, before any registration check or
+          // append: a concurrent save's `register` also holds this save lock, so
+          // running the precondition here serializes it against the install. A
+          // typed failure aborts the whole commit with nothing appended.
+          if (precondition !== undefined) {
+            yield* precondition;
+          }
           const isRegistered = yield* recheckRegisteredBoard(boardId, event);
           if (!isRegistered) {
             return null;
@@ -510,12 +518,12 @@ const make = Effect.gen(function* () {
       }
     });
 
-  const commit: WorkflowEventCommitterShape["commit"] = (event) =>
-    appendAndProject(event).pipe(
+  const commit: WorkflowEventCommitterShape["commit"] = (event, precondition) =>
+    appendAndProject(event, precondition).pipe(
       Effect.flatMap((persisted) => (persisted === null ? Effect.void : publishTicket(persisted))),
     );
 
-  const commitMany: WorkflowEventCommitterShape["commitMany"] = (events) =>
+  const commitMany: WorkflowEventCommitterShape["commitMany"] = (events, precondition) =>
     Effect.gen(function* () {
       const resolved = yield* resolveBatchBoardIds(events);
       const boardIds = distinctSortedBoardIds(resolved);
@@ -526,6 +534,12 @@ const make = Effect.gen(function* () {
       const persisted = yield* withBoardSaveLocks(
         boardIds,
         Effect.gen(function* () {
+          // Definition-drift recheck IN-LOCK before append (see appendAndProject):
+          // serialized against a concurrent save's `register`, which holds these
+          // same board save locks. A typed failure aborts with nothing appended.
+          if (precondition !== undefined) {
+            yield* precondition;
+          }
           const registeredBoards = yield* recheckRegisteredBoards(resolved, boardIds);
           const rechecked = yield* recheckBatchTickets(resolved, registeredBoards);
           return yield* sql

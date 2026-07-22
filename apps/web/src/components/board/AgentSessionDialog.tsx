@@ -123,8 +123,12 @@ export function AgentSessionDialog({
         type="button"
         size="xs"
         variant="outline"
-        disabled={!api}
-        title="View the agent's full session for this step"
+        disabled={!api?.orchestration}
+        title={
+          api?.orchestration
+            ? "View the agent's full session for this step"
+            : "Agent transcript isn't available from the board here."
+        }
         onClick={(event) => {
           event.stopPropagation();
           setOpen(true);
@@ -145,7 +149,11 @@ export function AgentSessionDialog({
             className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 pt-1 pb-4"
             data-testid="agent-session-transcript"
           >
-            {session === null ? (
+            {!api?.orchestration ? (
+              <p className="text-sm text-muted-foreground">
+                The agent transcript isn't available from the board view yet.
+              </p>
+            ) : session === null ? (
               <p className="text-sm text-muted-foreground">Loading session…</p>
             ) : (
               <>

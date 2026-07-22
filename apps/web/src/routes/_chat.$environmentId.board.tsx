@@ -48,7 +48,7 @@ import {
 } from "../workflow/boardRpc";
 import { useEnvironmentQuery } from "../state/query";
 import { workflowEnvironment } from "../state/workflow";
-import { useWorkflowApi } from "../workflow/useWorkflowApi";
+import { useBoardApi } from "../workflow/useBoardApi";
 import { useProject } from "../state/entities";
 
 export interface BoardRouteSearch {
@@ -356,10 +356,13 @@ function WorkflowBoardRouteView() {
   const environmentId = useMemo(() => EnvironmentId.make(rawEnvironmentId), [rawEnvironmentId]);
   const boardId = useMemo(() => (rawBoardId ? BoardId.make(rawBoardId) : null), [rawBoardId]);
 
-  // Workflow API facade (hook — called at top level, used in callbacks below).
-  const api = useWorkflowApi(environmentId);
-  // Full EnvironmentApi-shaped object for child components that expect the wide type.
-  const routeApi = useMemo(() => ({ workflow: api }) as EnvironmentApi, [api]);
+  // Board API facade — the `workflow.*` bridge plus the real `orchestration`
+  // (subscribeThread) and `terminal` (attachHistory) subscription clients the
+  // drawer panels need. Passed to child components as the wide `EnvironmentApi`.
+  const routeApi = useBoardApi(environmentId);
+  // Workflow slice for the route's own callbacks below (same object useBoardApi
+  // built from useWorkflowApi — stable identity, no extra hook call).
+  const api = routeApi.workflow;
 
   // Board state from the folded subscription atom.
   const boardQuery = useEnvironmentQuery(

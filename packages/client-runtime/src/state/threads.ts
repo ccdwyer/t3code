@@ -25,7 +25,10 @@ import { ThreadSnapshotLoader } from "./threadSnapshotHttp.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
-import { followStreamInEnvironment } from "./runtime.ts";
+import {
+  createEnvironmentRpcSubscriptionAtomFamily,
+  followStreamInEnvironment,
+} from "./runtime.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
@@ -338,9 +341,20 @@ export function createEnvironmentThreadStateAtoms<R, E>(
       );
   });
 
+  // Raw (unfolded) orchestration thread stream — each OrchestrationThreadStreamItem
+  // as emitted. Mirrors `workflowEnvironment.boardRaw`: the board route's
+  // EnvironmentApi facade bridge (`orchestration.subscribeThread`) forwards these
+  // to its callback and folds them itself, whereas normal thread views render the
+  // folded `stateAtom` above.
+  const streamRaw = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:thread:stream-raw",
+    tag: ORCHESTRATION_WS_METHODS.subscribeThread,
+  });
+
   return {
     stateAtom: (environmentId: EnvironmentIdType, threadId: ThreadIdType) =>
       family(threadKey({ environmentId, threadId })),
+    streamRaw,
   };
 }
 

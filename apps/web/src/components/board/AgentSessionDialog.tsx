@@ -62,8 +62,8 @@ export function AgentSessionDialog({
   const [session, setSession] = useState<SessionState | null>(null);
 
   useEffect(() => {
-    // Board-route api facades carry no orchestration client — degrade to the
-    // empty-session state instead of crashing (see StepActivityFeed).
+    // Subscribe only while the dialog is open. The board API now supplies a real
+    // orchestration client, so the `api?.orchestration` check is belt-and-braces.
     if (!open || !api?.orchestration) {
       return;
     }
@@ -123,12 +123,8 @@ export function AgentSessionDialog({
         type="button"
         size="xs"
         variant="outline"
-        disabled={!api?.orchestration}
-        title={
-          api?.orchestration
-            ? "View the agent's full session for this step"
-            : "Agent transcript isn't available from the board here."
-        }
+        disabled={!api}
+        title="View the agent's full session for this step"
         onClick={(event) => {
           event.stopPropagation();
           setOpen(true);
@@ -149,11 +145,7 @@ export function AgentSessionDialog({
             className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 pt-1 pb-4"
             data-testid="agent-session-transcript"
           >
-            {!api?.orchestration ? (
-              <p className="text-sm text-muted-foreground">
-                The agent transcript isn't available from the board view yet.
-              </p>
-            ) : session === null ? (
+            {session === null ? (
               <p className="text-sm text-muted-foreground">Loading session…</p>
             ) : (
               <>

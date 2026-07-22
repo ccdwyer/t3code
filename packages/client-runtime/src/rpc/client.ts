@@ -58,6 +58,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.subscribeVcsStatus
   | typeof WS_METHODS.terminalAttach
+  | typeof WS_METHODS.terminalAttachHistory
   | typeof WORKFLOW_WS_METHODS.subscribeBoard;
 
 export type EnvironmentStreamCommandRpcTag =

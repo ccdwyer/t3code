@@ -44,6 +44,16 @@ export function createTerminalEnvironmentAtoms<R, E>(
           Stream.scan(EMPTY_TERMINAL_BUFFER_STATE, applyTerminalAttachStreamEvent),
         ),
     }),
+    // Raw (unfolded) terminal-history replay stream — each
+    // TerminalHistoryAttachStreamEvent as emitted. Mirrors `boardRaw`: the
+    // EnvironmentApi facade's `terminal.attachHistory` bridge forwards these to
+    // its callback, and the web ScriptStepLogViewer folds them itself, so no
+    // Stream.scan here (unlike `attach` above).
+    attachHistory: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:terminal:attach-history",
+      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttachHistory>) =>
+        subscribe(WS_METHODS.terminalAttachHistory, input),
+    }),
     events: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:events",
       tag: WS_METHODS.subscribeTerminalEvents,

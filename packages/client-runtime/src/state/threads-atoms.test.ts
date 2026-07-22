@@ -23,4 +23,20 @@ describe("createEnvironmentThreadStateAtoms", () => {
     expect(threads.stateAtom(environmentId, threadId)).toBe(atom);
     expect(threads.stateAtom(environmentId, ThreadId.make("thread-2"))).not.toBe(atom);
   });
+
+  it("exposes a stable raw thread-stream atom family keyed by environment + input", () => {
+    const runtime = Atom.runtime(Layer.empty) as unknown as Atom.AtomRuntime<
+      EnvironmentRegistry | EnvironmentCacheStore | ThreadSnapshotLoader,
+      never
+    >;
+    const threads = createEnvironmentThreadStateAtoms(runtime);
+    const environmentId = EnvironmentId.make("environment-1");
+    const threadId = ThreadId.make("thread-1");
+    const atom = threads.streamRaw({ environmentId, input: { threadId } });
+
+    expect(threads.streamRaw({ environmentId, input: { threadId } })).toBe(atom);
+    expect(
+      threads.streamRaw({ environmentId, input: { threadId: ThreadId.make("thread-2") } }),
+    ).not.toBe(atom);
+  });
 });

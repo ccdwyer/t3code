@@ -85,6 +85,10 @@ const decodeProposalDefinitionJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(WorkflowDefinition),
 );
 const encodeProposalDefinition = Schema.encodeSync(WorkflowDefinition);
+// Used to parse `TicketParked` event payloads for the routeOutcomes fold in
+// getBoardMetrics — the shape is opaque (asRecord-checked field by field
+// below), so UnknownFromJsonString (not a specific schema) is the right tool.
+const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
 interface ProposalSqlRow {
   readonly proposalId: string;
@@ -1286,13 +1290,76 @@ const make = Effect.gen(function* () {
           AND ticket_id IN (SELECT ticket_id FROM projection_ticket WHERE board_id = ${boardId})
         GROUP BY "fromLane", "toLane", "source", "result"
       `);
-      const routeOutcomes = routeRows.map((row) => ({
-        fromLane: row.fromLane,
-        toLane: row.toLane,
-        source: row.source,
-        result: row.result ?? "n/a",
-        count: row.count,
-      }));
+      // 6b. Park outcomes — TicketParked events within the same window, folded
+      // into routeOutcomes as their own rows (Gate 1 gap: parks previously
+      // never appeared in the metric at all, even though they are as much an
+      // "outcome" of routing as a TicketRouteDecided row). parkOrigin is JSON,
+      // not a scalar column, so — unlike the query above — grouping can't be
+      // pushed into SQL via json_extract + GROUP BY; each row is parsed and
+      // grouped here in JS, reusing the exact substate/origin parsing
+      // toParkRouteDecisionRow uses so the two renderings stay consistent.
+      // The row shape has no dedicated "substate" field, so — mirroring how a
+      // park has no toLane — the substate is rendered through the `toLane`
+      // slot (the row's "target"); `result` has no pipeline-verdict
+      // equivalent for a park, so it takes the same 'n/a' fallback the
+      // work_source/external_event sources already use above.
+      const parkEventRows = yield* wrap(sql<{
+        readonly payloadJson: string;
+      }>`
+        SELECT payload_json AS "payloadJson"
+        FROM workflow_events
+        WHERE event_type = 'TicketParked'
+          AND occurred_at >= ${sinceIso}
+          AND ticket_id IN (SELECT ticket_id FROM projection_ticket WHERE board_id = ${boardId})
+      `);
+      const parkOutcomeCounts = new Map<
+        string,
+        { readonly source: string; readonly substate: string; count: number }
+      >();
+      for (const parkRow of parkEventRows) {
+        const payload = yield* decodeUnknownJsonString(parkRow.payloadJson).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (payload === null) {
+          continue;
+        }
+        const record = asRecord(payload);
+        if (record === null) {
+          continue;
+        }
+        const substate = WORKFLOW_PARK_SUBSTATES.find(
+          (candidate) => candidate === record["substate"],
+        );
+        if (substate === undefined) {
+          continue;
+        }
+        const originJson = typeof record["parkOrigin"] === "string" ? record["parkOrigin"] : null;
+        const origin = originJson === null ? null : parseParkOrigin(originJson);
+        const source = origin === null ? "manual" : PARK_ORIGIN_SOURCE_BY_SRC[origin.src];
+        const key = `${source}::${substate}`;
+        const existing = parkOutcomeCounts.get(key);
+        if (existing === undefined) {
+          parkOutcomeCounts.set(key, { source, substate, count: 1 });
+        } else {
+          existing.count += 1;
+        }
+      }
+      const routeOutcomes = [
+        ...routeRows.map((row) => ({
+          fromLane: row.fromLane,
+          toLane: row.toLane,
+          source: row.source,
+          result: row.result ?? "n/a",
+          count: row.count,
+        })),
+        ...[...parkOutcomeCounts.values()].map((park) => ({
+          fromLane: null,
+          toLane: park.substate,
+          source: park.source,
+          result: "n/a",
+          count: park.count,
+        })),
+      ];
 
       // 7. manualMoveCount — TicketMovedToLane with reason=manual in window.
       const manualMove = yield* wrap(sql<{ readonly count: number }>`

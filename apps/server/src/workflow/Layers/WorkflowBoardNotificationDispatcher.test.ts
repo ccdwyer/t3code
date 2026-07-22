@@ -431,6 +431,101 @@ describe.sequential("WorkflowBoardNotificationDispatcher", () => {
     },
   );
 
+  it.effect(
+    "does not publish a stale row when TicketParked supersedes it before the atomic claim (gate 1 race)",
+    () => {
+      // Regression: the sweep SELECTs row A (pending). Before processRow can
+      // claim it, a TicketParked commit lands for the same ticket: the
+      // committer supersedes row A and inserts a fresh pending row B. Because
+      // 'parked' is ITSELF a needs-you status, the relevance recheck (which
+      // only looks at the ticket's current status) still passes — the bug
+      // this closes is that the OLD code then published row A's stale
+      // `state` unconditionally and unconditionally marked it 'sent',
+      // clobbering the committer's 'superseded' write. The read-model stub
+      // below performs the committer's supersede-and-insert as a side effect
+      // of getTicketDetail, standing in for the commit landing in the
+      // SELECT→recheck window. With the atomic claim in place, processRow's
+      // claimRow call (which runs AFTER this side effect) finds row A already
+      // 'superseded' and returns "superseded" without ever calling
+      // relay.publishTicket.
+      const supersedingReadModelLayer = Layer.effect(
+        WorkflowReadModel,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            getTicketDetail: (ticketId: string) =>
+              Effect.gen(function* () {
+                if (ticketId === "ticket-race") {
+                  yield* sql`
+                    UPDATE workflow_notification_outbox
+                    SET delivery_state = 'superseded'
+                    WHERE ticket_id = ${"ticket-race"}
+                      AND delivery_state = 'pending'
+                      AND sequence != 99
+                  `;
+                  yield* sql`
+                    INSERT INTO workflow_notification_outbox (
+                      outbox_id, ticket_id, board_id, sequence, status,
+                      attention_kind, attention_reason, delivery_state, attempt_count, created_at
+                    ) VALUES (
+                      'ob-race-b', 'ticket-race', 'board-1', 99, 'parked',
+                      'parked_waiting', 'Waiting on you: newer', 'pending', 0,
+                      '2026-06-12T00:00:00.000Z'
+                    )
+                  `;
+                }
+                return detail(
+                  makeTicketRow({
+                    ticketId: "ticket-race",
+                    status: "parked",
+                    attentionKind: "parked_waiting",
+                    attentionReason: "Waiting on you: newer",
+                  }),
+                );
+              }).pipe(Effect.orDie),
+          } as unknown as WorkflowReadModel["Service"];
+        }),
+      );
+
+      const recorder = makeRecorder();
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-race-a",
+          ticketId: "ticket-race",
+          boardId: "board-1",
+          sequence: 50,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "stale reason",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        // Only row A was pending when the sweep SELECTed; row B was inserted
+        // mid-recheck so this sweep only claimed (selected) row A.
+        assert.strictEqual(result.claimed, 1);
+        assert.strictEqual(result.superseded, 1);
+        assert.strictEqual(result.sent, 0);
+        assert.strictEqual(recorder.calls.length, 0, "must never publish the stale row");
+
+        const rowA = yield* readOutbox("ob-race-a");
+        assert.strictEqual(rowA.delivery_state, "superseded");
+
+        const rowB = yield* readOutbox("ob-race-b");
+        assert.strictEqual(rowB.delivery_state, "pending", "row B awaits its own sweep");
+      }).pipe(
+        Effect.provide(
+          makeWorkflowBoardNotificationDispatcherLive({ sweepIntervalMs: 60_000 }).pipe(
+            Layer.provideMerge(stubRelayLayer(recorder)),
+            Layer.provideMerge(supersedingReadModelLayer),
+            Layer.provideMerge(serverEnvironmentLayer),
+            Layer.provideMerge(SqlitePersistenceMemory),
+          ),
+        ),
+      );
+    },
+  );
+
   it.effect("publishes a parked_issue row unchanged (status='parked' is needs-you)", () => {
     const recorder = makeRecorder();
     return Effect.gen(function* () {

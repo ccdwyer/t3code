@@ -2868,6 +2868,91 @@ layer("WorkflowReadModel", (it) => {
     }),
   );
 
+  it.effect(
+    "getBoardMetrics folds TicketParked events into routeOutcomes, rendering the substate as toLane (gate 1)",
+    () =>
+      Effect.gen(function* () {
+        const read = yield* WorkflowReadModel;
+        const sql = yield* SqlClient.SqlClient;
+        const now = yield* DateTime.now;
+        const recentIso = DateTime.formatIso(DateTime.subtract(now, { days: 1 }));
+        const oldIso = DateTime.formatIso(DateTime.subtract(now, { days: 40 }));
+
+        yield* sql`
+          INSERT INTO projection_ticket (
+            ticket_id, board_id, title, current_lane_key, status, created_at, updated_at
+          ) VALUES (
+            'park-metrics-1', 'b-park-metrics', 'Parked ticket', 'review', 'parked',
+            ${recentIso}, ${recentIso}
+          )
+        `;
+
+        // parkOrigin src "transition" maps onto the SAME `source` a
+        // TicketRouteDecided row from that site would carry: "lane_transition"
+        // (via PARK_ORIGIN_SOURCE_BY_SRC — mirrors toParkRouteDecisionRow).
+        const parkOrigin = encodeUnknownJsonString({ src: "transition", fp: "abc123" });
+        yield* sql`
+          INSERT INTO workflow_events (
+            event_id, ticket_id, stream_version, event_type, occurred_at, payload_json
+          ) VALUES (
+            'park-metrics-ev-issue', 'park-metrics-1', 0, 'TicketParked', ${recentIso},
+            ${encodeUnknownJsonString({
+              substate: "issue",
+              label: "Issue encountered",
+              reason: "boom",
+              parkOrigin,
+            })}
+          )
+        `;
+        // A second, distinct substate on the same ticket — must land in its
+        // OWN routeOutcomes row, not be collapsed with the "issue" one.
+        yield* sql`
+          INSERT INTO workflow_events (
+            event_id, ticket_id, stream_version, event_type, occurred_at, payload_json
+          ) VALUES (
+            'park-metrics-ev-waiting', 'park-metrics-1', 1, 'TicketParked', ${recentIso},
+            ${encodeUnknownJsonString({
+              substate: "waiting",
+              label: "Waiting on approval",
+              reason: "please review",
+              parkOrigin,
+            })}
+          )
+        `;
+        // Outside the 7-day window — must be excluded, same as the
+        // TicketRouteDecided window-exclusion case above.
+        yield* sql`
+          INSERT INTO workflow_events (
+            event_id, ticket_id, stream_version, event_type, occurred_at, payload_json
+          ) VALUES (
+            'park-metrics-ev-old', 'park-metrics-1', 2, 'TicketParked', ${oldIso},
+            ${encodeUnknownJsonString({
+              substate: "issue",
+              label: "Issue encountered",
+              reason: "boom",
+              parkOrigin,
+            })}
+          )
+        `;
+
+        const metrics = yield* read.getBoardMetrics("b-park-metrics" as never, 7);
+
+        const issueOutcome = metrics.routeOutcomes.find(
+          (r) => r.source === "lane_transition" && r.toLane === "issue",
+        );
+        assert.ok(issueOutcome, "park (issue substate) must appear in routeOutcomes");
+        assert.equal(issueOutcome?.count, 1, "the old (out-of-window) issue park is excluded");
+        assert.equal(issueOutcome?.fromLane, null);
+        assert.equal(issueOutcome?.result, "n/a");
+
+        const waitingOutcome = metrics.routeOutcomes.find(
+          (r) => r.source === "lane_transition" && r.toLane === "waiting",
+        );
+        assert.ok(waitingOutcome, "park (waiting substate) must appear in routeOutcomes");
+        assert.equal(waitingOutcome?.count, 1);
+      }),
+  );
+
   it.effect("deleteBoardTicketState cascades workflow_board_proposal rows", () =>
     Effect.gen(function* () {
       const read = yield* WorkflowReadModel;

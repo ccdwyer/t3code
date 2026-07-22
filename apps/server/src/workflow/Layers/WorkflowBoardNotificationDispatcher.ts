@@ -89,17 +89,41 @@ const makeWorkflowBoardNotificationDispatcher = (
         ? sql`UPDATE workflow_notification_outbox SET delivery_state = ${deliveryState} WHERE outbox_id = ${outboxId}`
         : sql`UPDATE workflow_notification_outbox SET delivery_state = ${deliveryState}, attempt_count = ${attemptCount} WHERE outbox_id = ${outboxId}`;
 
-    // Conditional re-mark for the retry path. The committer (WorkflowEventCommitter)
-    // can concurrently flip this row to 'superseded' when a newer needs-you
-    // transition for the same ticket commits between our SELECT and this write.
-    // An unconditional `markState(..., 'pending', ...)` would resurrect a
-    // superseded row and re-deliver a stale older transition on the next sweep.
-    // Guarding on `delivery_state = 'pending'` makes the re-mark a no-op once the
-    // row has left 'pending', preventing the lost-update. Terminal re-marks
-    // ('sent'/'failed'/'superseded') don't need this guard: writing a terminal
-    // state over a superseded row is harmless since neither is re-swept.
+    // Atomic claim, run immediately before relay.publishTicket. Flips a
+    // 'pending' row to 'publishing' and returns whether THIS call performed
+    // the transition. The committer (WorkflowEventCommitter) can concurrently
+    // flip the same row to 'superseded' — guarded on `delivery_state =
+    // 'pending'` on its side — when a newer needs-you transition for the same
+    // ticket commits between our SELECT and this claim. Closes the
+    // stale-delivery race: without this, the relevance recheck above only
+    // looks at the ticket's CURRENT status, which for a re-parked ticket
+    // still passes (`parked` is itself a needs-you status) even though the
+    // committer already superseded THIS row in favor of a fresh one — the old
+    // unconditional publish + unconditional `markState(..., 'sent')` would
+    // then both deliver the stale row's content AND clobber the committer's
+    // 'superseded' write. Claiming atomically makes the check indivisible
+    // from the act: a claim rowcount of 0 means the row left 'pending' before
+    // we could act on it, so the row is superseded and must NOT be published.
+    const claimRow = (outboxId: string) =>
+      sql<{ readonly outboxId: string }>`
+        UPDATE workflow_notification_outbox
+        SET delivery_state = 'publishing'
+        WHERE outbox_id = ${outboxId} AND delivery_state = 'pending'
+        RETURNING outbox_id AS "outboxId"
+      `.pipe(Effect.map((rows) => rows.length > 0));
+
+    // Conditional re-mark for the retry path. A claimed row sits in
+    // 'publishing' for the duration of the publish call (nothing else may
+    // touch it — the committer's supersede guard is `delivery_state =
+    // 'pending'`, which a 'publishing' row no longer matches), so guarding on
+    // `delivery_state = 'publishing'` is the equivalent of the pre-claim
+    // design's `delivery_state = 'pending'` guard: it makes the re-mark a
+    // no-op if the row somehow left 'publishing' by another path, preventing
+    // a lost-update / resurrection. Terminal re-marks ('sent'/'failed') don't
+    // need this guard: writing a terminal state over the row this claim owns
+    // is always correct.
     const rescheduleRetry = (outboxId: string, attemptCount: number) =>
-      sql`UPDATE workflow_notification_outbox SET delivery_state = 'pending', attempt_count = ${attemptCount} WHERE outbox_id = ${outboxId} AND delivery_state = 'pending'`;
+      sql`UPDATE workflow_notification_outbox SET delivery_state = 'pending', attempt_count = ${attemptCount} WHERE outbox_id = ${outboxId} AND delivery_state = 'publishing'`;
 
     // Process a single row. Returns the outcome category for the sweep summary.
     // Per-row errors are caught here so one bad row can't abort the sweep.
@@ -143,6 +167,16 @@ const makeWorkflowBoardNotificationDispatcher = (
           )}/${encodeURIComponent(row.ticketId)}`,
           transitionId: String(row.sequence),
         };
+
+        // Atomic claim, immediately before the publish call. If the committer
+        // superseded this row between our SELECT and here (see claimRow's
+        // doc comment), the claim's rowcount is 0 and we must NOT publish the
+        // now-stale `state` built above — the fresh row the committer inserted
+        // for the same ticket will be picked up, correctly, on a later sweep.
+        const claimed = yield* claimRow(row.outboxId);
+        if (!claimed) {
+          return "superseded" as const;
+        }
 
         const published = yield* relay
           .publishTicket({
@@ -188,8 +222,35 @@ const makeWorkflowBoardNotificationDispatcher = (
         ),
       );
 
+    // Reclaim rows stranded 'publishing' by a crash (after claimRow, before
+    // markState('sent'/'failed') or rescheduleRetry landed). Row processing
+    // within a sweep is sequential and synchronous (the `for` loop below,
+    // one row at a time, no forking) and every path out of processRow
+    // resolves a claimed row to a terminal state or back to 'pending' before
+    // the sweep's effect returns — so the ONLY way a 'publishing' row can
+    // still exist the next time this runs is that the process died (or threw
+    // a defect that unwound past the claim) mid-publish for that row. Running
+    // this at the top of every sweep (not just at start()) means recovery
+    // doesn't wait for a restart: the very next sweep, at most sweepIntervalMs
+    // later, un-sticks it. A select/UPDATE failure here is logged and
+    // swallowed — it must not block the rest of the sweep.
+    const reclaimStalePublishing = sql`
+      UPDATE workflow_notification_outbox
+      SET delivery_state = 'pending'
+      WHERE delivery_state = 'publishing'
+    `.pipe(
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("workflow.board-notification.reclaim-stale-publishing-failed", {
+          cause,
+        }),
+      ),
+    );
+
     const sweep: WorkflowBoardNotificationDispatcherShape["sweep"] = () =>
       Effect.gen(function* () {
+        yield* reclaimStalePublishing;
+
         const rows = yield* sql<OutboxRow>`
           SELECT
             outbox_id AS "outboxId",

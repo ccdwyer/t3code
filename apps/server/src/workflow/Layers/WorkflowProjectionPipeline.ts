@@ -36,6 +36,7 @@ const make = Effect.gen(function* () {
   // ticket out of a parked state must clear ALL parked_* columns, or a
   // re-parked ticket could read stale parked_event_id/park_origin from a
   // previous park.
+  // NOTE: no trailing comma on this fragment — always splice it as the final SET-clause item.
   const PARKED_CLEAR = sql`
     parked_substate = NULL,
     parked_label = NULL,
@@ -542,10 +543,9 @@ const make = Effect.gen(function* () {
           break;
         }
         case "TicketRouteDecided": {
-          // History-only decision record for automatic (non-park) route
-          // moves; route-history readers (listTicketRouteDecisions et al.)
-          // read it directly from the event log, so it projects nothing here
-          // (pre-existing behavior — confirmed, not a gap being fixed).
+          // History-only decision record for automatic (non-park) route moves;
+          // route-history readers (listTicketRouteDecisions et al.) read it
+          // directly from the event log, so no projection is needed here.
           break;
         }
         case "TicketParked": {

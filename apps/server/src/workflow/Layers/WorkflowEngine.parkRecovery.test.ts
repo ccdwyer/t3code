@@ -719,6 +719,203 @@ recoverNormalLayer("recovered continuation runs retries normally when not parked
 });
 
 // ---------------------------------------------------------------------------
+// (A.5b / round-3 NEW-1) A recovered continuation that HANDS OFF to
+// completePipelineFrom for a SUBSEQUENT multi-attempt step must also stop
+// dispatching new retry attempts once an external park lands. This exercises the
+// INTRA-step retry loop's per-dispatch token guard in completePipelineFrom —
+// distinct from the recovered-step retry loop in continueRecoveredPipeline
+// (A.5). The recovered "code" step COMPLETES, handing off to completePipelineFrom
+// for "test" (maxAttempts 3); "test" attempt 1 gates, a park lands, the gate
+// releases → the intra-step guard trips before attempt 2: no further StepStarted,
+// the run closes superseded, the ticket stays parked.
+// ---------------------------------------------------------------------------
+
+const completeFromGuardLayer = it.layer(baseLayer(gatedRetryExecutorLayer));
+
+completeFromGuardLayer(
+  "completePipelineFrom retry loop aborts on external park (recovery handoff)",
+  (it) => {
+    it.effect(
+      "no second StepStarted for the subsequent step; run closes superseded; ticket stays parked",
+      () =>
+        Effect.gen(function* () {
+          const registry = yield* BoardRegistry;
+          yield* registry.register(
+            "b-cpf-guard" as never,
+            {
+              name: "cpf-guard",
+              lanes: [
+                {
+                  key: "impl",
+                  name: "Impl",
+                  entry: "auto",
+                  pipeline: [
+                    {
+                      key: "code",
+                      type: "agent",
+                      agent: { instance: "claude_main", model: "sonnet" },
+                      instruction: "do it",
+                    },
+                    {
+                      key: "test",
+                      type: "agent",
+                      agent: { instance: "claude_main", model: "sonnet" },
+                      instruction: "test it",
+                      // 3 attempts: attempt 1 gates in the executor; the intra-step
+                      // guard must stop attempt 2 once the park lands.
+                      retry: { maxAttempts: 3 },
+                      on: {
+                        failure: {
+                          park: "issue",
+                          label: "Hit a snag",
+                          actions: [{ label: "Retry", to: "impl" }],
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            } as never,
+          );
+
+          const engine = yield* WorkflowEngine;
+          const committer = yield* WorkflowEventCommitter;
+          const read = yield* WorkflowReadModel;
+          yield* commitRecoveredCodeContext("b-cpf-guard", "ticket-cpf", "tok-cpf");
+
+          const executor = (yield* StepExecutor) as GatedRetryExecutor;
+
+          // Recovered "code" COMPLETES → hands off to completePipelineFrom for
+          // "test" at the next index. Drive on a child fiber: test attempt 1
+          // dispatches (StepStarted) and gates in the executor.
+          const fiber = yield* engine
+            .completeRecoveredStep("ticket-cpf-run" as never, { _tag: "completed" }, undefined)
+            .pipe(Effect.forkChild);
+
+          yield* awaitTicketWhere("ticket-cpf", () => executor.calls.count >= 1);
+          const startsAtGate = (yield* eventsFor("ticket-cpf")).filter(
+            (event) => event.type === "StepStarted",
+          ).length;
+          // code (pre-committed) + test attempt 1 = 2.
+          assert.equal(startsAtGate, 2);
+
+          // Land an external park mid-continuation: nulls the token, status=parked.
+          yield* committer.commit({
+            type: "TicketParked",
+            eventId: "evt-cpf-park",
+            ticketId: "ticket-cpf",
+            occurredAt: "2026-07-22T00:00:05.000Z",
+            payload: {
+              substate: "issue",
+              label: "Externally parked",
+              reason: "external park",
+              parkOrigin: '{"src":"event","fp":"fp-cpf"}',
+              actionsSnapshot: [],
+            },
+          } as never);
+
+          // Release: attempt 1 fails, then the intra-step retry guard sees the
+          // nulled token and abandons — attempt 2 never starts.
+          yield* executor.releaseGate();
+          yield* Fiber.join(fiber).pipe(Effect.exit);
+          yield* settle;
+
+          const events = yield* eventsFor("ticket-cpf");
+          const startsAfter = events.filter((event) => event.type === "StepStarted").length;
+          assert.equal(startsAfter, 2);
+          assert.isDefined(
+            events.find(
+              (event) =>
+                event.type === "PipelineCompleted" && event.payload.result === "superseded",
+            ),
+          );
+
+          const detail = yield* read.getTicketDetail("ticket-cpf" as never);
+          assert.equal(detail?.ticket.status, "parked");
+          assert.equal(detail?.ticket.currentLaneEntryToken, null);
+        }),
+    );
+  },
+);
+
+// Regression control: with NO park, completePipelineFrom's retry loop dispatches
+// every attempt of the subsequent step — the added per-dispatch token guard must
+// not spuriously abort a still-current run.
+const completeFromNormalLayer = it.layer(
+  baseLayer(makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" })).layer),
+);
+
+completeFromNormalLayer(
+  "completePipelineFrom retry loop runs every attempt when not parked (recovery handoff)",
+  (it) => {
+    it.effect(
+      "the subsequent step dispatches all 3 attempts and parks via the normal failure route",
+      () =>
+        Effect.gen(function* () {
+          const registry = yield* BoardRegistry;
+          yield* registry.register(
+            "b-cpf-normal" as never,
+            {
+              name: "cpf-normal",
+              lanes: [
+                {
+                  key: "impl",
+                  name: "Impl",
+                  entry: "auto",
+                  pipeline: [
+                    {
+                      key: "code",
+                      type: "agent",
+                      agent: { instance: "claude_main", model: "sonnet" },
+                      instruction: "do it",
+                    },
+                    {
+                      key: "test",
+                      type: "agent",
+                      agent: { instance: "claude_main", model: "sonnet" },
+                      instruction: "test it",
+                      retry: { maxAttempts: 3 },
+                      on: {
+                        failure: {
+                          park: "issue",
+                          label: "Hit a snag",
+                          actions: [{ label: "Retry", to: "impl" }],
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            } as never,
+          );
+
+          const engine = yield* WorkflowEngine;
+          const read = yield* WorkflowReadModel;
+          yield* commitRecoveredCodeContext("b-cpf-normal", "ticket-cpfn", "tok-cpfn");
+
+          yield* engine.completeRecoveredStep(
+            "ticket-cpfn-run" as never,
+            { _tag: "completed" },
+            undefined,
+          );
+          yield* settle;
+
+          const events = yield* eventsFor("ticket-cpfn");
+          const starts = events.filter((event) => event.type === "StepStarted").length;
+          // code (pre-committed) + test attempts 1, 2, 3 = 4.
+          assert.equal(starts, 4);
+
+          const detail = yield* read.getTicketDetail("ticket-cpfn" as never);
+          assert.equal(detail?.ticket.status, "parked");
+          assert.equal(detail?.ticket.currentLaneEntryToken, null);
+          // Parked via the normal failure route (retries exhausted), not superseded.
+          assert.isDefined(events.find((event) => event.type === "TicketParked"));
+        }),
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // (A.6 / NEW-1 residual) The recovered continuation's token guard covers SCRIPT
 // steps too, not just agent steps. A recovered agent "code" step whose lane has
 // a SCRIPT "deploy" next-step: when the ticket is parked before the continuation

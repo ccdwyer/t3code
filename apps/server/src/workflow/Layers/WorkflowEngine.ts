@@ -1209,6 +1209,30 @@ const make = Effect.gen(function* () {
             attempt,
           );
           while (stepOutcome.result === "failed" && !stepOutcome.noRetry && attempt < maxAttempts) {
+            // Intra-step retry guard: each retry attempt is a NEW StepStarted +
+            // fresh agent/script work, so re-read the lane-entry token before
+            // dispatching it. A LIVE pipeline is already protected — an external
+            // park interrupts its tracked fiber — but a RECOVERY continuation runs
+            // untracked (not in runningPipelines), so `Fiber.interrupt` is a no-op
+            // and only this token re-read stops the loop from starting attempt 2+
+            // on a since-parked/moved row. Kept UNCONDITIONAL (not recovery-only):
+            // the extra point-read on the live path is negligible and a single
+            // invariant — "every retry dispatch re-checks the token" — is simpler
+            // and safer than a mode flag. On drift, close the run `superseded`
+            // (a PipelineStarted exists for it) and stop, mirroring the recovery
+            // retry guard's `abandonSuperseded`. PipelineCompleted is parked-safe
+            // (it writes only projection_pipeline_run.status, never the ticket
+            // status). ACCEPTED RESIDUAL: attempt 1, already dispatched before this
+            // guard, may finish post-park — the same one-dispatched-step residual
+            // the recovery/inter-step guards accept.
+            if ((yield* currentToken(ticketId)) !== laneEntryToken) {
+              yield* commit({
+                type: "PipelineCompleted",
+                ticketId,
+                payload: { pipelineRunId, result: "superseded" },
+              });
+              return;
+            }
             attempt += 1;
             stepOutcome = yield* runStep(
               ticketId,

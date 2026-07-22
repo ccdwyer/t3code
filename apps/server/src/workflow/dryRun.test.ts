@@ -270,4 +270,152 @@ layer("simulateBoardRoute", (it) => {
       assert.isTrue(run.notes.some((note) => note.includes("captured step output")));
     }),
   );
+
+  // ── Park-target dry-run tests (Task 10) ──────────────────────────────────
+
+  const parkBoard = {
+    name: "Park board",
+    lanes: [
+      {
+        key: "work",
+        name: "Work",
+        entry: "auto",
+        pipeline: [
+          {
+            key: "code",
+            type: "script",
+            run: "true",
+            on: {
+              blocked: {
+                park: "issue",
+                label: "Step blocked",
+                actions: [{ label: "Retry", to: "work" }],
+              },
+            },
+          },
+        ],
+        // Never matches (lane.runCount never reaches 999) — present so the
+        // failure scenario walks through the transitions block before
+        // falling through to lane.on, exercising the real precedence order.
+        transitions: [{ when: { "==": [{ var: "lane.runCount" }, 999] }, to: "done" }],
+        on: {
+          success: "done",
+          failure: {
+            park: "waiting",
+            label: "Needs manual review",
+            actions: [{ label: "Retry", to: "work" }],
+          },
+        },
+      },
+      { key: "done", name: "Done", entry: "manual", terminal: true },
+    ],
+  } as unknown as WorkflowDefinition;
+
+  it.effect("a step.on park hop ends the walk as parked with no toLane", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition: parkBoard,
+        startLane: "work" as never,
+        scenario: "blocked",
+        evaluator,
+      });
+      assert.equal(run.end, "parked");
+      assert.equal(run.endLane, "work");
+      assert.lengthOf(run.hops, 1);
+      const hop = run.hops[0];
+      assert.equal(hop?.fromLane, "work");
+      assert.equal(hop?.source, "step_on");
+      assert.equal(hop?.viaStepKey, "code");
+      assert.isUndefined(hop?.toLane);
+      assert.equal(hop?.park?.substate, "issue");
+      assert.equal(hop?.park?.label, "Step blocked");
+    }),
+  );
+
+  it.effect("a lane.on park hop ends the walk as parked with no toLane", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition: parkBoard,
+        startLane: "work" as never,
+        scenario: "failure",
+        evaluator,
+      });
+      assert.equal(run.end, "parked");
+      assert.equal(run.endLane, "work");
+      assert.lengthOf(run.hops, 1);
+      const hop = run.hops[0];
+      assert.equal(hop?.fromLane, "work");
+      assert.equal(hop?.source, "lane_on");
+      assert.isUndefined(hop?.toLane);
+      assert.equal(hop?.park?.substate, "waiting");
+      assert.equal(hop?.park?.label, "Needs manual review");
+    }),
+  );
+
+  it.effect(
+    "the success scenario on the same board still routes to a real lane, unaffected by the parks",
+    () =>
+      Effect.gen(function* () {
+        const evaluator = yield* PredicateEvaluator;
+        const run = yield* simulateBoardRoute({
+          definition: parkBoard,
+          startLane: "work" as never,
+          scenario: "success",
+          evaluator,
+        });
+        assert.equal(run.end, "terminal");
+        assert.equal(run.endLane, "done");
+        assert.deepEqual(
+          run.hops.map((hop) => `${hop.fromLane}>${hop.toLane}:${hop.source}`),
+          ["work>done:lane_on"],
+        );
+        assert.isUndefined(run.hops[0]?.park);
+      }),
+  );
+
+  it.effect(
+    "a lane_transition park hop ends the walk as parked, matching the engine's precedence",
+    () =>
+      Effect.gen(function* () {
+        const evaluator = yield* PredicateEvaluator;
+        const transitionParkBoard = {
+          name: "Transition park board",
+          lanes: [
+            {
+              key: "review",
+              name: "Review",
+              entry: "auto",
+              pipeline: [{ key: "check", type: "script", run: "true" }],
+              transitions: [
+                {
+                  when: true,
+                  to: {
+                    park: "issue",
+                    label: "Needs a human",
+                    actions: [{ label: "Retry", to: "review" }],
+                  },
+                },
+              ],
+            },
+          ],
+        } as unknown as WorkflowDefinition;
+        const run = yield* simulateBoardRoute({
+          definition: transitionParkBoard,
+          startLane: "review" as never,
+          scenario: "success",
+          evaluator,
+        });
+        assert.equal(run.end, "parked");
+        assert.equal(run.endLane, "review");
+        assert.lengthOf(run.hops, 1);
+        const hop = run.hops[0];
+        assert.equal(hop?.source, "lane_transition");
+        assert.equal(hop?.matchedTransitionIndex, 0);
+        assert.isUndefined(hop?.toLane);
+        assert.equal(hop?.park?.substate, "issue");
+        assert.equal(hop?.park?.label, "Needs a human");
+      }),
+  );
 });

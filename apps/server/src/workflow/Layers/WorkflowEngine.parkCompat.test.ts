@@ -18,11 +18,9 @@
 // a parked ticket degrades that ticket's actions to "unavailable" rather than
 // executing a stale/mismatched action, while a plain move still rescues it.
 import { assert, it } from "@effect/vitest";
-import { WorkflowDefinition, WorkflowEventId, type StepOutcome } from "@t3tools/contracts";
+import { WorkflowEventId, type StepOutcome } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Ref from "effect/Ref";
-import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
@@ -38,6 +36,7 @@ import { WorkflowProjectionPipeline } from "../Services/WorkflowProjectionPipeli
 import { WorkflowReadModel, type TicketDetail } from "../Services/WorkflowReadModel.ts";
 import { WorkflowFoundationLive } from "../WorkflowFoundationLive.ts";
 import { ApprovalGateLive } from "./ApprovalGate.ts";
+import { BoardRegistryLive } from "./BoardRegistry.ts";
 import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import { WorkflowBoardSaveLocksLive } from "./WorkflowBoardSaveLocks.ts";
 import { WorkflowEventCommitterLive } from "./WorkflowEventCommitter.ts";
@@ -46,9 +45,7 @@ import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowProjectionPipelineLive } from "./WorkflowProjectionPipeline.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 
-// ── Harness (copied from WorkflowEngine.park.test.ts — a lint-free registry so
-//    these engine tests can register raw definitions, including the pinned
-//    legacy fixture below, directly). ─────────────────────────────────────────
+// ── Harness (copied from WorkflowEngine.park.test.ts). ──────────────────────
 
 const makeScriptedExecutor = (
   outcomeForCall: (call: number) => StepOutcome,
@@ -64,52 +61,6 @@ const makeScriptedExecutor = (
   return { calls, layer };
 };
 
-const decodeDefinition = Schema.decodeUnknownEffect(WorkflowDefinition);
-const isDefinition = Schema.is(WorkflowDefinition);
-
-const LintFreeBoardRegistry = Layer.effect(
-  BoardRegistry,
-  Effect.gen(function* () {
-    const store = yield* Ref.make<Map<string, WorkflowDefinition>>(new Map());
-    return {
-      register: (boardId, raw) =>
-        Effect.gen(function* () {
-          const definition = isDefinition(raw)
-            ? raw
-            : yield* decodeDefinition(raw).pipe(Effect.orDie);
-          yield* Ref.update(store, (current) =>
-            new Map(current).set(boardId as string, definition),
-          );
-          return definition;
-        }),
-      unregister: (boardId) =>
-        Ref.update(store, (current) => {
-          const next = new Map(current);
-          next.delete(boardId as string);
-          return next;
-        }),
-      getDefinition: (boardId) =>
-        Ref.get(store).pipe(Effect.map((current) => current.get(boardId as string) ?? null)),
-      listDefinitions: () =>
-        Ref.get(store).pipe(
-          Effect.map((current) =>
-            Array.from(current.entries()).map(([boardId, definition]) => ({
-              boardId: boardId as never,
-              definition,
-            })),
-          ),
-        ),
-      getLane: (boardId, laneKey) =>
-        Ref.get(store).pipe(
-          Effect.map(
-            (current) =>
-              current.get(boardId as string)?.lanes.find((lane) => lane.key === laneKey) ?? null,
-          ),
-        ),
-    } satisfies BoardRegistryShape;
-  }),
-);
-
 const baseLayer = (executor: Layer.Layer<StepExecutor>) =>
   WorkflowEngineLayer.pipe(
     Layer.provideMerge(WorkflowEventCommitterLive),
@@ -122,7 +73,7 @@ const baseLayer = (executor: Layer.Layer<StepExecutor>) =>
     ),
     Layer.provideMerge(executor),
     Layer.provideMerge(ApprovalGateLive),
-    Layer.provideMerge(LintFreeBoardRegistry),
+    Layer.provideMerge(BoardRegistryLive),
     Layer.provideMerge(PredicateEvaluatorLive),
     Layer.provideMerge(WorkflowRoutingContextBuilderLive),
     Layer.provideMerge(WorkflowBoardSaveLocksLive),

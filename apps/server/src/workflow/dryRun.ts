@@ -5,6 +5,7 @@ import type {
   WorkflowDryRunResult,
   WorkflowDryRunScenario,
   WorkflowLane,
+  WorkflowRouteTarget,
 } from "@t3tools/contracts";
 import { isParkTarget } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -36,6 +37,17 @@ const stepStatusForResult = (result: WorkflowDryRunScenario): string =>
 // as "blocked" before the route is decided.
 const ticketStatusForResult = (result: WorkflowDryRunScenario): string =>
   result === "success" ? "running" : "blocked";
+
+// Builds a dry-run hop for a resolved route target, mirroring the engine's
+// RouteDecision: a bare lane key becomes a `toLane` hop, a park target
+// becomes a `park` hop with no `toLane` (the walk stays in `fromLane`).
+const hopForRouteTarget = (
+  target: WorkflowRouteTarget,
+  base: Omit<WorkflowDryRunHop, "toLane" | "park">,
+): WorkflowDryRunHop =>
+  isParkTarget(target)
+    ? { ...base, park: { substate: target.park, label: target.label } }
+    : { ...base, toLane: target };
 
 export const simulateBoardRoute = ({
   definition,
@@ -121,16 +133,13 @@ export const simulateBoardRoute = ({
           output: null,
         };
         const target = step.on?.[result];
-        // TODO(park): Task 10 — a park target here has no stored occurrence
-        // yet; treat it as "no route" until dry-run park handling lands.
-        if (target !== undefined && !isParkTarget(target)) {
-          decision = {
+        if (target !== undefined) {
+          decision = hopForRouteTarget(target, {
             fromLane: currentKey,
-            toLane: target,
             source: "step_on",
             viaStepKey: step.key,
             result,
-          };
+          });
           break;
         }
         if (result !== "success") {
@@ -152,15 +161,10 @@ export const simulateBoardRoute = ({
         // whose only way out is output-conditioned is reported as an
         // (indeterminate) route rather than a false "strands tickets" dead end.
         let outputGatedFallback: {
-          readonly toLane: LaneKey;
+          readonly target: WorkflowRouteTarget;
           readonly index: number;
         } | null = null;
         for (const [index, transition] of (lane.transitions ?? []).entries()) {
-          if (isParkTarget(transition.to)) {
-            // TODO(park): Task 10 — no stored transition targets a park yet;
-            // treat it as unroutable-for-now rather than simulate it.
-            continue;
-          }
           const paths = inspectJsonLogicRule(transition.when).variablePaths;
           if (paths.includes("status")) {
             pushNote(
@@ -185,7 +189,7 @@ export const simulateBoardRoute = ({
             // error — skip it so it doesn't masquerade as a routing fault.
             if (onlyOutputGated) {
               if (outputGatedFallback === null) {
-                outputGatedFallback = { toLane: transition.to, index };
+                outputGatedFallback = { target: transition.to, index };
               }
               continue;
             }
@@ -195,19 +199,18 @@ export const simulateBoardRoute = ({
             return finish("no_route", currentKey);
           }
           if (evaluation.result) {
-            decision = {
+            decision = hopForRouteTarget(transition.to, {
               fromLane: currentKey,
-              toLane: transition.to,
               source: "lane_transition",
               matchedTransitionIndex: index,
               result,
-            };
+            });
             break;
           }
           // Didn't match — but if it could only match on captured output the
           // dry run cannot know, remember it as a possible exit.
           if (onlyOutputGated && outputGatedFallback === null) {
-            outputGatedFallback = { toLane: transition.to, index };
+            outputGatedFallback = { target: transition.to, index };
           }
         }
 
@@ -218,30 +221,33 @@ export const simulateBoardRoute = ({
           pushNote(
             `Lane "${currentKey as string}" routes out only via captured step output the dry run cannot evaluate — assuming transition #${outputGatedFallback.index + 1} can match.`,
           );
-          decision = {
+          decision = hopForRouteTarget(outputGatedFallback.target, {
             fromLane: currentKey,
-            toLane: outputGatedFallback.toLane,
             source: "lane_transition",
             matchedTransitionIndex: outputGatedFallback.index,
             result,
-          };
+          });
         }
       }
 
       if (decision === null) {
         const target = lane.on?.[result];
-        // TODO(park): Task 10 — treat a park target as no route for now.
-        if (target !== undefined && !isParkTarget(target)) {
-          decision = { fromLane: currentKey, toLane: target, source: "lane_on", result };
+        if (target !== undefined) {
+          decision = hopForRouteTarget(target, { fromLane: currentKey, source: "lane_on", result });
         }
       }
 
       if (decision === null) {
         return finish("no_route", currentKey);
       }
+      if (decision.park !== undefined) {
+        hops.push(decision);
+        return finish("parked", currentKey);
+      }
       if (decision.toLane === undefined) {
-        // TODO(park): Task 10 — no code path constructs a park hop yet, so
-        // this is unreachable today; guards satisfy the now-optional toLane.
+        // Unreachable: `hopForRouteTarget` always sets exactly one of
+        // `toLane`/`park`, and the `park` branch above already returned.
+        // Kept as a defensive guard against the contract's optional `toLane`.
         return finish("no_route", currentKey);
       }
       hops.push(decision);

@@ -1,4 +1,10 @@
-import { WorkflowDefinition, type WorkflowLane, type WorkflowStep } from "@t3tools/contracts";
+import {
+  isParkTarget,
+  WorkflowDefinition,
+  type WorkflowLane,
+  type WorkflowRouteTarget,
+  type WorkflowStep,
+} from "@t3tools/contracts";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -62,24 +68,57 @@ export interface LintContext {
   readonly selectorSchemaFor?: (provider: string) => Schema.Decoder<any> | null;
 }
 
-const routingTargets = (lane: WorkflowLane): ReadonlyArray<string> => {
+const laneRouteTargets = (lane: WorkflowLane): ReadonlyArray<WorkflowRouteTarget> => {
   const on = lane.on;
   if (!on) {
     return [];
   }
-  return [on.success, on.failure, on.blocked].flatMap((target) =>
-    target === undefined ? [] : [target as string],
+  return [on.success, on.failure, on.blocked].filter(
+    (target): target is WorkflowRouteTarget => target !== undefined,
   );
 };
 
-const stepRoutingTargets = (step: WorkflowStep): ReadonlyArray<string> => {
+const stepRouteTargets = (step: WorkflowStep): ReadonlyArray<WorkflowRouteTarget> => {
   const on = step.on;
   if (!on) {
     return [];
   }
-  return [on.success, on.failure, on.blocked].flatMap((target) =>
-    target === undefined ? [] : [target as string],
+  return [on.success, on.failure, on.blocked].filter(
+    (target): target is WorkflowRouteTarget => target !== undefined,
   );
+};
+
+// A route target is either a bare lane key (validated directly against
+// `allKeys`) or a park target — a park is NOT itself a lane ref (parking in
+// place has no destination lane), but each of its `actions[].to` IS a lane
+// ref and must be validated the same way a bare target would be. `describe`
+// builds the origin-specific message for a bare-lane-key miss; `describeAction`
+// builds the message for a park action whose `to` misses.
+const pushRouteTargetLintErrors = (
+  errors: LintError[],
+  target: WorkflowRouteTarget,
+  allKeys: ReadonlySet<string>,
+  describe: (missingLane: string) => string,
+  describeAction: (missingLane: string, actionLabel: string) => string,
+  extra: Omit<LintError, "code" | "message">,
+): void => {
+  if (isParkTarget(target)) {
+    for (const action of target.actions) {
+      const to = action.to as string;
+      if (!allKeys.has(to)) {
+        errors.push({
+          code: "missing_lane_ref",
+          message: describeAction(to, action.label),
+          ...extra,
+        });
+      }
+    }
+    return;
+  }
+  const laneKeyTarget = target as string;
+  if (!allKeys.has(laneKeyTarget)) {
+    errors.push({ code: "missing_lane_ref", message: describe(laneKeyTarget), ...extra });
+  }
 };
 
 export const encodeWorkflowDefinitionJson = Schema.encodeSync(
@@ -213,15 +252,17 @@ export const lintWorkflowDefinition = (
       stepKeys.add(stepKey);
       stepsByKey.set(stepKey, step);
 
-      for (const target of stepRoutingTargets(step)) {
-        if (!allKeys.has(target)) {
-          errors.push({
-            code: "missing_lane_ref",
-            laneKey,
-            stepKey,
-            message: `Step "${stepKey}" in lane "${laneKey}" routes to missing lane "${target}"`,
-          });
-        }
+      for (const target of stepRouteTargets(step)) {
+        pushRouteTargetLintErrors(
+          errors,
+          target,
+          allKeys,
+          (missingLane) =>
+            `Step "${stepKey}" in lane "${laneKey}" routes to missing lane "${missingLane}"`,
+          (missingLane, actionLabel) =>
+            `Step "${stepKey}" in lane "${laneKey}" park action "${actionLabel}" targets missing lane "${missingLane}"`,
+          { laneKey, stepKey },
+        );
       }
 
       // continueSession resumes an agent's own provider session across
@@ -431,14 +472,16 @@ export const lintWorkflowDefinition = (
       }
     }
 
-    for (const target of routingTargets(lane)) {
-      if (!allKeys.has(target)) {
-        errors.push({
-          code: "missing_lane_ref",
-          laneKey,
-          message: `Lane "${laneKey}" routes to missing lane "${target}"`,
-        });
-      }
+    for (const target of laneRouteTargets(lane)) {
+      pushRouteTargetLintErrors(
+        errors,
+        target,
+        allKeys,
+        (missingLane) => `Lane "${laneKey}" routes to missing lane "${missingLane}"`,
+        (missingLane, actionLabel) =>
+          `Lane "${laneKey}" park action "${actionLabel}" targets missing lane "${missingLane}"`,
+        { laneKey },
+      );
     }
 
     for (const action of lane.actions ?? []) {
@@ -452,13 +495,16 @@ export const lintWorkflowDefinition = (
     }
 
     for (const [eventIndex, eventMatcher] of (lane.onEvent ?? []).entries()) {
-      if (!allKeys.has(eventMatcher.to as string)) {
-        errors.push({
-          code: "missing_lane_ref",
-          laneKey,
-          message: `Lane "${laneKey}" onEvent ${eventIndex} ("${eventMatcher.name}") targets missing lane "${eventMatcher.to}"`,
-        });
-      }
+      pushRouteTargetLintErrors(
+        errors,
+        eventMatcher.to,
+        allKeys,
+        (missingLane) =>
+          `Lane "${laneKey}" onEvent ${eventIndex} ("${eventMatcher.name}") targets missing lane "${missingLane}"`,
+        (missingLane, actionLabel) =>
+          `Lane "${laneKey}" onEvent ${eventIndex} ("${eventMatcher.name}") park action "${actionLabel}" targets missing lane "${missingLane}"`,
+        { laneKey },
+      );
       if (eventMatcher.when !== undefined) {
         const inspection = inspectJsonLogicRule(eventMatcher.when);
         for (const issue of inspection.issues) {
@@ -488,14 +534,16 @@ export const lintWorkflowDefinition = (
     }
 
     for (const [transitionIndex, transition] of (lane.transitions ?? []).entries()) {
-      if (!allKeys.has(transition.to as string)) {
-        errors.push({
-          code: "missing_lane_ref",
-          laneKey,
-          transitionIndex,
-          message: `Lane "${laneKey}" transition ${transitionIndex} routes to missing lane "${transition.to}"`,
-        });
-      }
+      pushRouteTargetLintErrors(
+        errors,
+        transition.to,
+        allKeys,
+        (missingLane) =>
+          `Lane "${laneKey}" transition ${transitionIndex} routes to missing lane "${missingLane}"`,
+        (missingLane, actionLabel) =>
+          `Lane "${laneKey}" transition ${transitionIndex} park action "${actionLabel}" targets missing lane "${missingLane}"`,
+        { laneKey, transitionIndex },
+      );
 
       const inspection = inspectJsonLogicRule(transition.when);
       for (const issue of inspection.issues) {
@@ -509,9 +557,11 @@ export const lintWorkflowDefinition = (
 
       // An auto lane that transitions back into itself re-runs its pipeline
       // every time the predicate matches; without lane.runCount in the
-      // predicate that loop has no bound and burns agent runs forever.
+      // predicate that loop has no bound and burns agent runs forever. A
+      // park target is terminal (no edge), so it can never be a self-loop.
       if (
         lane.entry === "auto" &&
+        !isParkTarget(transition.to) &&
         (transition.to as string) === laneKey &&
         !inspection.variablePaths.includes("lane.runCount")
       ) {
@@ -571,7 +621,11 @@ export const lintWorkflowDefinition = (
         break;
       }
       seen.add(cursorKey);
-      const next = cursor.on?.success as string | undefined;
+      // A park target is terminal for cycle purposes — it has no outgoing
+      // edge, so the traversal simply ends there (no cycle through it).
+      const nextTarget: WorkflowRouteTarget | undefined = cursor.on?.success;
+      const next: string | undefined =
+        nextTarget !== undefined && !isParkTarget(nextTarget) ? (nextTarget as string) : undefined;
       cursor = next ? byKey.get(next) : undefined;
     }
   }

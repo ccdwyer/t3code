@@ -885,6 +885,191 @@ describe("lintWorkflowDefinition lane actions", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Park-target lint tests (Task 10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("lintWorkflowDefinition park targets", () => {
+  it.effect("accepts a realistic collapsed-SDLC park-bearing board", () =>
+    Effect.gen(function* () {
+      // Planning: on.failure parks "issue" with a Retry (back into Planning)
+      // and a Back-to-backlog action — mirrors the default template's shape.
+      const definition = yield* decodeWorkflowDefinition(
+        base([
+          { key: "backlog", name: "Backlog", entry: "manual" },
+          {
+            key: "planning",
+            name: "Planning",
+            entry: "auto",
+            pipeline: [
+              {
+                key: "plan",
+                type: "agent",
+                agent: { instance: "claude_main", model: "sonnet" },
+                instruction: "plan it",
+              },
+            ],
+            on: {
+              failure: {
+                park: "issue",
+                label: "Planning failed",
+                actions: [
+                  { label: "Retry", to: "planning" },
+                  { label: "Back to backlog", to: "backlog" },
+                ],
+              },
+              success: "backlog",
+            },
+          },
+        ]),
+      );
+      assert.deepEqual(lintWorkflowDefinition(definition, ctx), []);
+    }),
+  );
+
+  it.effect("does not flag the park itself as a missing lane ref", () =>
+    Effect.gen(function* () {
+      const definition = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "planning",
+            name: "Planning",
+            entry: "auto",
+            pipeline: [{ key: "plan", type: "script", run: "true" }],
+            on: {
+              failure: { park: "issue", actions: [{ label: "Retry", to: "planning" }] },
+            },
+          },
+        ]),
+      );
+      const errors = lintWorkflowDefinition(definition, ctx);
+      // "issue"/"waiting" are substates, never lane keys — no missing_lane_ref
+      // should ever name them.
+      assert.isFalse(errors.some((e) => e.code === "missing_lane_ref"));
+    }),
+  );
+
+  it.effect("rejects a park action targeting a missing lane", () =>
+    Effect.gen(function* () {
+      const definition = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "planning",
+            name: "Planning",
+            entry: "auto",
+            pipeline: [{ key: "plan", type: "script", run: "true" }],
+            on: {
+              failure: {
+                park: "issue",
+                actions: [{ label: "Retry", to: "ghost-lane" }],
+              },
+            },
+          },
+        ]),
+      );
+      const errors = lintWorkflowDefinition(definition, ctx);
+      assert.isTrue(
+        errors.some(
+          (e) =>
+            e.code === "missing_lane_ref" &&
+            e.message.includes("Retry") &&
+            e.message.includes("ghost-lane"),
+        ),
+      );
+    }),
+  );
+
+  it.effect("accepts park targets at all four origin positions", () =>
+    Effect.gen(function* () {
+      const definition = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "planning",
+            name: "Planning",
+            entry: "auto",
+            pipeline: [
+              {
+                key: "plan",
+                type: "script",
+                run: "true",
+                // step.on
+                on: {
+                  blocked: {
+                    park: "waiting",
+                    actions: [{ label: "Unblock", to: "planning" }],
+                  },
+                },
+              },
+            ],
+            transitions: [
+              {
+                // transitions[].to
+                when: { "==": [{ var: "pipeline.result" }, "success"] },
+                to: { park: "waiting", actions: [{ label: "Continue", to: "backlog" }] },
+              },
+            ],
+            onEvent: [
+              {
+                // onEvent[].to
+                name: "ci.failed",
+                to: { park: "issue", actions: [{ label: "Investigate", to: "backlog" }] },
+              },
+            ],
+            // lane.on
+            on: {
+              failure: { park: "issue", actions: [{ label: "Retry", to: "planning" }] },
+            },
+          },
+          { key: "backlog", name: "Backlog", entry: "manual" },
+        ]),
+      );
+      assert.deepEqual(lintWorkflowDefinition(definition, ctx), []);
+    }),
+  );
+
+  it.effect("does not flag an auto-lane cycle when a park action targets its own lane", () =>
+    Effect.gen(function* () {
+      // A park is terminal for cycle purposes: neither the self-loop
+      // transition guard nor the auto-lane traversal should treat the park
+      // action's `to: "planning"` as an edge back into "planning".
+      const definition = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "planning",
+            name: "Planning",
+            entry: "auto",
+            pipeline: [{ key: "plan", type: "script", run: "true" }],
+            on: {
+              success: { park: "waiting", actions: [{ label: "Retry", to: "planning" }] },
+            },
+          },
+        ]),
+      );
+      const errors = lintWorkflowDefinition(definition, ctx);
+      assert.isFalse(errors.some((e) => e.code === "auto_lane_cycle"));
+    }),
+  );
+
+  it.effect("schema decode already rejects a park target with empty actions", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.exit(
+        decodeWorkflowDefinition(
+          base([
+            {
+              key: "planning",
+              name: "Planning",
+              entry: "auto",
+              pipeline: [{ key: "plan", type: "script", run: "true" }],
+              on: { failure: { park: "issue", actions: [] } },
+            },
+          ]),
+        ),
+      );
+      assert.strictEqual(result._tag, "Failure");
+    }),
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Source lint tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -895,7 +1080,13 @@ const selectorCtx = {
   providerInstanceExists: () => true,
   instructionFileExists: () => true,
   selectorSchemaFor: (p: string) =>
-    p === "github" ? GithubSelector : p === "asana" ? AsanaSelector : p === "jira" ? JiraSelector : null,
+    p === "github"
+      ? GithubSelector
+      : p === "asana"
+        ? AsanaSelector
+        : p === "jira"
+          ? JiraSelector
+          : null,
 };
 
 const twoLanes = [

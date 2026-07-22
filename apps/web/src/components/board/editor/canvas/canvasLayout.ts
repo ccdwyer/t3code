@@ -1,5 +1,7 @@
 import type { WorkflowDefinitionEncoded } from "@t3tools/contracts";
 
+import { isParkRouteTarget } from "~/workflow/editorModel";
+
 import {
   classifyEdge,
   clearBottomForSpan,
@@ -66,7 +68,10 @@ const laneDepths = (definition: WorkflowDefinitionEncoded): ReadonlyMap<string, 
     const laneIndex = laneOrder.get(laneKey) ?? 0;
     const targets = new Set<string>();
     const add = (to: unknown) => {
-      if (to === undefined) {
+      // A park target routes in place (never to another lane), so it forms no
+      // depth edge. Skip it explicitly via the shared type guard rather than
+      // relying on `String({park})` → "[object Object]" missing `laneOrder`.
+      if (to === undefined || isParkRouteTarget(to as Parameters<typeof isParkRouteTarget>[0])) {
         return;
       }
       const target = String(to);
@@ -187,6 +192,12 @@ const computeDetourExtent = (
 
   const spans: DetourSpan[] = [];
   const addSpan = (fromKey: string, to: unknown) => {
+    // Park targets route in place — no detour span. Skip via the type guard
+    // (mirrors `deriveRoutingEdges` in RoutingEdges.tsx) rather than leaning on
+    // `String({park})` accidentally failing the `rectOf` lookup.
+    if (isParkRouteTarget(to as Parameters<typeof isParkRouteTarget>[0])) {
+      return;
+    }
     const targetKey = String(to);
     if (targetKey === fromKey) {
       return;

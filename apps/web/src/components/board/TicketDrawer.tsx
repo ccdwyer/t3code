@@ -192,6 +192,7 @@ export function TicketDrawer({
   onMove,
   onRunLane,
   onParkAction,
+  parkActionPending = false,
   projectId,
   cwd,
 }: {
@@ -208,6 +209,10 @@ export function TicketDrawer({
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  // True while a park action for THIS ticket is in flight from any surface
+  // (card / strip / drawer). Shared from the route so every recovery control
+  // for the ticket disables together, not just the surface that was clicked.
+  readonly parkActionPending?: boolean | undefined;
   readonly projectId?: ProjectId | undefined;
   readonly cwd?: string | undefined;
 }) {
@@ -441,6 +446,7 @@ export function TicketDrawer({
           parked={detail.ticket.parked}
           now={now}
           onParkAction={onParkAction}
+          parkActionPending={parkActionPending}
         />
       ) : null}
 
@@ -516,6 +522,7 @@ export function TicketDrawer({
           onMove={onMove}
           onRunLane={onRunLane}
           onParkAction={onParkAction}
+          parkActionPending={parkActionPending}
           now={now}
           onClose={() => setFullscreen(false)}
         />
@@ -717,6 +724,7 @@ function TicketParkedBanner({
   parked,
   now,
   onParkAction,
+  parkActionPending = false,
 }: {
   readonly ticketId: string;
   readonly parked: TicketDrawerParkedView;
@@ -724,9 +732,10 @@ function TicketParkedBanner({
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  readonly parkActionPending?: boolean | undefined;
 }) {
   const aging = ticketAging(
-    { status: "parked", updatedAt: parked.parkedAt, parked: { substate: parked.substate } },
+    { status: "parked", parked: { substate: parked.substate, parkedAt: parked.parkedAt } },
     now,
   );
   const parkActions = parked.actions;
@@ -760,6 +769,10 @@ function TicketParkedBanner({
   };
 
   const isIssue = parked.substate === "issue";
+  // Disable while EITHER the local double-click guard or the shared route-level
+  // in-flight flag is set, so this banner's buttons go dead the moment the card
+  // or strip fires an action for the same ticket (belt-and-suspenders).
+  const disabled = pending || parkActionPending;
 
   return (
     <div
@@ -801,7 +814,7 @@ function TicketParkedBanner({
           <Button
             size="xs"
             variant="secondary"
-            disabled={pending}
+            disabled={disabled}
             onClick={() => runAction(primary.index)}
             {...(primary.action.hint !== undefined ? { title: primary.action.hint } : {})}
           >
@@ -814,7 +827,7 @@ function TicketParkedBanner({
                   <Button
                     size="icon-xs"
                     variant="ghost"
-                    disabled={pending}
+                    disabled={disabled}
                     aria-label="More recovery actions"
                     data-testid="ticket-parked-actions-overflow"
                   />
@@ -1545,6 +1558,7 @@ export function TicketFullscreen({
   onMove,
   onRunLane,
   onParkAction,
+  parkActionPending = false,
   now,
   onClose,
 }: {
@@ -1574,6 +1588,7 @@ export function TicketFullscreen({
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  readonly parkActionPending?: boolean | undefined;
   readonly now: number;
   readonly onClose: () => void;
 }) {
@@ -1649,6 +1664,7 @@ export function TicketFullscreen({
           parked={ticket.parked}
           now={now}
           onParkAction={onParkAction}
+          parkActionPending={parkActionPending}
         />
       ) : null}
 

@@ -474,6 +474,28 @@ describe("TicketDrawer parked banner", () => {
     expect(markup).toContain('data-testid="ticket-parked-actions-overflow"');
   });
 
+  it("disables the banner's recovery buttons while a shared park action is in flight", () => {
+    // Scope to the banner's action zone — the drawer footer has its own always
+    // -disabled controls (e.g. Run lane), so we inspect only the parked actions.
+    const bannerActions = (markup: string): string => {
+      const start = markup.indexOf('data-testid="ticket-parked-actions"');
+      const end = markup.indexOf("</div>", start);
+      return markup.slice(start, end);
+    };
+    const render = (parkActionPending: boolean) =>
+      renderToStaticMarkup(
+        <TicketDrawer
+          detail={parkedTicketDetail}
+          onApprove={async () => undefined}
+          onRunLane={() => {}}
+          onParkAction={async () => {}}
+          parkActionPending={parkActionPending}
+        />,
+      );
+    expect(bannerActions(render(false))).not.toContain('disabled=""');
+    expect(bannerActions(render(true))).toContain('disabled=""');
+  });
+
   it("wires the primary action (index 0) with its hint and renders an overflow trigger for the rest — the same dispatchParkAction/splitParkActions helpers whose exact-args forwarding is unit-tested in TicketCard.test.tsx", () => {
     const markup = renderToStaticMarkup(
       <TicketDrawer

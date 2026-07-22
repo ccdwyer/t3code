@@ -68,6 +68,50 @@ describe("canvasLayout", () => {
     ]);
   });
 
+  it("treats park route targets as in-place (no depth edge, no detour span)", () => {
+    // Gate-3 finding 4: park targets must be skipped via the explicit
+    // isParkRouteTarget guard, not stringified into a "[object Object]" lane
+    // that silently misses lookups. A definition whose only forward routes are
+    // parks should layer identically to one with those routes removed.
+    const withParks = {
+      name: "Parks",
+      lanes: [
+        {
+          key: "run",
+          name: "Run",
+          entry: "auto",
+          pipeline: [{ key: "impl", type: "agent" }],
+          on: {
+            success: "done",
+            failure: { park: "issue", label: "broke", actions: [{ label: "Retry", to: "run" }] },
+          },
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ],
+    } as never as WorkflowDefinitionEncoded;
+    const withoutParks = {
+      name: "Parks",
+      lanes: [
+        {
+          key: "run",
+          name: "Run",
+          entry: "auto",
+          pipeline: [{ key: "impl", type: "agent" }],
+          on: { success: "done" },
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ],
+    } as never as WorkflowDefinitionEncoded;
+    const heights = { run: 100, done: 100 };
+
+    const parked = computeCanvasLayout(withParks, 800, heights);
+    const plain = computeCanvasLayout(withoutParks, 800, heights);
+    expect(parked.lanes.map((lane) => [lane.laneKey, lane.x, lane.y])).toEqual(
+      plain.lanes.map((lane) => [lane.laneKey, lane.x, lane.y]),
+    );
+    expect(parked.height).toBe(plain.height);
+  });
+
   it("honors per-lane position overrides and leaves other lanes in their slots", () => {
     const layout = computeCanvasLayout(
       definition,

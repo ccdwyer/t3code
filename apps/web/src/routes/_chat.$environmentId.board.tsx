@@ -16,8 +16,9 @@ import {
   type WorkflowDefinitionEncoded,
   type WorkflowTicketDetailView,
 } from "@t3tools/contracts";
+import { RegistryContext } from "@effect/atom-react";
 import { DatabaseIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { BoardHeaderControls } from "../components/board/BoardHeaderControls";
 import { BoardView } from "../components/board/BoardView";
@@ -178,15 +179,41 @@ export interface BoardRouteParkActionInput {
  * `pendingTicketIds` is the in-flight guard: a ticket already mid-invocation
  * is a no-op (resolves immediately, RPC not re-sent) until the prior call
  * settles, so a doubled click/tap can't race two park actions for the same
- * ticket. The set lives in the route component (a ref, not React state —
- * this guard only needs to block re-entry, not trigger a re-render).
+ * ticket. It is also the source of truth for the shared DISABLE: the route
+ * mirrors it into reactive state so the card, the needs-you strip, and the
+ * drawer banner all disable that ticket's recovery controls while any one
+ * surface's invoke is in flight (a plain `Set` satisfies the guard shape).
  */
+export interface PendingParkActionGuard {
+  has(ticketId: string): boolean;
+  add(ticketId: string): unknown;
+  delete(ticketId: string): unknown;
+}
+
+/**
+ * A park-action rejection that means the board definition drifted out from
+ * under the rendered actions: the server re-resolves the action index against
+ * the CURRENT definition and fails with one of these typed messages when it no
+ * longer maps. On any of them the client must refresh the board so the stale
+ * inline buttons repair to the "actions unavailable" fallback instead of
+ * letting the user re-click into the same error. (Kept as a substring match on
+ * the surfaced message — the RPC squashes to a plain Error at the client edge.)
+ */
+export function isParkActionDriftError(message: string): boolean {
+  return (
+    message.includes("board definition changed") ||
+    message.includes("park action index out of range") ||
+    message.includes("no longer exists in the board definition")
+  );
+}
+
 export function submitParkActionFromBoardRoute(
   api: Pick<EnvironmentApi, "workflow"> | null | undefined,
   input: BoardRouteParkActionInput,
   callbacks: {
     readonly reloadTicketDetailIfOpen: () => void;
-    readonly pendingTicketIds: Set<string>;
+    readonly pendingTicketIds: PendingParkActionGuard;
+    readonly onDefinitionDrift?: (() => void) | undefined;
   },
 ): Promise<void> {
   if (callbacks.pendingTicketIds.has(input.ticketId)) {
@@ -216,13 +243,20 @@ export function submitParkActionFromBoardRoute(
         callbacks.reloadTicketDetailIfOpen();
       },
       (error: unknown) => {
+        const description = actionErrorMessage(error);
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Couldn't update ticket",
-            description: actionErrorMessage(error),
+            description,
           }),
         );
+        // Definition drift: the actions the user clicked no longer resolve.
+        // Refresh the board so the stale buttons repair to "actions
+        // unavailable" rather than re-toasting the same error on the next tap.
+        if (isParkActionDriftError(description)) {
+          callbacks.onDefinitionDrift?.();
+        }
       },
     )
     .finally(() => {
@@ -254,6 +288,27 @@ const ticketNotifyState = (ticket: {
   ...(ticket.parked === undefined ? {} : { parkedEventId: ticket.parked.parkedEventId }),
 });
 
+/**
+ * Force the open ticket's detail to REFETCH, not serve SWR cache. `getTicketDetail`
+ * is an SWR query (30s freshness): a bare reload key-bump remounts the memoized
+ * atom, which within the stale window returns the pre-action detail with no RPC.
+ * So we first invalidate that atom (`refreshTicketDetail`) and then bump the
+ * reload key so the route's detail effect re-runs and reads the fresh value.
+ * Pure/injected so the sequencing is unit-testable without a live registry.
+ */
+export function requestFreshTicketDetail(
+  ticketId: TicketId | null,
+  deps: {
+    readonly refreshTicketDetail: (ticketId: TicketId) => void;
+    readonly bumpReloadKey: () => void;
+  },
+): void {
+  if (ticketId !== null) {
+    deps.refreshTicketDetail(ticketId);
+  }
+  deps.bumpReloadKey();
+}
+
 function WorkflowBoardRouteView() {
   const { environmentId: rawEnvironmentId } = Route.useParams();
   const { boardId: rawBoardId, ticket: rawTicket } = Route.useSearch();
@@ -271,8 +326,15 @@ function WorkflowBoardRouteView() {
   const ticketStatusRef = useRef(new Map<string, TicketNotifyState>());
   // In-flight guard for handleParkAction: tickets currently mid-invocation, so
   // a doubled click can't fire a second invokeParkAction RPC for the same
-  // ticket while the first is still pending.
+  // ticket while the first is still pending. The ref is the SYNCHRONOUS source
+  // of truth (two rapid clicks in one tick must see the add immediately); the
+  // reactive `pendingParkActionTicketIds` mirror below drives the shared disable
+  // across card / strip / drawer.
   const pendingParkActionTicketIdsRef = useRef(new Set<string>());
+  const [pendingParkActionTicketIds, setPendingParkActionTicketIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const registry = useContext(RegistryContext);
   const selectedTicketIdRef = useRef<TicketId | null>(null);
   selectedTicketIdRef.current = selectedTicketId;
   const lastDetailTicketIdRef = useRef<string | null>(null);
@@ -536,7 +598,28 @@ function WorkflowBoardRouteView() {
     setSelectedTicketId(null);
   }, []);
   const reloadTicketDetail = useCallback(() => {
-    setTicketDetailReloadKey((key) => key + 1);
+    requestFreshTicketDetail(selectedTicketIdRef.current, {
+      refreshTicketDetail: (ticketId) =>
+        registry.refresh(
+          workflowEnvironment.getTicketDetail({ environmentId, input: { ticketId } }),
+        ),
+      bumpReloadKey: () => setTicketDetailReloadKey((key) => key + 1),
+    });
+  }, [registry, environmentId]);
+  // Re-subscribe the folded board atom, which replays a fresh server snapshot.
+  // Used after a definition save (park config changes emit no ticket event, so
+  // the live stream never repairs the rendered actions) and on a park-action
+  // definition-drift rejection (repairs stale inline buttons to "unavailable").
+  const refreshBoardSnapshot = useCallback(() => {
+    if (!boardId) {
+      return;
+    }
+    registry.refresh(workflowEnvironment.board({ environmentId, input: { boardId } }));
+  }, [registry, environmentId, boardId]);
+  // Mirror the in-flight ref into reactive state so every surface re-renders
+  // with the shared disable. The ref stays the synchronous re-entry guard.
+  const syncPendingParkActions = useCallback(() => {
+    setPendingParkActionTicketIds(new Set(pendingParkActionTicketIdsRef.current));
   }, []);
   const handleParkAction = useCallback(
     (ticketId: string, actionIndex: number, parkedEventId: string): Promise<void> =>
@@ -544,7 +627,17 @@ function WorkflowBoardRouteView() {
         routeApi,
         { ticketId, actionIndex, parkedEventId },
         {
-          pendingTicketIds: pendingParkActionTicketIdsRef.current,
+          pendingTicketIds: {
+            has: (id) => pendingParkActionTicketIdsRef.current.has(id),
+            add: (id) => {
+              pendingParkActionTicketIdsRef.current.add(id);
+              syncPendingParkActions();
+            },
+            delete: (id) => {
+              pendingParkActionTicketIdsRef.current.delete(id);
+              syncPendingParkActions();
+            },
+          },
           // Board/strip surfaces update via the live board subscription; this
           // reload only refreshes the open drawer's detail.
           reloadTicketDetailIfOpen: () => {
@@ -552,9 +645,10 @@ function WorkflowBoardRouteView() {
               reloadTicketDetail();
             }
           },
+          onDefinitionDrift: refreshBoardSnapshot,
         },
       ),
-    [routeApi, reloadTicketDetail],
+    [routeApi, reloadTicketDetail, refreshBoardSnapshot, syncPendingParkActions],
   );
   const handleApprove = useCallback(
     (stepRunId: string, approved: boolean): Promise<void> => {
@@ -765,14 +859,18 @@ function WorkflowBoardRouteView() {
   }, []);
   const handleWorkflowSaved = useCallback(
     (_snapshot: BoardSnapshot, definition: WorkflowDefinitionEncoded) => {
-      // Board state is now maintained automatically by the folded board atom —
-      // no manual applyBoardStreamItem or setProjectBoards side-effects needed.
+      // A definition-only change (e.g. a park target added/edited/removed) emits
+      // NO ticket event, so the folded board subscription never repairs the
+      // rendered park actions on its own. Re-subscribe the board atom to replay
+      // a fresh server snapshot resolved against the just-saved definition — the
+      // idiomatic equivalent of applying the save's returned snapshot.
+      refreshBoardSnapshot();
       // Derive whether the board now has sources from the saved definition
       // rather than assuming any save implies sources exist — a lane rename or
       // settings change triggers onSaved too, and must not dismiss the CTA.
       setBoardHasSources((definition.sources?.length ?? 0) > 0);
     },
-    [],
+    [refreshBoardSnapshot],
   );
   const closeWorkflowEditor = useCallback(() => {
     setEditorOpen(false);
@@ -834,12 +932,14 @@ function WorkflowBoardRouteView() {
                 tickets={needsYouTickets}
                 onOpen={handleOpenTicket}
                 onParkAction={handleParkAction}
+                pendingParkActionTicketIds={pendingParkActionTicketIds}
               />
               <BoardView
                 state={visibleState}
                 onMove={handleMove}
                 onOpen={handleOpenTicket}
                 onParkAction={handleParkAction}
+                pendingParkActionTicketIds={pendingParkActionTicketIds}
               />
               {boardId && !boardHasSources ? (
                 <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/20 px-4 py-2">
@@ -892,6 +992,7 @@ function WorkflowBoardRouteView() {
             onMove={handleDrawerMove}
             onRunLane={handleRunLane}
             onParkAction={handleParkAction}
+            parkActionPending={pendingParkActionTicketIds.has(ticketDetail.ticket.ticketId)}
             projectId={state.projectId ? ProjectId.make(state.projectId) : undefined}
             cwd={ticketCwd}
           />

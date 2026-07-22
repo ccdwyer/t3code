@@ -17,12 +17,21 @@ export interface TicketAging {
  * parked) for long enough get a visible age. Warn after 30 minutes, alert
  * after 2 hours. Parked tickets escalate here too — a park is a human-facing
  * pause, so its clock runs the same way, keyed off the parked substate.
+ *
+ * A parked ticket ages from its OWN park timestamp (`parked.parkedAt`), not
+ * `updatedAt`: the projection bumps `updated_at` on any edit (e.g. a title
+ * change in the drawer) while the ticket stays parked, which would otherwise
+ * reset the "how long has this needed you?" clock. Falls back to `updatedAt`
+ * only when a parked ticket carries no `parkedAt`. Non-parked waiting/blocked
+ * tickets still age from `updatedAt`.
  */
 export const ticketAging = (
   ticket: {
     readonly status: string;
     readonly updatedAt?: string | undefined;
-    readonly parked?: { readonly substate: "issue" | "waiting" } | undefined;
+    readonly parked?:
+      | { readonly substate: "issue" | "waiting"; readonly parkedAt?: string | undefined }
+      | undefined;
   },
   nowMs: number,
 ): TicketAging | null => {
@@ -33,10 +42,12 @@ export const ticketAging = (
   ) {
     return null;
   }
-  if (ticket.updatedAt === undefined) {
+  const sinceSource =
+    ticket.status === "parked" ? (ticket.parked?.parkedAt ?? ticket.updatedAt) : ticket.updatedAt;
+  if (sinceSource === undefined) {
     return null;
   }
-  const since = Date.parse(ticket.updatedAt);
+  const since = Date.parse(sinceSource);
   if (!Number.isFinite(since)) {
     return null;
   }
@@ -59,6 +70,12 @@ export const ticketAging = (
 };
 
 export const countNeedsAttention = (
-  tickets: ReadonlyArray<{ readonly status: string; readonly updatedAt?: string | undefined }>,
+  tickets: ReadonlyArray<{
+    readonly status: string;
+    readonly updatedAt?: string | undefined;
+    readonly parked?:
+      | { readonly substate: "issue" | "waiting"; readonly parkedAt?: string | undefined }
+      | undefined;
+  }>,
   nowMs: number,
 ): number => tickets.filter((ticket) => ticketAging(ticket, nowMs) !== null).length;

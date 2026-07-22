@@ -13,7 +13,9 @@ import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import {
   filterBoardStateByQuery,
   getBoardRouteEmptyState,
+  isParkActionDriftError,
   notifyTicketStatusChange,
+  requestFreshTicketDetail,
   submitParkActionFromBoardRoute,
   submitTicketAnswerFromBoardRoute,
   submitTicketEditFromBoardRoute,
@@ -342,6 +344,102 @@ describe("submitParkActionFromBoardRoute", () => {
       pendingTicketIds,
     });
     expect(api.workflow.invokeParkAction).toHaveBeenCalledTimes(2);
+  });
+
+  it("mirrors the guard into a shared set as it adds then releases the ticket", async () => {
+    // The route backs the guard with a reactive mirror; prove the add/delete
+    // lifecycle a plain Set (or the route's adapter) sees during one action.
+    const seenDuring: boolean[] = [];
+    let resolveRpc: ((r: "moved") => void) | undefined;
+    const rpc = new Promise<"moved">((resolve) => {
+      resolveRpc = resolve;
+    });
+    const pendingTicketIds = new Set<string>();
+    const api = {
+      workflow: { invokeParkAction: vi.fn(() => rpc) },
+    } as unknown as EnvironmentApi;
+
+    const settled = submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen: () => {},
+      pendingTicketIds,
+    });
+    seenDuring.push(pendingTicketIds.has("ticket-parked")); // true while in flight
+    resolveRpc?.("moved");
+    await settled;
+    seenDuring.push(pendingTicketIds.has("ticket-parked")); // false after settle
+    expect(seenDuring).toEqual([true, false]);
+  });
+
+  it("triggers a board refresh (repair) on a definition-drift rejection, not a generic one", async () => {
+    const driftApi = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => {
+          throw new Error("park actions unavailable — board definition changed");
+        }),
+      },
+    } as unknown as EnvironmentApi;
+    const onDefinitionDrift = vi.fn();
+    await submitParkActionFromBoardRoute(driftApi, baseInput, {
+      reloadTicketDetailIfOpen: vi.fn(),
+      pendingTicketIds: new Set<string>(),
+      onDefinitionDrift,
+    });
+    expect(onDefinitionDrift).toHaveBeenCalledOnce();
+
+    const genericApi = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => {
+          throw new Error("network unavailable");
+        }),
+      },
+    } as unknown as EnvironmentApi;
+    const onDefinitionDriftGeneric = vi.fn();
+    await submitParkActionFromBoardRoute(genericApi, baseInput, {
+      reloadTicketDetailIfOpen: vi.fn(),
+      pendingTicketIds: new Set<string>(),
+      onDefinitionDrift: onDefinitionDriftGeneric,
+    });
+    expect(onDefinitionDriftGeneric).not.toHaveBeenCalled();
+  });
+});
+
+describe("isParkActionDriftError", () => {
+  it("matches the server's typed drift messages and nothing else", () => {
+    expect(isParkActionDriftError("park actions unavailable — board definition changed")).toBe(
+      true,
+    );
+    expect(isParkActionDriftError("park action index out of range")).toBe(true);
+    expect(
+      isParkActionDriftError(
+        "park action targets lane 'gone' which no longer exists in the board definition",
+      ),
+    ).toBe(true);
+    expect(isParkActionDriftError("network unavailable")).toBe(false);
+    expect(isParkActionDriftError("Something went wrong. Please try again.")).toBe(false);
+  });
+});
+
+describe("requestFreshTicketDetail", () => {
+  it("invalidates the open ticket's detail atom before bumping the reload key", () => {
+    // Proves the reload FORCES a refetch (registry.refresh) rather than serving
+    // the SWR-cached pre-action detail — the order matters so the subsequent
+    // read sees a fresh value.
+    const calls: string[] = [];
+    const refreshTicketDetail = vi.fn(() => calls.push("refresh"));
+    const bumpReloadKey = vi.fn(() => calls.push("bump"));
+
+    requestFreshTicketDetail(TicketId.make("ticket-1"), { refreshTicketDetail, bumpReloadKey });
+    expect(refreshTicketDetail).toHaveBeenCalledWith(TicketId.make("ticket-1"));
+    expect(bumpReloadKey).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["refresh", "bump"]);
+  });
+
+  it("only bumps (no atom to invalidate) when no ticket is open", () => {
+    const refreshTicketDetail = vi.fn();
+    const bumpReloadKey = vi.fn();
+    requestFreshTicketDetail(null, { refreshTicketDetail, bumpReloadKey });
+    expect(refreshTicketDetail).not.toHaveBeenCalled();
+    expect(bumpReloadKey).toHaveBeenCalledOnce();
   });
 });
 

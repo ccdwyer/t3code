@@ -1008,7 +1008,7 @@ function stepRest(step: EncodedStep): Record<string, unknown> {
 }
 
 /** Render success/failure/blocked step routing targets, if any. */
-function StepRoutingView({ routing }: { readonly routing: EncodedStepRouting | undefined }) {
+export function StepRoutingView({ routing }: { readonly routing: EncodedStepRouting | undefined }) {
   if (routing === undefined) {
     return null;
   }
@@ -1025,7 +1025,7 @@ function StepRoutingView({ routing }: { readonly routing: EncodedStepRouting | u
       {entries.map((k, i) => (
         <span key={k}>
           {i > 0 ? ", " : ""}
-          {k} → {String(routing[k])}
+          {k} → {formatRouteTarget(routing[k])}
         </span>
       ))}
     </p>

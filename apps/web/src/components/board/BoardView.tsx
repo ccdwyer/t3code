@@ -90,15 +90,17 @@ export function BoardView({
   onMove,
   onOpen,
   onParkAction,
+  pendingParkActionTicketIds,
 }: {
   readonly state: BoardViewState;
   readonly onMove: (ticketId: string, toLane: string) => void;
   readonly onOpen: (id: string) => void;
-  // Threaded to TicketCard but not yet consumed there — TicketCard's parked
-  // inline actions land in Task 15 (plan `2026-07-22-workflow-substates.md`).
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  // Tickets with a park action in flight (from any surface); threaded to each
+  // card so the whole ticket's recovery controls share one disable.
+  readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -124,6 +126,7 @@ export function BoardView({
             lane={lane}
             onOpen={onOpen}
             onParkAction={onParkAction}
+            pendingParkActionTicketIds={pendingParkActionTicketIds}
             admittedTickets={ticketsForIds(state, lane.admittedTicketIds)}
             queuedTickets={ticketsForIds(state, lane.queuedTicketIds)}
           />

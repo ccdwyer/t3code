@@ -24,6 +24,9 @@ export interface NeedsYouStripProps {
     actionIndex: number,
     parkedEventId: string,
   ) => Promise<void>;
+  // Tickets whose park action is in flight (from any surface). Each entry
+  // derives its shared-disable flag from this set.
+  readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
 }
 
 /** Oldest-first sort key: a parked ticket's own park timestamp, a
@@ -67,7 +70,12 @@ export function selectNeedsYouTickets(
  * drawer. Renders nothing when no ticket needs attention (v1 has no
  * collapse toggle — empty means absent).
  */
-export function NeedsYouStrip({ tickets, onOpen, onParkAction }: NeedsYouStripProps) {
+export function NeedsYouStrip({
+  tickets,
+  onOpen,
+  onParkAction,
+  pendingParkActionTicketIds,
+}: NeedsYouStripProps) {
   const now = useNowTick(60_000);
   const entries = selectNeedsYouTickets(tickets);
 
@@ -92,6 +100,7 @@ export function NeedsYouStrip({ tickets, onOpen, onParkAction }: NeedsYouStripPr
             now={now}
             onOpen={onOpen}
             onParkAction={onParkAction}
+            parkActionPending={pendingParkActionTicketIds?.has(ticket.ticketId) ?? false}
           />
         ))}
       </ul>
@@ -104,6 +113,7 @@ function NeedsYouEntry({
   now,
   onOpen,
   onParkAction,
+  parkActionPending = false,
 }: {
   readonly ticket: NeedsYouTicket;
   readonly now: number;
@@ -113,6 +123,7 @@ function NeedsYouEntry({
     actionIndex: number,
     parkedEventId: string,
   ) => Promise<void>;
+  readonly parkActionPending?: boolean | undefined;
 }) {
   const tier = ticketTier(ticket);
   const aging = ticketAging(ticket, now);
@@ -125,6 +136,9 @@ function NeedsYouEntry({
 
   const inFlightRef = useRef(false);
   const [pending, setPending] = useState(false);
+  // Local double-click guard OR the shared route-level flag, so a click on the
+  // card or drawer for this ticket disables the strip's buttons too.
+  const actionsDisabled = pending || parkActionPending;
   const runAction = (index: number): void => {
     dispatchParkAction(
       {
@@ -197,7 +211,7 @@ function NeedsYouEntry({
             <Button
               size="xs"
               variant="secondary"
-              disabled={pending}
+              disabled={actionsDisabled}
               onClick={() => runAction(primary.index)}
               {...(primary.action.hint !== undefined ? { title: primary.action.hint } : {})}
             >
@@ -210,7 +224,7 @@ function NeedsYouEntry({
                     <Button
                       size="icon-xs"
                       variant="ghost"
-                      disabled={pending}
+                      disabled={actionsDisabled}
                       aria-label="More recovery actions"
                       data-testid="needs-you-actions-overflow"
                     />

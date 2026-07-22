@@ -206,12 +206,17 @@ export function TicketCard({
   ticket,
   onOpen,
   onParkAction,
+  parkActionPending = false,
 }: {
   readonly ticket: TicketCardView;
   readonly onOpen: (id: string) => void;
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  // True while a park action for THIS ticket is in flight from any surface
+  // (card / strip / drawer). Shared from the route so all of the ticket's
+  // recovery controls disable together, not just the one that was clicked.
+  readonly parkActionPending?: boolean | undefined;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: ticket.ticketId,
@@ -276,6 +281,10 @@ export function TicketCard({
 
   const inFlightRef = useRef(false);
   const [pending, setPending] = useState(false);
+  // Local guard OR the shared route-level flag: a click on the strip or drawer
+  // for this ticket disables the card's buttons too (belt-and-suspenders on top
+  // of the local double-click guard).
+  const actionsDisabled = pending || parkActionPending;
   const runAction = (index: number): void => {
     dispatchParkAction(
       {
@@ -315,7 +324,15 @@ export function TicketCard({
     >
       {/* Drag region + open target: the whole body is draggable, and a plain
           keyboard-focusable button opens the drawer. dnd-kit's activation
-          distance keeps a click a click and a drag a drag. */}
+          distance keeps a click a click and a drag a drag.
+          INTENTIONAL (Sol gate-3 finding 4, accepted): the sortable drag
+          `listeners` are spread onto the SAME element that opens the drawer,
+          not a separate drag handle. This is dnd-kit's activation-constraint
+          pattern — the PointerSensor's 8px `distance` (BoardView) is what
+          disambiguates a tap-to-open from a drag, and it matches the
+          pre-feature card's UX exactly (the whole card was drag+click). The
+          action buttons live OUTSIDE this button (siblings below), so they
+          never inherit the drag activator. */}
       <button
         type="button"
         className="block w-full cursor-grab rounded-md px-3 py-2.5 text-left outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring/35"
@@ -410,7 +427,7 @@ export function TicketCard({
             <Button
               size="xs"
               variant="secondary"
-              disabled={pending}
+              disabled={actionsDisabled}
               onClick={() => runAction(primaryAction.index)}
               {...(primaryAction.action.hint !== undefined
                 ? { title: primaryAction.action.hint }
@@ -425,7 +442,7 @@ export function TicketCard({
                     <Button
                       size="icon-xs"
                       variant="ghost"
-                      disabled={pending}
+                      disabled={actionsDisabled}
                       aria-label="More recovery actions"
                       data-testid="ticket-actions-overflow"
                     />

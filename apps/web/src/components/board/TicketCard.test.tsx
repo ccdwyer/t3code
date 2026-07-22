@@ -22,6 +22,15 @@ const renderCard = (ticket: TicketCardView, onOpen: (id: string) => void = () =>
     </DndContext>,
   );
 
+const renderCardWith = (ticket: TicketCardView, parkActionPending: boolean) =>
+  renderToStaticMarkup(
+    <DndContext>
+      <SortableContext items={[ticket.ticketId]}>
+        <TicketCard ticket={ticket} onOpen={() => {}} parkActionPending={parkActionPending} />
+      </SortableContext>
+    </DndContext>,
+  );
+
 const renderTicketCard = (status: string) =>
   renderCard({ ticketId: `ticket-${status}`, title: `Ticket ${status}`, status });
 
@@ -338,6 +347,28 @@ describe("TicketCard", () => {
     expect(markup).toContain("Issue encountered");
     expect(markup).not.toContain("Issue encountered ·");
     expect(markup).toContain('data-status-tone="warning"');
+  });
+
+  it("ages the card from the park's own parkedAt, ignoring a freshly bumped updatedAt", () => {
+    // parkedAt is 3h old but updatedAt was just bumped (e.g. a drawer edit).
+    const markup = renderCard(
+      parkedTicket({
+        parked: { ...issuePark, parkedAt: AGED },
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    expect(markup).toContain("Issue encountered ·");
+    expect(markup).toContain('data-status-tone="destructive"');
+  });
+
+  it("disables the inline recovery buttons while a park action is in flight (shared)", () => {
+    // parkActionPending is the route's shared flag — a click on the strip or
+    // drawer disables the card's buttons too, even before the local guard.
+    const idle = renderCardWith(parkedTicket(), false);
+    const pending = renderCardWith(parkedTicket(), true);
+    // Assert the `disabled=""` ATTRIBUTE, not the className's `disabled:` variants.
+    expect(idle).not.toContain('disabled=""');
+    expect(pending).toContain('disabled=""');
   });
 
   it("renders the primary action inline and an overflow trigger for the rest", () => {

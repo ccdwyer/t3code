@@ -293,6 +293,16 @@ function ParkBadge({
         event.stopPropagation();
         onSelect();
       }}
+      onKeyDown={(event) => {
+        // Isolate keyboard activation the same way the click is isolated: the
+        // native button already fires onClick on Enter/Space, but the keydown
+        // also bubbles to the lane card's onKeyDown, which would select the
+        // whole lane instead of this park's owning route. Stop it here so a
+        // keyboard user lands on the route, matching the click behaviour.
+        if (event.key === "Enter" || event.key === " ") {
+          event.stopPropagation();
+        }
+      }}
     >
       <span aria-hidden="true">{isIssue ? "⚠" : "⏸"}</span>
       <span className="truncate">{label ?? (isIssue ? "issue" : "waiting")}</span>

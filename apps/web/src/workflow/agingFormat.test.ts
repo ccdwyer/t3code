@@ -39,6 +39,40 @@ describe("ticketAging", () => {
     expect(waiting?.label).toContain("needs you");
   });
 
+  it("ages a parked ticket from its own parkedAt, not a bumped updatedAt", () => {
+    // A parked ticket edited in the drawer bumps updatedAt to ~now while the
+    // park itself is 45m old. The clock must key off parkedAt, not updatedAt.
+    const aged = ticketAging(
+      {
+        status: "parked",
+        updatedAt: minutesAgo(1),
+        parked: { substate: "issue", parkedAt: minutesAgo(45) },
+      },
+      NOW,
+    );
+    expect(aged?.level).toBe("warn");
+    expect(aged?.label).toContain("issue");
+  });
+
+  it("does not age a parked ticket whose parkedAt is fresh even if updatedAt is old", () => {
+    expect(
+      ticketAging(
+        {
+          status: "parked",
+          updatedAt: minutesAgo(600),
+          parked: { substate: "waiting", parkedAt: minutesAgo(2) },
+        },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it("still ages a waiting_on_user ticket from updatedAt (not park-scoped)", () => {
+    const aged = ticketAging({ status: "waiting_on_user", updatedAt: minutesAgo(45) }, NOW);
+    expect(aged?.level).toBe("warn");
+    expect(aged?.label).toContain("needs you");
+  });
+
   it("leaves fresh parked tickets un-aged", () => {
     expect(
       ticketAging(

@@ -191,6 +191,29 @@ describe("NeedsYouStrip", () => {
     expect(markup).toContain('data-testid="needs-you-actions-overflow"');
   });
 
+  it("disables an entry's recovery buttons while a shared park action is in flight", () => {
+    const parkedTicket = ticket({ ticketId: "t1", status: "parked", parked: issuePark });
+    const idle = renderToStaticMarkup(
+      <NeedsYouStrip
+        tickets={[parkedTicket]}
+        onOpen={() => {}}
+        onParkAction={vi.fn(async () => {})}
+        pendingParkActionTicketIds={new Set()}
+      />,
+    );
+    const pending = renderToStaticMarkup(
+      <NeedsYouStrip
+        tickets={[parkedTicket]}
+        onOpen={() => {}}
+        onParkAction={vi.fn(async () => {})}
+        pendingParkActionTicketIds={new Set(["t1"])}
+      />,
+    );
+    // Assert the `disabled=""` ATTRIBUTE, not the className's `disabled:` variants.
+    expect(idle).not.toContain('disabled=""');
+    expect(pending).toContain('disabled=""');
+  });
+
   it("renders no overflow trigger for a single-action park", () => {
     const markup = renderToStaticMarkup(
       <NeedsYouStrip

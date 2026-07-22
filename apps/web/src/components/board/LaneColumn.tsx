@@ -26,15 +26,18 @@ export function LaneColumn({
   queuedTickets,
   onOpen,
   onParkAction,
+  pendingParkActionTicketIds,
 }: {
   readonly lane: LaneColumnView;
   readonly admittedTickets: ReadonlyArray<TicketCardView>;
   readonly queuedTickets: ReadonlyArray<TicketCardView>;
   readonly onOpen: (id: string) => void;
-  // Threaded to TicketCard but not yet consumed there — see BoardView.
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  // Tickets whose park action is in flight (from any surface) — each card
+  // derives its own shared-disable flag from this set.
+  readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `lane:${lane.key}` });
   const tickets = [...admittedTickets, ...queuedTickets];
@@ -78,6 +81,7 @@ export function LaneColumn({
               ticket={ticket}
               onOpen={onOpen}
               onParkAction={onParkAction}
+              parkActionPending={pendingParkActionTicketIds?.has(ticket.ticketId) ?? false}
             />
           ))}
           {queuedTickets.length > 0 ? (
@@ -92,6 +96,7 @@ export function LaneColumn({
                     ticket={ticket}
                     onOpen={onOpen}
                     onParkAction={onParkAction}
+                    parkActionPending={pendingParkActionTicketIds?.has(ticket.ticketId) ?? false}
                   />
                 ))}
               </div>

@@ -599,6 +599,280 @@ describe.sequential("WorkflowBoardNotificationDispatcher", () => {
     );
   });
 
+  it.effect(
+    "CAS success-mark loses to the committer's widened supersede mid-publish; row ends superseded, never sent (gate-1 re-gate NEW-1)",
+    () => {
+      // Models the REAL committer race, not a stand-in: row A is claimed
+      // 'publishing', then — while the relay call is in flight — the
+      // committer's ACTUAL widened supersede UPDATE (`delivery_state IN
+      // ('pending', 'publishing')`, see WorkflowEventCommitter.ts) lands for a
+      // fresh transition on the same ticket, exactly as it would from a
+      // concurrent TicketParked re-commit. Even though the publish call itself
+      // succeeds, the post-publish CAS (`SET delivery_state='sent' WHERE ...
+      // AND delivery_state='publishing'`) must lose to the committer's write:
+      // the row ends 'superseded', never clobbered back to 'sent'.
+      const supersedingRelayLayer = Layer.effect(
+        WorkflowBoardNotificationRelay,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            publishTicket: () =>
+              Effect.gen(function* () {
+                // Exact replica of WorkflowEventCommitter's widened supersede guard.
+                yield* sql`
+                  UPDATE workflow_notification_outbox
+                  SET delivery_state = 'superseded'
+                  WHERE ticket_id = ${"ticket-cas-success"}
+                    AND delivery_state IN ('pending', 'publishing')
+                    AND sequence != 99
+                `;
+                yield* sql`
+                  INSERT INTO workflow_notification_outbox (
+                    outbox_id, ticket_id, board_id, sequence, status,
+                    attention_kind, attention_reason, delivery_state, attempt_count, created_at
+                  ) VALUES (
+                    'ob-cas-success-b', 'ticket-cas-success', 'board-1', 99, 'parked',
+                    'parked_waiting', 'Waiting on you: newer', 'pending', 0,
+                    '2026-06-12T00:00:00.000Z'
+                  )
+                `;
+              }).pipe(Effect.orDie),
+          } satisfies WorkflowBoardNotificationRelay["Service"];
+        }),
+      );
+
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-cas-success-a",
+          ticketId: "ticket-cas-success",
+          boardId: "board-1",
+          sequence: 50,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "stale",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        assert.strictEqual(result.superseded, 1);
+        assert.strictEqual(result.sent, 0);
+
+        const rowA = yield* readOutbox("ob-cas-success-a");
+        assert.strictEqual(
+          rowA.delivery_state,
+          "superseded",
+          "the CAS must not clobber the committer's supersede with 'sent'",
+        );
+
+        const rowB = yield* readOutbox("ob-cas-success-b");
+        assert.strictEqual(rowB.delivery_state, "pending", "row B awaits its own sweep");
+      }).pipe(
+        Effect.provide(
+          makeWorkflowBoardNotificationDispatcherLive({ sweepIntervalMs: 60_000 }).pipe(
+            Layer.provideMerge(supersedingRelayLayer),
+            Layer.provideMerge(
+              stubReadModelLayer({
+                "ticket-cas-success": detail(
+                  makeTicketRow({ ticketId: "ticket-cas-success", status: "waiting_on_user" }),
+                ),
+              }),
+            ),
+            Layer.provideMerge(serverEnvironmentLayer),
+            Layer.provideMerge(SqlitePersistenceMemory),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "reschedule no-ops after the committer's widened supersede mid-publish + a failed push; row stays superseded and is never re-delivered (gate-1 re-gate NEW-1/NEW-3)",
+    () => {
+      // Same real-committer race as the previous test, but the in-flight push
+      // FAILS instead of succeeding. `fired` limits the race to the row A
+      // publish call only — a real committer supersede is a one-time event
+      // for a given transition, not a permanent relay behavior, and without
+      // this guard the second sweep's publish of row B would attempt to
+      // INSERT the same 'ob-cas-fail-b' primary key again and blow up on a
+      // constraint violation instead of exercising what we actually want to
+      // assert: that row A is never resurrected and row B is delivered
+      // normally on its own, later sweep.
+      let fired = false;
+      const supersedingRelayLayer = Layer.effect(
+        WorkflowBoardNotificationRelay,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return {
+            publishTicket: (input) =>
+              Effect.gen(function* () {
+                if (fired || input.ticketId !== "ticket-cas-fail") {
+                  return;
+                }
+                fired = true;
+                // Exact replica of WorkflowEventCommitter's widened supersede guard.
+                yield* sql`
+                  UPDATE workflow_notification_outbox
+                  SET delivery_state = 'superseded'
+                  WHERE ticket_id = ${"ticket-cas-fail"}
+                    AND delivery_state IN ('pending', 'publishing')
+                    AND sequence != 77
+                `.pipe(Effect.orDie);
+                yield* sql`
+                  INSERT INTO workflow_notification_outbox (
+                    outbox_id, ticket_id, board_id, sequence, status,
+                    attention_kind, attention_reason, delivery_state, attempt_count, created_at
+                  ) VALUES (
+                    'ob-cas-fail-b', 'ticket-cas-fail', 'board-1', 77, 'parked',
+                    'parked_waiting', 'Waiting on you: newer', 'pending', 0,
+                    '2026-06-12T00:00:00.000Z'
+                  )
+                `.pipe(Effect.orDie);
+                return yield* new WorkflowEventStoreError({ message: "stub relay failure" });
+              }),
+          } satisfies WorkflowBoardNotificationRelay["Service"];
+        }),
+      );
+
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-cas-fail-a",
+          ticketId: "ticket-cas-fail",
+          boardId: "board-1",
+          sequence: 30,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "stale",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+        assert.strictEqual(result.failed, 1);
+
+        // rescheduleRetry is guarded on 'publishing'; row A already left
+        // 'publishing' for 'superseded' via the committer's write, so the
+        // retry re-mark must be a no-op — row A stays 'superseded', never
+        // resurrected to 'pending'.
+        const rowAAfterFirstSweep = yield* readOutbox("ob-cas-fail-a");
+        assert.strictEqual(rowAAfterFirstSweep.delivery_state, "superseded");
+
+        // Next sweep: only row B (the ticket's true latest, still 'pending')
+        // is selected and delivered; row A is never re-selected or resurrected.
+        const result2 = yield* dispatcher.sweep();
+        assert.strictEqual(result2.claimed, 1);
+        assert.strictEqual(result2.sent, 1);
+
+        const rowAAfterSecondSweep = yield* readOutbox("ob-cas-fail-a");
+        assert.strictEqual(
+          rowAAfterSecondSweep.delivery_state,
+          "superseded",
+          "row A must never be re-delivered",
+        );
+        const rowB = yield* readOutbox("ob-cas-fail-b");
+        assert.strictEqual(rowB.delivery_state, "sent");
+      }).pipe(
+        Effect.provide(
+          makeWorkflowBoardNotificationDispatcherLive({ sweepIntervalMs: 60_000 }).pipe(
+            Layer.provideMerge(supersedingRelayLayer),
+            Layer.provideMerge(
+              stubReadModelLayer({
+                "ticket-cas-fail": detail(
+                  makeTicketRow({ ticketId: "ticket-cas-fail", status: "waiting_on_user" }),
+                ),
+              }),
+            ),
+            Layer.provideMerge(serverEnvironmentLayer),
+            Layer.provideMerge(SqlitePersistenceMemory),
+          ),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "un-claims via CAS when a newer needs-you row already exists at claim time (pre-publish latest-sequence check)",
+    () => {
+      const recorder = makeRecorder();
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-seqcheck-a",
+          ticketId: "ticket-seqcheck",
+          boardId: "board-1",
+          sequence: 10,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "stale",
+          createdAt: "2026-06-12T00:00:00.000Z",
+        });
+        yield* insertOutboxRow({
+          outboxId: "ob-seqcheck-b",
+          ticketId: "ticket-seqcheck",
+          boardId: "board-1",
+          sequence: 20,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "fresh",
+          createdAt: "2026-06-12T00:00:01.000Z",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        // Row A is selected+claimed but un-claimed straight back to
+        // 'superseded' by the pre-publish latest-sequence check, BEFORE
+        // relay.publishTicket is ever called for it; row B — the ticket's
+        // true latest — is published normally in the same sweep.
+        assert.strictEqual(result.claimed, 2);
+        assert.strictEqual(result.superseded, 1);
+        assert.strictEqual(result.sent, 1);
+        assert.strictEqual(recorder.calls.length, 1, "row A must never reach relay.publishTicket");
+        assert.strictEqual(recorder.calls[0]!.state.transitionId, "20");
+
+        assert.strictEqual((yield* readOutbox("ob-seqcheck-a")).delivery_state, "superseded");
+        assert.strictEqual((yield* readOutbox("ob-seqcheck-b")).delivery_state, "sent");
+      }).pipe(
+        Effect.provide(
+          buildLayer(recorder, {
+            "ticket-seqcheck": detail(
+              makeTicketRow({ ticketId: "ticket-seqcheck", status: "waiting_on_user" }),
+            ),
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "reclaims a row stranded 'publishing' by a crash and delivers it on the next sweep (regression)",
+    () => {
+      const recorder = makeRecorder();
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-reclaim",
+          ticketId: "ticket-reclaim",
+          boardId: "board-1",
+          sequence: 40,
+          status: "waiting_on_user",
+          attentionKind: "waiting_for_input",
+          attentionReason: "stuck mid-publish",
+          deliveryState: "publishing",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        assert.strictEqual(result.claimed, 1);
+        assert.strictEqual(result.sent, 1);
+        assert.strictEqual(recorder.calls.length, 1);
+        assert.strictEqual((yield* readOutbox("ob-reclaim")).delivery_state, "sent");
+      }).pipe(
+        Effect.provide(
+          buildLayer(recorder, {
+            "ticket-reclaim": detail(
+              makeTicketRow({ ticketId: "ticket-reclaim", status: "waiting_on_user" }),
+            ),
+          }),
+        ),
+      );
+    },
+  );
+
   it.effect("falls back an unknown attention kind to waiting_for_input (regression)", () => {
     const recorder = makeRecorder();
     return Effect.gen(function* () {

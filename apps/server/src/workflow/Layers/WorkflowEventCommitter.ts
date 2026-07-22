@@ -174,19 +174,37 @@ const make = Effect.gen(function* () {
               ? `Hit an issue: ${event.payload.reason}`
               : `Waiting on you: ${event.payload.label}`
             : next.attentionReason;
-        // Supersede any prior PENDING rows for this ticket so at most one pending
-        // row (the latest transition) ever reaches the dispatcher. Without this, a
-        // ticket that rapidly transitions through multiple needs-you states within
-        // one sweep window would push a stale earlier row's content. The
-        // `sequence != persisted.sequence` guard is load-bearing: an idempotent
-        // re-projection of the SAME event (row already pending at this sequence)
-        // must NOT supersede its own row and strand it — only genuinely older
-        // pending rows (different sequence) get superseded.
+        // Supersede any prior PENDING (or in-flight PUBLISHING) rows for this
+        // ticket so at most one row (the latest transition) ever reaches "sent".
+        // Without this, a ticket that rapidly transitions through multiple
+        // needs-you states within one sweep window would push a stale earlier
+        // row's content. Including 'publishing' closes the gate-1 re-gate
+        // residual (NEW-1): the dispatcher's atomic claim flips a row from
+        // 'pending' to 'publishing' immediately before the relay call, and that
+        // row sits in 'publishing' for the duration of the publish round-trip.
+        // A guard of `delivery_state = 'pending'` alone cannot see that row, so
+        // this transition would land, the dispatcher would still publish the
+        // claimed row's stale content, and its unconditional
+        // `markState(..., 'sent')` would clobber this supersede. Widening the
+        // guard to also match 'publishing' means this UPDATE always wins that
+        // race the instant it commits; the dispatcher's post-publish CAS
+        // (`SET delivery_state = 'sent' WHERE ... AND delivery_state =
+        // 'publishing'`) then finds the row already 'superseded' and backs off
+        // instead of overwriting it. The one residual this cannot close: if the
+        // relay call is already in flight when this UPDATE lands, the stale push
+        // still goes out over the wire — nothing server-side can un-send a
+        // network call already made. That is an unavoidable RTT residual;
+        // everything else (state bookkeeping, retry resurrection) is fully
+        // closed. The `sequence != persisted.sequence` guard is load-bearing: an
+        // idempotent re-projection of the SAME event (row already
+        // pending/publishing at this sequence) must NOT supersede its own row
+        // and strand it — only genuinely older rows (different sequence) get
+        // superseded.
         yield* sql`
           UPDATE workflow_notification_outbox
           SET delivery_state = 'superseded'
           WHERE ticket_id = ${event.ticketId}
-            AND delivery_state = 'pending'
+            AND delivery_state IN ('pending', 'publishing')
             AND sequence != ${persisted.sequence}
         `;
         yield* sql`

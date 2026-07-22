@@ -92,18 +92,21 @@ const makeWorkflowBoardNotificationDispatcher = (
     // Atomic claim, run immediately before relay.publishTicket. Flips a
     // 'pending' row to 'publishing' and returns whether THIS call performed
     // the transition. The committer (WorkflowEventCommitter) can concurrently
-    // flip the same row to 'superseded' — guarded on `delivery_state =
-    // 'pending'` on its side — when a newer needs-you transition for the same
-    // ticket commits between our SELECT and this claim. Closes the
-    // stale-delivery race: without this, the relevance recheck above only
-    // looks at the ticket's CURRENT status, which for a re-parked ticket
-    // still passes (`parked` is itself a needs-you status) even though the
-    // committer already superseded THIS row in favor of a fresh one — the old
-    // unconditional publish + unconditional `markState(..., 'sent')` would
-    // then both deliver the stale row's content AND clobber the committer's
-    // 'superseded' write. Claiming atomically makes the check indivisible
-    // from the act: a claim rowcount of 0 means the row left 'pending' before
-    // we could act on it, so the row is superseded and must NOT be published.
+    // flip the same row to 'superseded' — guarded on `delivery_state IN
+    // ('pending', 'publishing')` on its side — when a newer needs-you
+    // transition for the same ticket commits between our SELECT and this
+    // claim, or even after this claim while the row sits in 'publishing'
+    // (see the committer's supersede comment for the gate-1 re-gate
+    // residual this closes). Closes the stale-delivery race: without this,
+    // the relevance recheck above only looks at the ticket's CURRENT status,
+    // which for a re-parked ticket still passes (`parked` is itself a
+    // needs-you status) even though the committer already superseded THIS
+    // row in favor of a fresh one — the old unconditional publish +
+    // unconditional `markState(..., 'sent')` would then both deliver the
+    // stale row's content AND clobber the committer's 'superseded' write.
+    // Claiming atomically makes the check indivisible from the act: a claim
+    // rowcount of 0 means the row left 'pending' before we could act on it,
+    // so the row is superseded and must NOT be published.
     const claimRow = (outboxId: string) =>
       sql<{ readonly outboxId: string }>`
         UPDATE workflow_notification_outbox
@@ -113,17 +116,65 @@ const makeWorkflowBoardNotificationDispatcher = (
       `.pipe(Effect.map((rows) => rows.length > 0));
 
     // Conditional re-mark for the retry path. A claimed row sits in
-    // 'publishing' for the duration of the publish call (nothing else may
-    // touch it — the committer's supersede guard is `delivery_state =
-    // 'pending'`, which a 'publishing' row no longer matches), so guarding on
-    // `delivery_state = 'publishing'` is the equivalent of the pre-claim
-    // design's `delivery_state = 'pending'` guard: it makes the re-mark a
-    // no-op if the row somehow left 'publishing' by another path, preventing
-    // a lost-update / resurrection. Terminal re-marks ('sent'/'failed') don't
-    // need this guard: writing a terminal state over the row this claim owns
-    // is always correct.
+    // 'publishing' for the duration of the publish call, and the committer's
+    // supersede guard now ALSO matches 'publishing' (see its comment), so a
+    // row can legitimately leave 'publishing' for 'superseded' while we're
+    // mid-flight. Guarding this re-mark on `delivery_state = 'publishing'`
+    // makes it a no-op once that's happened, preventing a lost-update /
+    // resurrection: without this guard, a failed publish on a since-
+    // superseded row would flip it back to 'pending' and a later sweep would
+    // re-deliver a stale notification even though a fresh row already exists
+    // for the ticket. Terminal re-marks ('sent'/'failed') need the identical
+    // guard for the same reason — see markSent and the give-up path below.
     const rescheduleRetry = (outboxId: string, attemptCount: number) =>
       sql`UPDATE workflow_notification_outbox SET delivery_state = 'pending', attempt_count = ${attemptCount} WHERE outbox_id = ${outboxId} AND delivery_state = 'publishing'`;
+
+    // CAS give-up mark for the attempt-ceiling path. Same guard reasoning as
+    // rescheduleRetry: if the committer superseded this row mid-flight, the
+    // give-up write must be a no-op (else it would clobber 'superseded' with
+    // 'failed', losing the fact that a fresh row already exists for the
+    // ticket).
+    const markGivenUp = (outboxId: string, attemptCount: number) =>
+      sql`UPDATE workflow_notification_outbox SET delivery_state = 'failed', attempt_count = ${attemptCount} WHERE outbox_id = ${outboxId} AND delivery_state = 'publishing'`;
+
+    // CAS success mark. Returns whether THIS call's write landed. A rowcount
+    // of 0 means the committer's supersede beat us to it WHILE our publish
+    // call was in flight (the widened 'publishing' guard on its side, see
+    // WorkflowEventCommitter.ts) — the row is already 'superseded' and this
+    // must not clobber it back to 'sent'. This is the one case where the push
+    // already went out over the relay before we could observe the supersede:
+    // once relay.publishTicket's call started, nothing server-side can
+    // un-send it. That is the documented, unavoidable RTT residual — the push
+    // itself is stale, but the bookkeeping stays correct (the row correctly
+    // ends 'superseded', not 'sent', so nothing downstream mistakes it for
+    // the canonical delivery).
+    const markSent = (outboxId: string) =>
+      sql<{ readonly outboxId: string }>`
+        UPDATE workflow_notification_outbox
+        SET delivery_state = 'sent'
+        WHERE outbox_id = ${outboxId} AND delivery_state = 'publishing'
+        RETURNING outbox_id AS "outboxId"
+      `.pipe(Effect.map((rows) => rows.length > 0));
+
+    // Un-claim back to 'superseded' for the pre-publish latest-sequence check
+    // below. Guarded on 'publishing' so it only ever affects the row THIS
+    // call's claim owns.
+    const unclaimSuperseded = (outboxId: string) =>
+      sql`UPDATE workflow_notification_outbox SET delivery_state = 'superseded' WHERE outbox_id = ${outboxId} AND delivery_state = 'publishing'`;
+
+    // NEW-4 closure: if anything after a successful claim fails OUTSIDE the
+    // publish Result branch above (i.e. reaches the catchCause handler below
+    // with the row still 'publishing'), this un-claims it back to 'pending'
+    // instead of leaving it stranded until the next sweep's
+    // reclaimStalePublishing bulk pass. Guarded on 'publishing' so it is a
+    // no-op for failures that happened before a claim (row still 'pending')
+    // or after a terminal/superseded resolution already landed. Attempt count
+    // is left untouched — the failure reason here is unknown (not a relay
+    // failure, which already has its own counted retry path above), so this
+    // just makes the row eligible for the very next sweep with the same
+    // delayed-retry semantics as rescheduleRetry.
+    const unclaimToPending = (outboxId: string) =>
+      sql`UPDATE workflow_notification_outbox SET delivery_state = 'pending' WHERE outbox_id = ${outboxId} AND delivery_state = 'publishing'`;
 
     // Process a single row. Returns the outcome category for the sweep summary.
     // Per-row errors are caught here so one bad row can't abort the sweep.
@@ -178,6 +229,30 @@ const makeWorkflowBoardNotificationDispatcher = (
           return "superseded" as const;
         }
 
+        // Pre-publish latest-sequence check (Grok's option 2, gate-1 re-gate
+        // NEW-1 closure). Narrows the unavoidable RTT residual: right after
+        // claiming and before making the network call, check whether a newer
+        // needs-you transition for this ticket has already landed in the
+        // outbox. A newer row means the committer's own supersede (widened to
+        // also match 'publishing', see WorkflowEventCommitter.ts) either
+        // already superseded this row or is about to — either way, publishing
+        // this row's content now would be a stale push we can still avoid by
+        // simply not making the call. This does NOT close the residual
+        // entirely: if the relay call is already in flight by the time a
+        // newer row is inserted, this check ran too early to see it — that
+        // remaining sliver is caught by the post-publish CAS (markSent)
+        // below, and if the publish itself has already gone out over the
+        // wire by then, that push is the documented unavoidable RTT residual.
+        const latest = yield* sql<{ readonly maxSequence: number | null }>`
+          SELECT MAX(sequence) AS "maxSequence"
+          FROM workflow_notification_outbox
+          WHERE ticket_id = ${row.ticketId}
+        `;
+        if ((latest[0]?.maxSequence ?? row.sequence) > row.sequence) {
+          yield* unclaimSuperseded(row.outboxId);
+          return "superseded" as const;
+        }
+
         const published = yield* relay
           .publishTicket({
             environmentId: envId,
@@ -188,8 +263,11 @@ const makeWorkflowBoardNotificationDispatcher = (
           .pipe(Effect.result);
 
         if (Result.isSuccess(published)) {
-          yield* markState(row.outboxId, "sent");
-          return "sent" as const;
+          const sent = yield* markSent(row.outboxId);
+          // CAS loss here means the committer's widened supersede guard beat
+          // us to it while the publish call was in flight — see markSent's
+          // doc comment for the residual this represents.
+          return sent ? ("sent" as const) : ("superseded" as const);
         }
 
         const nextAttempt = row.attemptCount + 1;
@@ -201,7 +279,7 @@ const makeWorkflowBoardNotificationDispatcher = (
             attemptCount: nextAttempt,
             error: published.failure,
           });
-          yield* markState(row.outboxId, "failed", nextAttempt);
+          yield* markGivenUp(row.outboxId, nextAttempt);
           return "failed" as const;
         }
         yield* rescheduleRetry(row.outboxId, nextAttempt);
@@ -214,11 +292,17 @@ const makeWorkflowBoardNotificationDispatcher = (
           // Re-dying with the squashed cause keeps the error channel `never`.
           Cause.hasDies(cause) || Cause.hasInterrupts(cause)
             ? Effect.die(Cause.squash(cause))
-            : Effect.logWarning("workflow.board-notification.row-failed", {
-                outboxId: row.outboxId,
-                ticketId: row.ticketId,
-                cause,
-              }).pipe(Effect.as("failed" as const)),
+            : Effect.gen(function* () {
+                // Best-effort un-claim: a failure here must not itself abort
+                // the sweep or mask the original cause logged below.
+                yield* unclaimToPending(row.outboxId).pipe(Effect.catchCause(() => Effect.void));
+                yield* Effect.logWarning("workflow.board-notification.row-failed", {
+                  outboxId: row.outboxId,
+                  ticketId: row.ticketId,
+                  cause,
+                });
+                return "failed" as const;
+              }),
         ),
       );
 

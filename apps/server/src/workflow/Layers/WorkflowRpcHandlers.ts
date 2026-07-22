@@ -418,6 +418,24 @@ const WORKFLOW_BOARD_FILE_PATH_PATTERN = /^\.t3\/boards\/[A-Za-z0-9_-]+\.json$/;
 const toWorkflowRpcError = (message: string) => (cause: unknown) =>
   workflowRpcError(message, cause);
 
+/**
+ * Like `toWorkflowRpcError`, but appends the engine's own message so a typed
+ * engine rejection survives the RPC edge intact. The client only ever sees
+ * `Error.message`, so the `invokeParkAction` handler must surface the cause
+ * text — otherwise the web's `isParkActionDriftError` substring match (against
+ * the shared PARK_ACTION_DRIFT_MESSAGES fragments) can never fire and the
+ * stale inline buttons never repair.
+ */
+const toWorkflowRpcErrorWithCauseMessage =
+  (prefix: string) =>
+  (cause: unknown): WorkflowRpcError => {
+    const causeMessage =
+      cause instanceof Error && typeof cause.message === "string" && cause.message.length > 0
+        ? cause.message
+        : null;
+    return workflowRpcError(causeMessage === null ? prefix : `${prefix}: ${causeMessage}`, cause);
+  };
+
 const toContractLintError = (error: LintError): WorkflowLintError => ({
   code: error.code,
   message: error.message,
@@ -2809,7 +2827,11 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
         WORKFLOW_WS_METHODS.invokeParkAction,
         deps.engine
           .invokeParkAction(input.ticketId, input.actionIndex, input.parkedEventId)
-          .pipe(Effect.mapError(toWorkflowRpcError("Failed to invoke workflow park action"))),
+          .pipe(
+            Effect.mapError(
+              toWorkflowRpcErrorWithCauseMessage("Failed to invoke workflow park action"),
+            ),
+          ),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.runLane]: (input: { readonly ticketId: TicketId }) =>
@@ -2978,6 +3000,8 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               title: row.title,
               status: row.status,
               laneKey: row.laneKey as LaneKey,
+              attentionKind: validAttentionKind(row.attentionKind) as never,
+              parkedAt: row.parkedAt,
               sinceMs: Math.max(0, Math.floor(row.sinceMs)),
             })),
           };
@@ -3111,6 +3135,7 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               attentionKind: validAttentionKind(row.attentionKind) as never,
               attentionReason: row.attentionReason,
               updatedAt: row.updatedAt,
+              parkedAt: row.parkedAt,
             }),
           );
         }),

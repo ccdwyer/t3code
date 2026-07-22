@@ -794,6 +794,8 @@ const make = Effect.gen(function* () {
         pr.pr_state AS "prState",
         pr.last_ci_state AS "prCiState",
         status,
+        attention_kind AS "attentionKind",
+        attention_reason AS "attentionReason",
         parked_substate AS "parkedSubstate",
         parked_label AS "parkedLabel",
         parked_reason AS "parkedReason",
@@ -1108,6 +1110,8 @@ const make = Effect.gen(function* () {
         readonly title: string;
         readonly status: string;
         readonly laneKey: string;
+        readonly attentionKind: string | null;
+        readonly parkedAt: string | null;
         readonly updatedAt: string;
       }>`
         SELECT
@@ -1115,6 +1119,8 @@ const make = Effect.gen(function* () {
           title,
           status,
           current_lane_key AS "laneKey",
+          attention_kind AS "attentionKind",
+          parked_at AS "parkedAt",
           updated_at AS "updatedAt"
         FROM projection_ticket
         WHERE board_id = ${boardId}
@@ -1128,13 +1134,22 @@ const make = Effect.gen(function* () {
         shippedCount: counts[0]?.shippedCount ?? 0,
         totalTokens: usage[0]?.totalTokens ?? 0,
         totalDurationMs: usage[0]?.totalDurationMs ?? 0,
-        needsAttention: attention.map((row) => ({
-          ticketId: row.ticketId,
-          title: row.title,
-          status: row.status,
-          laneKey: row.laneKey,
-          sinceMs: Math.max(0, nowMs - Date.parse(row.updatedAt)),
-        })),
+        needsAttention: attention.map((row) => {
+          // Parked rows age from their own park timestamp — `updated_at` is
+          // bumped on any edit, which would reset the digest clock to "just
+          // now". Non-parked rows have no park timestamp and keep updated_at.
+          const sinceSource =
+            row.status === "parked" && row.parkedAt !== null ? row.parkedAt : row.updatedAt;
+          return {
+            ticketId: row.ticketId,
+            title: row.title,
+            status: row.status,
+            laneKey: row.laneKey,
+            attentionKind: row.attentionKind,
+            parkedAt: row.parkedAt,
+            sinceMs: Math.max(0, nowMs - Date.parse(sinceSource)),
+          };
+        }),
       };
     });
 
@@ -1445,7 +1460,8 @@ const make = Effect.gen(function* () {
         pt.current_lane_key AS "currentLaneKey",
         pt.attention_kind AS "attentionKind",
         pt.attention_reason AS "attentionReason",
-        pt.updated_at AS "updatedAt"
+        pt.updated_at AS "updatedAt",
+        pt.parked_at AS "parkedAt"
       FROM projection_ticket AS pt
       INNER JOIN projection_board AS pb
         ON pb.board_id = pt.board_id

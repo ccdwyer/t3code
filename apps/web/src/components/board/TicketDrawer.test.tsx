@@ -345,6 +345,25 @@ describe("TicketDrawer", () => {
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>.*Run lane<\/button>/s);
   });
 
+  it("disables Run lane for a parked ticket even when its lane has a manual pipeline", () => {
+    // The parked ticket sits in a manual lane WITH a pipeline, so the old gate
+    // (entry === manual && pipelineStepCount > 0) would have enabled Run lane —
+    // but a parked ticket is non-admitted, so the server would no-op/error. The
+    // affordance must be disabled with the recovery-pointing title.
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={parkedTicketDetail}
+        lanes={[{ key: "implement", name: "Implement", entry: "manual", pipelineStepCount: 2 }]}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onParkAction={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('title="Parked — use the recovery actions above."');
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>.*Run lane<\/button>/s);
+  });
+
   it("renders script steps with read-only logs and operational badges", () => {
     const Drawer = TicketDrawer as ComponentType<
       Parameters<typeof TicketDrawer>[0] & { readonly projectId: ProjectId }

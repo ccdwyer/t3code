@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { attentionLabel } from "./needsYouAttentionLabel";
+import { attentionAgeSource, attentionLabel } from "./needsYouAttentionLabel";
 
 describe("attentionLabel", () => {
   it("labels waiting_for_approval as Needs approval", () => {
@@ -35,5 +35,22 @@ describe("attentionLabel", () => {
 
   it("falls back to the raw status for a non-parked ticket with an unrecognized/null attentionKind", () => {
     expect(attentionLabel({ attentionKind: null, status: "running" })).toBe("running");
+  });
+});
+
+describe("attentionAgeSource", () => {
+  it("ages a parked ticket from its parkedAt, not the edit-bumped updatedAt", () => {
+    expect(
+      attentionAgeSource({
+        parkedAt: "2026-07-22T00:00:00.000Z",
+        updatedAt: "2026-07-22T05:00:00.000Z",
+      }),
+    ).toBe("2026-07-22T00:00:00.000Z");
+  });
+
+  it("falls back to updatedAt when parkedAt is null (non-parked rows)", () => {
+    expect(attentionAgeSource({ parkedAt: null, updatedAt: "2026-07-22T05:00:00.000Z" })).toBe(
+      "2026-07-22T05:00:00.000Z",
+    );
   });
 });

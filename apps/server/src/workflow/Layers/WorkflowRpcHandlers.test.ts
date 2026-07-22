@@ -5112,6 +5112,7 @@ it.effect(
                 attentionKind: "waiting_for_input" as const,
                 attentionReason: "Please confirm the deploy target",
                 updatedAt: "2026-06-13T10:00:00.000Z",
+                parkedAt: null,
               },
               // A second ticket with status "running" — should NOT appear because the
               // read model filters; we verify the handler passes through exactly what

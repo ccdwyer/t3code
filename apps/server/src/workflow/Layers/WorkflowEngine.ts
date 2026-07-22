@@ -17,7 +17,7 @@ import type {
   WorkflowStep,
   WorkflowStepUsage,
 } from "@t3tools/contracts";
-import { isParkTarget } from "@t3tools/contracts";
+import { isParkTarget, PARK_ACTION_DRIFT_MESSAGES } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -2410,7 +2410,7 @@ const make = Effect.gen(function* () {
       const originJson = ticket.parkOrigin ?? null;
       if (originJson === null) {
         return yield* new WorkflowEventStoreError({
-          message: "park actions unavailable — board definition changed",
+          message: PARK_ACTION_DRIFT_MESSAGES.definitionChanged,
         });
       }
       const boardId = ticket.boardId as BoardId;
@@ -2425,7 +2425,7 @@ const make = Effect.gen(function* () {
         definition === null ? null : resolveParkActions(definition, laneKey, originJson);
       if (actions === null) {
         return yield* new WorkflowEventStoreError({
-          message: "park actions unavailable — board definition changed",
+          message: PARK_ACTION_DRIFT_MESSAGES.definitionChanged,
         });
       }
       // The actions DID resolve from the current definition here, so an
@@ -2435,14 +2435,14 @@ const make = Effect.gen(function* () {
       const action = actions[actionIndex];
       if (action === undefined) {
         return yield* new WorkflowEventStoreError({
-          message: "park action index out of range",
+          message: PARK_ACTION_DRIFT_MESSAGES.indexOutOfRange,
         });
       }
       // The action's target lane must exist in the CURRENT definition.
       const targetLane = yield* registry.getLane(boardId, action.to);
       if (targetLane === null) {
         return yield* new WorkflowEventStoreError({
-          message: `park action targets lane '${action.to}' which no longer exists in the board definition`,
+          message: `park action targets lane '${action.to}' which ${PARK_ACTION_DRIFT_MESSAGES.targetLaneMissing}`,
         });
       }
       // Re-resolution repeated IN-LOCK: a concurrent board save may install a
@@ -2465,7 +2465,7 @@ const make = Effect.gen(function* () {
           currentAction.label !== action.label
         ) {
           return yield* new WorkflowEventStoreError({
-            message: "park actions unavailable — board definition changed",
+            message: PARK_ACTION_DRIFT_MESSAGES.definitionChanged,
           });
         }
       });
@@ -2984,6 +2984,16 @@ const make = Effect.gen(function* () {
       const currentDetail = yield* read.getTicketDetail(ticketId);
       if (!currentDetail) {
         return;
+      }
+
+      // A parked ticket is non-admitted (its lane entry token is null), so the
+      // `lane && token` guard below would silently no-op. Fail typed instead so
+      // a client that mistakenly offers "Run lane" surfaces the real reason
+      // rather than a successful call that starts nothing.
+      if (currentDetail.ticket.status === "parked") {
+        return yield* new WorkflowEventStoreError({
+          message: "ticket is parked — recover via park actions or move",
+        });
       }
 
       const unresolvedDeps = currentDetail.ticket.unresolvedDependencyCount ?? 0;

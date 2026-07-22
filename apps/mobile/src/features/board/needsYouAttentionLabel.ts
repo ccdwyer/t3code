@@ -28,3 +28,16 @@ export function attentionLabel(
       return ticket.status === "parked" ? "parked" : ticket.status;
   }
 }
+
+/**
+ * The stable timestamp a needs-attention row ages and sorts by. A parked ticket
+ * ages from its OWN park time (`parkedAt`) — the projection bumps `updatedAt` on
+ * any edit, so using it would reset a parked ticket's clock to "just now" after
+ * an unrelated title edit (and disagree with the web board, which ages from
+ * `parkedAt`). Non-parked rows have no `parkedAt` and keep `updatedAt`.
+ */
+export function attentionAgeSource(
+  ticket: Pick<WorkflowNeedsAttentionTicketView, "parkedAt" | "updatedAt">,
+): string {
+  return ticket.parkedAt ?? ticket.updatedAt;
+}

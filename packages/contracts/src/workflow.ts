@@ -61,6 +61,32 @@ export const WORKFLOW_WS_METHODS = {
   importWorkItems: "workflow.importWorkItems",
 } as const;
 
+/**
+ * Park-action drift error message fragments — the single source of truth shared
+ * by the server (which emits engine errors containing these) and the web (whose
+ * `isParkActionDriftError` substring-matches them). The RPC edge squashes an
+ * engine rejection to a plain `Error.message`, and the `invokeParkAction`
+ * handler surfaces the engine's cause message through the wire, so drift
+ * detection is a substring match against these exact fragments — never
+ * hand-copied strings on either side.
+ */
+export const PARK_ACTION_DRIFT_MESSAGES = {
+  /** The parked action no longer resolves against the CURRENT board definition. */
+  definitionChanged: "park actions unavailable — board definition changed",
+  /**
+   * `actionIndex` resolved cleanly against the current definition but points
+   * past the end of the re-resolved action list. The server treats this as a
+   * stale/bogus client request (not true definition drift), but the web still
+   * refreshes the board defensively so the dead inline button repairs.
+   */
+  indexOutOfRange: "park action index out of range",
+  /**
+   * Suffix fragment for the "target lane was deleted" case. The full server
+   * message is `park action targets lane '<lane>' which <targetLaneMissing>`.
+   */
+  targetLaneMissing: "no longer exists in the board definition",
+} as const;
+
 const makeId = <Brand extends string>(brand: Brand) =>
   TrimmedNonEmptyString.pipe(Schema.brand(brand));
 
@@ -942,6 +968,10 @@ export const WorkflowNeedsAttentionTicketView = Schema.Struct({
   attentionKind: Schema.NullOr(WorkflowTicketAttentionKind),
   attentionReason: Schema.NullOr(Schema.String),
   updatedAt: Schema.String,
+  // Park timestamp — present (non-null) only while the ticket is parked. The
+  // projection bumps `updatedAt` on any edit, so parked rows must age from this
+  // stable clock; consumers fall back to `updatedAt` when it is null.
+  parkedAt: Schema.NullOr(Schema.String),
 });
 export type WorkflowNeedsAttentionTicketView = typeof WorkflowNeedsAttentionTicketView.Type;
 
@@ -1241,6 +1271,13 @@ export const WorkflowBoardDigest = Schema.Struct({
       title: Schema.String,
       status: Schema.String,
       laneKey: LaneKey,
+      // Attention kind — present (non-null) for waiting/parked rows so the
+      // digest can distinguish a parked issue from a waiting item.
+      attentionKind: Schema.NullOr(WorkflowTicketAttentionKind),
+      // Park timestamp — present (non-null) only while parked. `sinceMs` is
+      // aged from this stable clock (not the edit-bumped `updatedAt`) for
+      // parked rows; null otherwise.
+      parkedAt: Schema.NullOr(Schema.String),
       sinceMs: NonNegativeInt,
     }),
   ),

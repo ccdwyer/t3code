@@ -1,5 +1,6 @@
 import {
   MessageId,
+  PARK_ACTION_DRIFT_MESSAGES,
   StepRunId,
   type EnvironmentApi,
   type TicketAttachment,
@@ -263,11 +264,13 @@ describe("submitParkActionFromBoardRoute", () => {
     expect(reloadTicketDetailIfOpen).toHaveBeenCalledOnce();
   });
 
-  it("surfaces an error toast (and does not reload) when the RPC rejects", async () => {
+  it("surfaces an error toast (and does not reload) when the RPC rejects with a non-drift error", async () => {
+    // A generic (non-drift) rejection must NOT reload the drawer detail — only
+    // definition-drift errors repair the board/drawer (covered separately).
     const api = {
       workflow: {
         invokeParkAction: vi.fn(async () => {
-          throw new Error("park action index out of range");
+          throw new Error("network unavailable");
         }),
       },
     } as unknown as EnvironmentApi;
@@ -285,7 +288,7 @@ describe("submitParkActionFromBoardRoute", () => {
       expect.objectContaining({
         type: "error",
         title: "Couldn't update ticket",
-        description: "park action index out of range",
+        description: "network unavailable",
       }),
     );
     expect(reloadTicketDetailIfOpen).not.toHaveBeenCalled();
@@ -401,6 +404,46 @@ describe("submitParkActionFromBoardRoute", () => {
     });
     expect(onDefinitionDriftGeneric).not.toHaveBeenCalled();
   });
+
+  it("on drift refreshes BOTH the board and the open drawer detail for the failing ticket", async () => {
+    const driftApi = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => {
+          throw new Error(
+            `Failed to invoke workflow park action: ${PARK_ACTION_DRIFT_MESSAGES.definitionChanged}`,
+          );
+        }),
+      },
+    } as unknown as EnvironmentApi;
+    const onDefinitionDrift = vi.fn();
+    const reloadTicketDetailIfOpen = vi.fn();
+    await submitParkActionFromBoardRoute(driftApi, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds: new Set<string>(),
+      onDefinitionDrift,
+    });
+    // Board repair (card/strip) AND drawer repair both fire — the drawer holds a
+    // cached detail payload the board subscription cannot repair on its own.
+    expect(onDefinitionDrift).toHaveBeenCalledOnce();
+    expect(reloadTicketDetailIfOpen).toHaveBeenCalledOnce();
+  });
+
+  it("does not refresh the drawer detail on a generic (non-drift) rejection", async () => {
+    const genericApi = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => {
+          throw new Error("network unavailable");
+        }),
+      },
+    } as unknown as EnvironmentApi;
+    const reloadTicketDetailIfOpen = vi.fn();
+    await submitParkActionFromBoardRoute(genericApi, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds: new Set<string>(),
+      onDefinitionDrift: vi.fn(),
+    });
+    expect(reloadTicketDetailIfOpen).not.toHaveBeenCalled();
+  });
 });
 
 describe("isParkActionDriftError", () => {
@@ -416,6 +459,37 @@ describe("isParkActionDriftError", () => {
     ).toBe(true);
     expect(isParkActionDriftError("network unavailable")).toBe(false);
     expect(isParkActionDriftError("Something went wrong. Please try again.")).toBe(false);
+  });
+
+  it("matches every shared PARK_ACTION_DRIFT_MESSAGES fragment (no hand-copied strings)", () => {
+    expect(isParkActionDriftError(PARK_ACTION_DRIFT_MESSAGES.definitionChanged)).toBe(true);
+    expect(isParkActionDriftError(PARK_ACTION_DRIFT_MESSAGES.indexOutOfRange)).toBe(true);
+    // The lane-missing fragment is a suffix of the full server message.
+    expect(
+      isParkActionDriftError(
+        `park action targets lane 'gone' which ${PARK_ACTION_DRIFT_MESSAGES.targetLaneMissing}`,
+      ),
+    ).toBe(true);
+  });
+
+  it("still matches after the RPC handler wraps the engine message for the wire", () => {
+    // The invokeParkAction handler surfaces the engine cause as
+    // `Failed to invoke workflow park action: <engine message>`; the matcher
+    // must fire on that wire form for the board/drawer to repair.
+    const prefix = "Failed to invoke workflow park action";
+    expect(
+      isParkActionDriftError(`${prefix}: ${PARK_ACTION_DRIFT_MESSAGES.definitionChanged}`),
+    ).toBe(true);
+    expect(isParkActionDriftError(`${prefix}: ${PARK_ACTION_DRIFT_MESSAGES.indexOutOfRange}`)).toBe(
+      true,
+    );
+    expect(
+      isParkActionDriftError(
+        `${prefix}: park action targets lane 'gone' which ${PARK_ACTION_DRIFT_MESSAGES.targetLaneMissing}`,
+      ),
+    ).toBe(true);
+    // The generic wrapper alone (no engine cause) must NOT be treated as drift.
+    expect(isParkActionDriftError(prefix)).toBe(false);
   });
 });
 

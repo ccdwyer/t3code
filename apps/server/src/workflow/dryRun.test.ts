@@ -498,4 +498,35 @@ layer("simulateBoardRoute", (it) => {
         assert.equal(hop?.park?.substate, "issue");
       }),
   );
+
+  it.effect(
+    "the shipped default board's Implementation success scenario parks 'issue' via on.success (malformed-verdict path)",
+    () =>
+      Effect.gen(function* () {
+        // The Implementation lane routes only via captured review-verdict output
+        // the dry run cannot evaluate, and its `on.success` is an issue park. Per
+        // the engine-mirrored precedence (dryRun.ts), a success dry-run from a
+        // lane whose `on.success` exists parks rather than optimistically
+        // following an output-gated transition — proving the shipped default
+        // board's on.success issue park is reachable, not just its Planning
+        // failure park.
+        const evaluator = yield* PredicateEvaluator;
+        const definition = defaultBoardDefinition({
+          name: "Default board",
+          agent: { instance: "codex_main", model: "gpt-5.5" },
+        });
+        const run = yield* simulateBoardRoute({
+          definition,
+          startLane: "implementation" as never,
+          scenario: "success",
+          evaluator,
+        });
+        assert.equal(run.end, "parked");
+        assert.equal(run.endLane, "implementation");
+        const parkHop = run.hops.at(-1);
+        assert.equal(parkHop?.source, "lane_on");
+        assert.isUndefined(parkHop?.toLane);
+        assert.equal(parkHop?.park?.substate, "issue");
+      }),
+  );
 });

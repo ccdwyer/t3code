@@ -1722,9 +1722,11 @@ describe("WorkflowNeedsAttentionTicketView", () => {
         attentionKind: "blocked",
         attentionReason: "Merge conflict",
         updatedAt: "2026-06-13T00:00:00.000Z",
+        parkedAt: null,
       });
       assert.equal(view.attentionKind, "blocked");
       assert.equal(view.ticketId, "t1");
+      assert.equal(view.parkedAt, null);
     }),
   );
 
@@ -1740,8 +1742,28 @@ describe("WorkflowNeedsAttentionTicketView", () => {
         attentionKind: null,
         attentionReason: null,
         updatedAt: "2026-06-13T00:00:00.000Z",
+        parkedAt: null,
       });
       assert.equal(view.attentionKind, null);
+    }),
+  );
+
+  it.effect("carries parkedAt for a parked ticket so consumers age from it", () =>
+    Effect.gen(function* () {
+      const view = yield* decode({
+        ticketId: "t3",
+        boardId: "b1",
+        boardName: "Delivery",
+        title: "Parked ticket",
+        status: "parked",
+        currentLaneKey: "implementation",
+        attentionKind: "parked_issue",
+        attentionReason: "Hit a snag",
+        updatedAt: "2026-06-13T05:00:00.000Z",
+        parkedAt: "2026-06-13T00:00:00.000Z",
+      });
+      assert.equal(view.parkedAt, "2026-06-13T00:00:00.000Z");
+      assert.equal(view.attentionKind, "parked_issue");
     }),
   );
 });

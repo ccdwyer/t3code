@@ -11,7 +11,7 @@ import { getEnvironmentClient } from "../../state/environment-session-registry";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { InboxSkeleton } from "./InboxSkeleton";
 import { deriveInboxViewState } from "./inboxViewState";
-import { attentionLabel } from "./needsYouAttentionLabel";
+import { attentionAgeSource, attentionLabel } from "./needsYouAttentionLabel";
 
 interface NeedsYouRow {
   readonly environmentId: EnvironmentId;
@@ -105,9 +105,10 @@ export function NeedsYouInboxScreen() {
     aggregated.sort((a, b) => {
       // Date.parse yields NaN for malformed timestamps; treat those as oldest so
       // the comparator stays a deterministic total order (NaN subtraction would
-      // corrupt the sort across engines).
-      const dateA = Date.parse(a.ticket.updatedAt);
-      const dateB = Date.parse(b.ticket.updatedAt);
+      // corrupt the sort across engines). Parked rows sort by their park time,
+      // not the edit-bumped updatedAt (see attentionAgeSource).
+      const dateA = Date.parse(attentionAgeSource(a.ticket));
+      const dateB = Date.parse(attentionAgeSource(b.ticket));
       if (Number.isNaN(dateA) && Number.isNaN(dateB)) return 0;
       if (Number.isNaN(dateA)) return 1;
       if (Number.isNaN(dateB)) return -1;
@@ -212,7 +213,7 @@ export function NeedsYouInboxScreen() {
                     {row.ticket.title}
                   </Text>
                   <Text className="font-sans text-xs text-foreground-muted">
-                    {formatRelative(row.ticket.updatedAt)}
+                    {formatRelative(attentionAgeSource(row.ticket))}
                   </Text>
                 </View>
                 <Text className="font-sans text-sm text-foreground-muted">

@@ -1757,6 +1757,79 @@ layer("WorkflowReadModel", (it) => {
     }),
   );
 
+  // Regression: the board snapshot builds BoardTicketViews from listTickets while
+  // incremental publishes build them from getTicketDetail. If listTickets omits
+  // attention_kind, a parked ticket loads with no attentionKind on snapshot but
+  // gains parked_issue on the next incremental publish — the web reads that as a
+  // fresh parked transition and fires a false "hit an issue" toast. Pin field
+  // parity for a parked ticket across both read paths.
+  it.effect(
+    "listTickets and getTicketDetail agree on attentionKind/attentionReason/parked fields for a parked ticket",
+    () =>
+      Effect.gen(function* () {
+        const read = yield* WorkflowReadModel;
+        const pipeline = yield* WorkflowProjectionPipeline;
+        const registry = yield* BoardRegistry;
+        const base = {
+          ticketId: "t-park-parity" as never,
+          occurredAt: "2026-06-08T00:00:00.000Z" as never,
+        };
+
+        yield* registry.register("b-park-parity" as never, {
+          name: "Park parity board",
+          lanes: [{ key: "implement", name: "Implement", entry: "manual" }],
+        });
+
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketCreated",
+          eventId: "park-parity-a" as never,
+          streamVersion: 0,
+          payload: {
+            boardId: "b-park-parity" as never,
+            title: "Parks with an issue" as never,
+            laneKey: "implement" as never,
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          occurredAt: "2026-06-08T01:00:00.000Z" as never,
+          type: "TicketParked",
+          eventId: "park-parity-b" as never,
+          streamVersion: 1,
+          payload: {
+            substate: "issue" as never,
+            label: "Issue encountered" as never,
+            reason: "step failed: boom" as never,
+            parkOrigin: encodeUnknownJsonString({
+              src: "step",
+              stepKey: "implement",
+              key: "failure",
+              fp: "abc123",
+            }) as never,
+            actionsSnapshot: [{ label: "Retry", to: "implement" }] as never,
+          },
+        });
+
+        const tickets = yield* read.listTickets("b-park-parity" as never);
+        const listRow = tickets.find((t) => t.ticketId === "t-park-parity");
+        const detail = yield* read.getTicketDetail("t-park-parity" as never);
+
+        assert.ok(listRow);
+        assert.ok(detail);
+        // The field that was dropped from the snapshot path (finding B).
+        assert.equal(listRow?.attentionKind, "parked_issue");
+        assert.equal(detail?.ticket.attentionKind, "parked_issue");
+        assert.equal(listRow?.attentionKind, detail?.ticket.attentionKind);
+        assert.equal(listRow?.attentionReason, detail?.ticket.attentionReason);
+        // The rest of the parked payload must already agree (unchanged, guarded).
+        assert.equal(listRow?.status, detail?.ticket.status);
+        assert.equal(listRow?.parkedSubstate, detail?.ticket.parkedSubstate);
+        assert.equal(listRow?.parkedAt, detail?.ticket.parkedAt);
+        assert.equal(listRow?.parkedEventId, detail?.ticket.parkedEventId);
+      }),
+  );
+
   it.effect(
     "ticket detail falls back to a key-only lane when the board definition is unregistered",
     () =>
@@ -2052,6 +2125,46 @@ layer("WorkflowReadModel", (it) => {
       assert.equal(parkedRow?.status, "parked");
       assert.equal(parkedRow?.laneKey, "review");
     }),
+  );
+
+  it.effect(
+    "getBoardDigest ages a parked row from parked_at (not the edit-bumped updated_at) and carries attentionKind/parkedAt",
+    () =>
+      Effect.gen(function* () {
+        const read = yield* WorkflowReadModel;
+        const sql = yield* SqlClient.SqlClient;
+        const now = yield* DateTime.now;
+        // Parked 3h ago, then edited 5m ago (updated_at bumped). Aging must
+        // follow parked_at, so sinceMs ≈ 3h, not ≈ 5m.
+        const parkedIso = DateTime.formatIso(DateTime.subtract(now, { hours: 3 }));
+        const editedIso = DateTime.formatIso(DateTime.subtract(now, { minutes: 5 }));
+
+        yield* sql`
+          INSERT INTO projection_ticket (
+            ticket_id, board_id, title, current_lane_key, status,
+            attention_kind, attention_reason, parked_substate, parked_at,
+            created_at, updated_at
+          )
+          VALUES (
+            'd-park-age', 'b-digest-age', 'Parked issue', 'implement', 'parked',
+            'parked_issue', 'step failed', 'issue', ${parkedIso},
+            ${parkedIso}, ${editedIso}
+          )
+        `;
+
+        const digest = yield* read.getBoardDigest("b-digest-age" as never, 24);
+        const row = digest.needsAttention.find((r) => r.ticketId === "d-park-age");
+        assert.ok(row);
+        assert.equal(row?.attentionKind, "parked_issue");
+        assert.equal(row?.parkedAt, parkedIso);
+        // sinceMs aged from parked_at (~3h) not updated_at (~5m).
+        const twoHoursMs = 2 * 60 * 60 * 1000;
+        assert.isAbove(
+          row?.sinceMs ?? 0,
+          twoHoursMs,
+          "parked row must age from parked_at, not updated_at",
+        );
+      }),
   );
 
   it.effect("deleteTicketState removes the ticket's notification outbox rows", () =>

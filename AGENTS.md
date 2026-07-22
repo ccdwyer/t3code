@@ -83,6 +83,10 @@ The most common defect in this repo is a change that works on the path you teste
 - The web app requires pairing. Hand over the pairing URL, not the bare origin. A URL without its token is useless to whoever you gave it to.
 - Stop what you started, by the PID you tracked. See rule 1.
 
+## Local Development
+
+- Schema-migration note: a pre-park dev DB (one that applied migration `033_WorkflowSchema` before the 2026-07-22 park-in-place fold) fails startup on this branch because the park columns were folded into 033 in place. Wipe local state (`state.sqlite` / `~/.t3`) or apply the ALTER recipe in `docs/superpowers/specs/2026-07-22-workflow-substates-design.md` §Backwards compatibility.
+
 ## Test data
 
 An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:

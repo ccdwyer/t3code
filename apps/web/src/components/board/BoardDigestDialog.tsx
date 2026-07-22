@@ -15,6 +15,25 @@ import { formatDuration } from "~/session-logic";
 import { formatTokenCount } from "~/workflow/usageFormat";
 
 /**
+ * The short tag shown next to a needs-attention row. A parked *issue* is a
+ * failure the agent hit (distinct from something merely "waiting" on the user),
+ * so it reads "issue"; a blocked ticket reads "blocked"; everything else
+ * (waiting-on-user, parked-waiting) reads "waiting".
+ */
+export function digestAttentionLabel(ticket: {
+  readonly status: string;
+  readonly attentionKind: WorkflowBoardDigest["needsAttention"][number]["attentionKind"];
+}): string {
+  if (ticket.attentionKind === "parked_issue") {
+    return "issue";
+  }
+  if (ticket.status === "blocked") {
+    return "blocked";
+  }
+  return "waiting";
+}
+
+/**
  * The board's stand-up summary: what moved, what shipped, what it cost, and
  * which tickets have been waiting on a human the longest.
  */
@@ -167,8 +186,7 @@ export function BoardDigestDialog({
                             {ticket.title}
                           </span>
                           <span className="shrink-0 text-[11px] text-muted-foreground">
-                            {ticket.status === "blocked" ? "blocked" : "waiting"} ·{" "}
-                            {formatDuration(ticket.sinceMs)}
+                            {digestAttentionLabel(ticket)} · {formatDuration(ticket.sinceMs)}
                           </span>
                         </li>
                       ))}

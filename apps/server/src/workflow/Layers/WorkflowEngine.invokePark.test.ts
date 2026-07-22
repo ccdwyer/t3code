@@ -1,6 +1,7 @@
 // @effect-diagnostics globalTimers:off
 import { assert, it } from "@effect/vitest";
 import {
+  PARK_ACTION_DRIFT_MESSAGES,
   WorkflowDefinition,
   WorkflowEventId,
   type StepOutcome,
@@ -468,8 +469,15 @@ deletedTargetLayer("invokeParkAction with a deleted action target lane", (it) =>
       const parked = yield* parkedEventFor(ticketId as string);
       assert.ok(parked?.type === "TicketParked");
 
-      const exit = yield* engine.invokeParkAction(ticketId, 0, parked.eventId).pipe(Effect.exit);
-      assert.equal(exit._tag, "Failure");
+      // Pin the EXACT deleted-target message (shared fragment) so the web's
+      // isParkActionDriftError substring match can never silently stop firing
+      // if this copy is reworded. The full message embeds the missing lane key.
+      const error = yield* engine.invokeParkAction(ticketId, 0, parked.eventId).pipe(Effect.flip);
+      assert.equal(
+        error.message,
+        `park action targets lane 'gone' which ${PARK_ACTION_DRIFT_MESSAGES.targetLaneMissing}`,
+      );
+      assert.include(error.message, PARK_ACTION_DRIFT_MESSAGES.targetLaneMissing);
 
       const detail = yield* awaitParked(ticketId as string);
       assert.equal(detail?.ticket.status, "parked");
@@ -602,6 +610,8 @@ oobLayer("invokeParkAction with an out-of-range actionIndex", (it) => {
       assert.ok(parked?.type === "TicketParked");
 
       const error = yield* engine.invokeParkAction(ticketId, 1, parked.eventId).pipe(Effect.flip);
+      // Exact byte-identical pin against the shared fragment.
+      assert.equal(error.message, PARK_ACTION_DRIFT_MESSAGES.indexOutOfRange);
       assert.include(error.message, "park action index out of range");
       assert.notInclude(error.message, "board definition changed");
 
@@ -666,6 +676,8 @@ nullOriginLayer("invokeParkAction with an unresolvable (null) park origin", (it)
       `;
 
       const error = yield* engine.invokeParkAction(ticketId, 0, parked.eventId).pipe(Effect.flip);
+      // Exact byte-identical pin against the shared fragment.
+      assert.equal(error.message, PARK_ACTION_DRIFT_MESSAGES.definitionChanged);
       assert.include(error.message, "board definition changed");
       assert.notInclude(error.message, "index out of range");
     }),

@@ -128,6 +128,9 @@ export interface WorkflowNeedsAttentionTicketRow {
   readonly attentionKind: TicketAttentionKind | null;
   readonly attentionReason: string | null;
   readonly updatedAt: string;
+  // Park timestamp — non-null only while parked. Consumers age parked rows from
+  // this stable clock; `updated_at` is bumped on any edit.
+  readonly parkedAt: string | null;
 }
 
 export interface BoardDigestRow {
@@ -141,6 +144,11 @@ export interface BoardDigestRow {
     readonly title: string;
     readonly status: string;
     readonly laneKey: string;
+    // Raw attention kind — clamped to the WorkflowTicketAttentionKind literal
+    // union at the RPC boundary. Null when the ticket has none.
+    readonly attentionKind: TicketAttentionKind | null;
+    // Park timestamp — non-null only for parked rows; `sinceMs` is aged from it.
+    readonly parkedAt: string | null;
     readonly sinceMs: number;
   }>;
 }

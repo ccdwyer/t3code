@@ -250,17 +250,19 @@ unlimitedLayer("recoverBoardWip queued-release sweep ignores a parked ticket", (
 });
 
 // ---------------------------------------------------------------------------
-// (A.3) runLane on a parked ticket is a no-op: no error, no pipeline start.
-// runLane reads the ticket's current token; a parked ticket's token is NULL,
-// so the `lane && token` guard short-circuits before ever calling
-// startPipeline.
+// (A.3) runLane on a parked ticket fails typed and starts nothing. A parked
+// ticket is non-admitted (its lane entry token is NULL), so runLane refuses
+// with a typed error rather than silently succeeding: recovery is the park
+// actions or a manual move. The invariant is still "no pipeline start" — a
+// typed error starts nothing, and it also stops a client (web/mobile) from
+// mistakenly offering a Run lane that resolves successfully yet does nothing.
 // ---------------------------------------------------------------------------
 
 const runLaneExecutor = makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" }));
 const runLaneLayer = it.layer(baseLayer(runLaneExecutor.layer));
 
 runLaneLayer("runLane on a parked ticket", (it) => {
-  it.effect("does nothing: no error, no new pipeline start, ticket stays parked", () =>
+  it.effect("fails typed and starts nothing: no new pipeline start, ticket stays parked", () =>
     Effect.gen(function* () {
       const registry = yield* BoardRegistry;
       yield* registry.register(
@@ -303,10 +305,11 @@ runLaneLayer("runLane on a parked ticket", (it) => {
       const callsBeforeRunLane = runLaneExecutor.calls.count;
       const eventsBefore = yield* eventsFor(ticketId as string);
 
-      const exit = yield* engine.runLane(ticketId).pipe(Effect.exit);
-      assert.equal(exit._tag, "Success");
+      const error = yield* engine.runLane(ticketId).pipe(Effect.flip);
+      assert.equal(error.message, "ticket is parked — recover via park actions or move");
       yield* settle;
 
+      // Typed error ⇒ nothing started: same invariant the old no-op asserted.
       assert.equal(runLaneExecutor.calls.count, callsBeforeRunLane);
       const eventsAfter = yield* eventsFor(ticketId as string);
       assert.equal(eventsAfter.length, eventsBefore.length);

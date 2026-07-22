@@ -7,11 +7,21 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * Collapses the former migrations 033-055 (all pure DDL — CREATE TABLE /
  * ALTER TABLE ADD COLUMN / CREATE INDEX, no data backfills) into a single
  * migration. ALTER-added columns are folded inline in ascending original
- * migration order, so the resulting schema is byte-for-byte equivalent to the
- * one produced by running the original 23-step chain.
+ * migration order, so the collapsed schema matched the one produced by running
+ * the original 23-step chain at the time of the collapse.
+ *
+ * NOTE (2026-07-22): the park-in-place columns (parked_substate / parked_label
+ * / parked_reason / parked_at / parked_event_id / park_origin /
+ * current_step_label — see projection_ticket below) were folded into this
+ * migration IN PLACE after the collapse, so it is no longer byte-for-byte
+ * identical to that original chain. A dev DB that already applied 033 before
+ * this fold will be MISSING the park columns and must be wiped (or ALTERed per
+ * docs/superpowers/specs/2026-07-22-workflow-substates-design.md §Backwards
+ * compatibility) — startup fails otherwise.
  *
  * This branch (ft/hyperion) has only ever run on a single instance that will
- * be wiped, so renumbering is safe — there is no deployed DB to preserve.
+ * be wiped, so renumbering (and this in-place fold) is safe — there is no
+ * deployed DB to preserve.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

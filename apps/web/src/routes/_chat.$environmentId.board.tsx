@@ -8,6 +8,7 @@ import {
   type EnvironmentApi,
   LaneKey,
   MessageId,
+  PARK_ACTION_DRIFT_MESSAGES,
   ProjectId,
   StepRunId,
   type TicketAttachment,
@@ -196,14 +197,19 @@ export interface PendingParkActionGuard {
  * the CURRENT definition and fails with one of these typed messages when it no
  * longer maps. On any of them the client must refresh the board so the stale
  * inline buttons repair to the "actions unavailable" fallback instead of
- * letting the user re-click into the same error. (Kept as a substring match on
- * the surfaced message — the RPC squashes to a plain Error at the client edge.)
+ * letting the user re-click into the same error. Matched via the shared
+ * PARK_ACTION_DRIFT_MESSAGES fragments (contracts) — never hand-copied strings.
+ * The RPC squashes an engine rejection to a plain Error at the client edge, and
+ * the invokeParkAction handler surfaces the engine's cause message into that
+ * Error, so a substring match against these fragments still fires over the wire.
+ * (indexOutOfRange is a stale-client bug server-side, not true definition drift,
+ * but the web still treats it as refresh-worthy — see the constant's docs.)
  */
 export function isParkActionDriftError(message: string): boolean {
   return (
-    message.includes("board definition changed") ||
-    message.includes("park action index out of range") ||
-    message.includes("no longer exists in the board definition")
+    message.includes(PARK_ACTION_DRIFT_MESSAGES.definitionChanged) ||
+    message.includes(PARK_ACTION_DRIFT_MESSAGES.indexOutOfRange) ||
+    message.includes(PARK_ACTION_DRIFT_MESSAGES.targetLaneMissing)
   );
 }
 
@@ -254,8 +260,13 @@ export function submitParkActionFromBoardRoute(
         // Definition drift: the actions the user clicked no longer resolve.
         // Refresh the board so the stale buttons repair to "actions
         // unavailable" rather than re-toasting the same error on the next tap.
+        // Also refresh the OPEN drawer's detail: the board subscription repairs
+        // card/strip, but the drawer holds a cached getTicketDetail payload with
+        // the pre-drift `parked.actions` and would keep offering dead buttons
+        // until a manual reload.
         if (isParkActionDriftError(description)) {
           callbacks.onDefinitionDrift?.();
+          callbacks.reloadTicketDetailIfOpen();
         }
       },
     )

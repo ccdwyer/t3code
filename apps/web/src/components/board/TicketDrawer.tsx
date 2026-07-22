@@ -239,11 +239,21 @@ export function TicketDrawer({
   const waitingStepCount = detail.steps.filter((step) => step.status === "awaiting_user").length;
   const currentLane = lanes.find((lane) => lane.key === detail.ticket.currentLaneKey) ?? null;
   const laneActions = currentLane?.actions ?? [];
+  // A parked ticket is non-admitted (no lane entry token), so the server's
+  // runLane fails typed rather than starting anything. Gate the affordance so
+  // the drawer never advertises a Run lane that would no-op/error — recovery is
+  // the park actions above or a manual move.
+  const isParked = detail.ticket.parked !== undefined;
   const canRunLane =
-    currentLane !== null && currentLane.entry === "manual" && currentLane.pipelineStepCount > 0;
-  const runLaneTitle = canRunLane
-    ? `Run ${currentLane.name}`
-    : "This lane has no manual pipeline to run.";
+    !isParked &&
+    currentLane !== null &&
+    currentLane.entry === "manual" &&
+    currentLane.pipelineStepCount > 0;
+  const runLaneTitle = isParked
+    ? "Parked — use the recovery actions above."
+    : canRunLane
+      ? `Run ${currentLane.name}`
+      : "This lane has no manual pipeline to run.";
   const ticketDescription = detail.ticket.description?.trim() ?? "";
   const replyStep = detail.steps.find(isAwaitingUserInputStep) ?? null;
   const canReply = replyStep !== null && detail.ticket.status === "waiting_on_user";

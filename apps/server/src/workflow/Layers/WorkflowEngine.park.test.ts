@@ -1,5 +1,5 @@
 // @effect-diagnostics globalTimers:off
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import {
   isParkTarget,
   WorkflowDefinition,
@@ -22,6 +22,7 @@ import { BoardRegistry, type BoardRegistryShape } from "../Services/BoardRegistr
 import { ScriptCancelRegistry } from "../Services/ScriptCancelRegistry.ts";
 import { StepExecutor, type StepExecutorShape } from "../Services/StepExecutor.ts";
 import { WorkflowEngine } from "../Services/WorkflowEngine.ts";
+import { WorkflowEventCommitter } from "../Services/WorkflowEventCommitter.ts";
 import { WorkflowEventStore } from "../Services/WorkflowEventStore.ts";
 import { WorkflowReadModel, type TicketDetail } from "../Services/WorkflowReadModel.ts";
 import { WorkflowFoundationLive } from "../WorkflowFoundationLive.ts";
@@ -29,7 +30,7 @@ import { ApprovalGateLive } from "./ApprovalGate.ts";
 import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import { WorkflowBoardSaveLocksLive } from "./WorkflowBoardSaveLocks.ts";
 import { WorkflowEventCommitterLive } from "./WorkflowEventCommitter.ts";
-import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
+import { rulReferencesRunCount, WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 
@@ -805,6 +806,143 @@ blockedParkLayer("blocked park reason", (it) => {
         assert.equal(origin?.src, "lane_on");
         assert.equal(origin?.key, "blocked");
       }
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Budget-reason detection walks the JsonLogic tree for an EXACT var match
+// ---------------------------------------------------------------------------
+
+describe("rulReferencesRunCount", () => {
+  it("matches an exact { var: 'lane.runCount' } reference", () => {
+    assert.isTrue(rulReferencesRunCount({ "<": [{ var: "lane.runCount" }, 3] }));
+  });
+
+  it("matches the array var form { var: ['lane.runCount', default] }", () => {
+    assert.isTrue(rulReferencesRunCount({ "==": [{ var: ["lane.runCount", 0] }, 2] }));
+  });
+
+  it("matches a deeply nested reference", () => {
+    assert.isTrue(
+      rulReferencesRunCount({
+        and: [
+          { "==": [{ var: "steps.review.output.verdict" }, "revise"] },
+          { "<": [{ var: "lane.runCount" }, 2] },
+        ],
+      }),
+    );
+  });
+
+  it("does NOT match a similarly-named var (no substring false-positive)", () => {
+    assert.isFalse(rulReferencesRunCount({ "<": [{ var: "lane.runCountish" }, 3] }));
+  });
+
+  it("returns false for undefined / non-runCount rules", () => {
+    assert.isFalse(rulReferencesRunCount(undefined));
+    assert.isFalse(rulReferencesRunCount({ "==": [{ var: "status" }, "done"] }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RACE (token guard EXECUTES): completion reaches parkTicket AFTER a manual
+// move flipped the token; the in-lock guard bails without emitting TicketParked
+// ---------------------------------------------------------------------------
+
+it.layer(baseLayer(gatedExecutorLayer))("park token guard executes under a real race", (it) => {
+  it.effect("pipeline completes on a stale token after a move landed; guard bails, no park", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      const store = yield* WorkflowEventStore;
+      const committer = yield* WorkflowEventCommitter;
+      const read = yield* WorkflowReadModel;
+      yield* registry.register(
+        "b-guard" as never,
+        {
+          name: "guard",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                },
+              ],
+              // on.failure park would fire — unless the token was superseded.
+              on: { failure: { park: "issue", actions: [{ label: "Retry", to: "impl" }] } },
+            },
+            { key: "elsewhere", name: "Elsewhere", entry: "manual" },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+      const executor = (yield* StepExecutor) as GatedExecutor;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-guard" as never,
+        title: "Stale token",
+        initialLane: "impl" as never,
+      });
+
+      // Pipeline started; the step is blocked on the gate holding token T1.
+      const running = yield* awaitTicketWhere(
+        ticketId as string,
+        (detail) =>
+          (detail?.steps?.length ?? 0) >= 1 && detail?.ticket.currentLaneEntryToken !== null,
+      );
+      const staleToken = running?.ticket.currentLaneEntryToken;
+      assert.ok(staleToken !== null && staleToken !== undefined);
+
+      // A concurrent manual move already committed: it flips the ticket's
+      // lane-entry token WITHOUT interrupting the still-running pipeline fiber
+      // (we bypass engine.moveTicket precisely so the completion path runs to
+      // parkTicket and the in-lock token re-read actually executes).
+      yield* committer.commit({
+        type: "TicketMovedToLane",
+        ticketId,
+        payload: {
+          toLane: "elsewhere",
+          laneEntryToken: "fresh-token-after-move",
+          reason: "manual",
+        },
+        eventId: "evt-guard-move",
+        occurredAt: "2026-07-22T00:00:00.000Z",
+      } as never);
+
+      // Release the gate — the step fails, the pipeline computes the park
+      // decision, commits PipelineCompleted, then parkTicket re-reads the token.
+      yield* executor.releaseGate();
+
+      // Wait until the pipeline actually completes (proves the code path ran
+      // all the way to the routing/park section, not an early interrupt).
+      const readEvents = Stream.runCollect(store.readByTicket(ticketId)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      );
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        const current = yield* readEvents;
+        if (current.some((event) => event.type === "PipelineCompleted")) {
+          break;
+        }
+        yield* Effect.promise<void>(() => new Promise((resolve) => setTimeout(resolve, 10)));
+        yield* Effect.yieldNow;
+      }
+
+      const events = yield* readEvents;
+      // Contract: completion was reached (PipelineCompleted present)...
+      assert.isDefined(events.find((event) => event.type === "PipelineCompleted"));
+      // ...the prior move flipped the token...
+      const detail = yield* read.getTicketDetail(ticketId);
+      assert.equal(detail?.ticket.currentLaneKey, "elsewhere");
+      assert.equal(detail?.ticket.currentLaneEntryToken, "fresh-token-after-move");
+      assert.notEqual(detail?.ticket.currentLaneEntryToken, staleToken);
+      // ...and the in-lock guard bailed: NO park was emitted.
+      assert.isUndefined(events.find((event) => event.type === "TicketParked"));
+      assert.notEqual(detail?.ticket.status, "parked");
     }),
   );
 });

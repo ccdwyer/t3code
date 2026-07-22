@@ -267,6 +267,37 @@ const PARK_REASON_MAX_LENGTH = 200;
 const truncateReason = (text: string): string =>
   text.length > PARK_REASON_MAX_LENGTH ? text.slice(0, PARK_REASON_MAX_LENGTH) : text;
 
+const isJsonObject = (value: unknown): value is { readonly [key: string]: unknown } =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// Walks a JsonLogic rule tree looking for an EXACT `{ var: "lane.runCount" }`
+// reference (also the array form `{ var: ["lane.runCount", <default>] }`). A
+// substring match would false-positive on a sibling var like "lane.runCountish"
+// — this compares the var value by string equality. Exported for unit testing.
+export const rulReferencesRunCount = (rule: unknown): boolean => {
+  if (Array.isArray(rule)) {
+    return rule.some(rulReferencesRunCount);
+  }
+  if (!isJsonObject(rule)) {
+    return false;
+  }
+  for (const key of Object.keys(rule)) {
+    const value = rule[key];
+    if (key === "var") {
+      if (value === "lane.runCount") {
+        return true;
+      }
+      if (Array.isArray(value) && value[0] === "lane.runCount") {
+        return true;
+      }
+    }
+    if (rulReferencesRunCount(value)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 // The human-readable reason recorded on a park. Sourced from the actual cause:
 // the failing step's error/blocked text, the review-budget exhaustion count, or
 // the malformed-verdict "no matching transition" case.
@@ -282,8 +313,7 @@ const parkReason = (
     const transition = index === undefined ? undefined : (lane.transitions ?? [])[index];
     // A transition whose predicate consults lane.runCount is a review-budget
     // guard — report the exhaustion with the pass count from the eval context.
-    const isBudgetGuard =
-      transition !== undefined && JSON.stringify(transition.when ?? null).includes("lane.runCount");
+    const isBudgetGuard = transition !== undefined && rulReferencesRunCount(transition.when);
     if (isBudgetGuard) {
       return `review budget exhausted after ${context.lane.runCount} passes`;
     }
@@ -2578,6 +2608,8 @@ const make = Effect.gen(function* () {
       // A matched onEvent target may park in place instead of moving lanes.
       // Never build a TicketRouteDecided from a park target — park is recorded
       // solely by TicketParked.
+      // Park does not supersede a still-running pipeline fiber; its next token
+      // check no-ops it. See Task 8 recovery tests.
       if (isParkTarget(target)) {
         yield* parkTicket(
           input.ticketId,

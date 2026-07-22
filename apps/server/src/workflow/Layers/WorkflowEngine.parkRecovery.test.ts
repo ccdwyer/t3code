@@ -717,3 +717,129 @@ recoverNormalLayer("recovered continuation runs retries normally when not parked
     }),
   );
 });
+
+// ---------------------------------------------------------------------------
+// (A.6 / NEW-1 residual) The recovered continuation's token guard covers SCRIPT
+// steps too, not just agent steps. A recovered agent "code" step whose lane has
+// a SCRIPT "deploy" next-step: when the ticket is parked before the continuation
+// dispatches, the token guard trips and the script NEVER executes (the reachable
+// side of the post-guard window). Scripts get no provider-turn cancellation, so
+// this guard is the sole protection against a recovered script starting on a
+// parked row. A no-park control proves the script would otherwise run — i.e. the
+// guard is load-bearing.
+// ---------------------------------------------------------------------------
+
+const scriptDeployLane = {
+  name: "recover-script",
+  lanes: [
+    {
+      key: "impl",
+      name: "Impl",
+      entry: "auto",
+      pipeline: [
+        {
+          key: "code",
+          type: "agent",
+          agent: { instance: "claude_main", model: "sonnet" },
+          instruction: "do it",
+        },
+        { key: "deploy", type: "script", run: "echo deploy" },
+      ],
+    },
+  ],
+} as never;
+
+const scriptParkedExecutor = makeScriptedExecutor(() => ({ _tag: "completed" }));
+const scriptParkedLayer = it.layer(baseLayer(scriptParkedExecutor.layer));
+
+scriptParkedLayer("recovered script next-step does not run when parked", (it) => {
+  it.effect("the token guard blocks the script dispatch; run superseded; ticket parked", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register("b-recover-script" as never, scriptDeployLane);
+
+      const engine = yield* WorkflowEngine;
+      const committer = yield* WorkflowEventCommitter;
+      const read = yield* WorkflowReadModel;
+      yield* commitRecoveredCodeContext("b-recover-script", "ticket-rsp", "tok-rsp");
+
+      // Park BEFORE the continuation runs: the next step ("deploy", a script) must
+      // never be dispatched.
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "evt-rsp-park",
+        ticketId: "ticket-rsp",
+        occurredAt: "2026-07-22T00:00:04.000Z",
+        payload: {
+          substate: "issue",
+          label: "Externally parked",
+          reason: "external park",
+          parkOrigin: '{"src":"event","fp":"fp-rsp"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      const callsBefore = scriptParkedExecutor.calls.count;
+      // "code" recovered as completed → completePipelineFrom would dispatch the
+      // script "deploy", but the token guard (token now NULL) aborts first.
+      yield* engine.completeRecoveredStep(
+        "ticket-rsp-run" as never,
+        { _tag: "completed" },
+        undefined,
+      );
+      yield* settle;
+
+      // The script step never executed (executor never called for "deploy").
+      assert.equal(scriptParkedExecutor.calls.count, callsBefore);
+      const events = yield* eventsFor("ticket-rsp");
+      assert.isUndefined(
+        events.find((event) => event.type === "StepStarted" && event.payload.stepKey === "deploy"),
+      );
+      assert.isDefined(
+        events.find(
+          (event) => event.type === "PipelineCompleted" && event.payload.result === "superseded",
+        ),
+      );
+
+      const detail = yield* read.getTicketDetail("ticket-rsp" as never);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneEntryToken, null);
+    }),
+  );
+});
+
+// Load-bearing control: with NO park, the same recovered continuation DOES
+// dispatch and run the script next-step.
+const scriptRunsExecutor = makeScriptedExecutor(() => ({ _tag: "completed" }));
+const scriptRunsLayer = it.layer(baseLayer(scriptRunsExecutor.layer));
+
+scriptRunsLayer("recovered script next-step runs when not parked", (it) => {
+  it.effect("the script step dispatches and executes", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register("b-recover-script-run" as never, scriptDeployLane);
+
+      const engine = yield* WorkflowEngine;
+      const read = yield* WorkflowReadModel;
+      yield* commitRecoveredCodeContext("b-recover-script-run", "ticket-rsr", "tok-rsr");
+
+      const callsBefore = scriptRunsExecutor.calls.count;
+      yield* engine.completeRecoveredStep(
+        "ticket-rsr-run" as never,
+        { _tag: "completed" },
+        undefined,
+      );
+      yield* settle;
+
+      // The script "deploy" was dispatched and executed exactly once.
+      assert.equal(scriptRunsExecutor.calls.count, callsBefore + 1);
+      const events = yield* eventsFor("ticket-rsr");
+      assert.isDefined(
+        events.find((event) => event.type === "StepStarted" && event.payload.stepKey === "deploy"),
+      );
+
+      const detail = yield* read.getTicketDetail("ticket-rsr" as never);
+      assert.notEqual(detail?.ticket.status, "parked");
+    }),
+  );
+});

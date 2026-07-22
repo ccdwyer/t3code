@@ -3119,6 +3119,18 @@ const make = Effect.gen(function* () {
       // emit a new StepStarted or route against the parked/moved row. (Supersede
       // still cancels the ticket's in-flight provider turns, which unblocks an
       // agent step this continuation is awaiting; the token guard then trips.)
+      //
+      // ACCEPTED RESIDUAL (script steps): the token guard covers the REACHABLE
+      // side of the dispatch — if a park has landed by the time a guard runs, no
+      // step (agent or script) starts. But a park landing AFTER a guard passes and
+      // BEFORE `runStep` reaches `executor.execute` lets that ONE already-dispatched
+      // step complete post-park. For an AGENT step that in-flight turn is still
+      // interrupted by supersede's provider-turn cancellation; a SCRIPT step has no
+      // such cancellation and is not fiber-tracked, so it runs to completion. Its
+      // worktree writes are the same accepted class as post-park round-trip-time
+      // residuals (a live pipeline's in-flight step can likewise finish after a
+      // park); the TICKET STATE stays safe because the parked projection refuses
+      // every status-writing event this continuation could emit for that step.
       const abandonSuperseded = commit({
         type: "PipelineCompleted",
         ticketId: recovered.stepStarted.ticketId,

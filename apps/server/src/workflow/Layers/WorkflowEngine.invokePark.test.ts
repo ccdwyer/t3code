@@ -1,5 +1,5 @@
 // @effect-diagnostics globalTimers:off
-import { assert, describe, it } from "@effect/vitest";
+import { assert, it } from "@effect/vitest";
 import {
   WorkflowDefinition,
   WorkflowEventId,

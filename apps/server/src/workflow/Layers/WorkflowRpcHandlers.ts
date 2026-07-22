@@ -2627,7 +2627,6 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
   WORKFLOW_WS_METHODS.createTicket,
   WORKFLOW_WS_METHODS.editTicket,
   WORKFLOW_WS_METHODS.moveTicket,
-  // TODO(park): real implementation in plan Task 6.
   WORKFLOW_WS_METHODS.invokeParkAction,
   WORKFLOW_WS_METHODS.runLane,
   WORKFLOW_WS_METHODS.resolveApproval,

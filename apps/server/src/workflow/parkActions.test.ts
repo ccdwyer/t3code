@@ -3,8 +3,9 @@ import { isParkTarget, LaneKey, WorkflowDefinition } from "@t3tools/contracts";
 import type { WorkflowParkTarget, WorkflowRouteTarget } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { resolveParkActions } from "./parkActions.ts";
+import { resolveParkActions, toParkedTicketView } from "./parkActions.ts";
 import { buildParkOrigin } from "./parkOrigin.ts";
+import type { TicketRow } from "./Services/WorkflowReadModel.ts";
 
 const decode = Schema.decodeUnknownSync(WorkflowDefinition);
 const lane = (key: string) => LaneKey.make(key);
@@ -318,5 +319,107 @@ describe("resolveParkActions", () => {
       ],
     });
     assert.isNull(resolveParkActions(renamed, lane("impl"), origin));
+  });
+});
+
+describe("toParkedTicketView", () => {
+  const baseTicket = {
+    ticketId: "ticket-1",
+    boardId: "board-1",
+    title: "A ticket",
+    description: null,
+    currentLaneKey: "impl",
+    currentLaneEntryToken: null,
+    queuedAt: null,
+    totalTokens: null,
+    totalDurationMs: null,
+  } satisfies Partial<TicketRow>;
+
+  it("assembles the full parked object, with actions re-resolved from the definition", () => {
+    const definition = decode({
+      name: "wf",
+      lanes: [
+        {
+          key: "impl",
+          name: "Impl",
+          entry: "auto",
+          on: { failure: issuePark("Hit a snag", [{ label: "Retry", to: "impl" }]) },
+        },
+      ],
+    });
+    const target = asPark(definition.lanes[0]?.on?.failure);
+    const parkOrigin = buildParkOrigin({ src: "lane_on", target, key: "failure" });
+
+    const ticket: TicketRow = {
+      ...baseTicket,
+      status: "parked",
+      parkedSubstate: "issue",
+      parkedLabel: "Hit a snag",
+      parkedReason: "step failed: boom",
+      parkedAt: "2026-07-22T00:00:02.000Z",
+      parkedEventId: "evt-parked-1",
+      parkOrigin,
+    } as never;
+
+    assert.deepEqual(toParkedTicketView(ticket, definition), {
+      substate: "issue",
+      label: "Hit a snag",
+      reason: "step failed: boom",
+      parkedAt: "2026-07-22T00:00:02.000Z",
+      parkedEventId: "evt-parked-1",
+      actions: [{ label: "Retry", to: "impl" }],
+    } as never);
+  });
+
+  it("omits actions (undefined), but keeps substate/label/reason, once the definition drops the park", () => {
+    const original = decode({
+      name: "wf",
+      lanes: [
+        {
+          key: "impl",
+          name: "Impl",
+          entry: "auto",
+          on: { failure: issuePark("Hit a snag", [{ label: "Retry", to: "impl" }]) },
+        },
+      ],
+    });
+    const parkOrigin = buildParkOrigin({
+      src: "lane_on",
+      target: asPark(original.lanes[0]?.on?.failure),
+      key: "failure",
+    });
+
+    // Board edited after the ticket parked: on.failure is now a plain lane move.
+    const edited = decode({
+      name: "wf",
+      lanes: [{ key: "impl", name: "Impl", entry: "auto", on: { failure: "impl" } }],
+    });
+
+    const ticket: TicketRow = {
+      ...baseTicket,
+      status: "parked",
+      parkedSubstate: "issue",
+      parkedLabel: "Hit a snag",
+      parkedReason: "step failed: boom",
+      parkedAt: "2026-07-22T00:00:02.000Z",
+      parkedEventId: "evt-parked-2",
+      parkOrigin,
+    } as never;
+
+    const parked = toParkedTicketView(ticket, edited);
+    assert.isDefined(parked, "parked detail must still render substate/label/reason");
+    assert.equal(parked?.substate, "issue");
+    assert.equal(parked?.label, "Hit a snag");
+    assert.equal(parked?.reason, "step failed: boom");
+    assert.isUndefined(parked?.actions);
+  });
+
+  it("returns undefined for a non-parked ticket row", () => {
+    const ticket: TicketRow = {
+      ...baseTicket,
+      status: "running",
+    } as never;
+
+    assert.isUndefined(toParkedTicketView(ticket, null));
   });
 });

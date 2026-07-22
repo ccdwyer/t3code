@@ -4,8 +4,6 @@ import type {
   LaneKey,
   TicketId,
   TicketStatus,
-  WorkflowDefinition,
-  WorkflowParkSubstate,
   WorkflowTicketAttentionKind,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -35,8 +33,8 @@ import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import { WorkflowEventStore, type PersistedWorkflowEvent } from "../Services/WorkflowEventStore.ts";
 import { WorkflowIds } from "../Services/WorkflowIds.ts";
 import { WorkflowProjectionPipeline } from "../Services/WorkflowProjectionPipeline.ts";
-import { WorkflowReadModel, type TicketRow } from "../Services/WorkflowReadModel.ts";
-import { resolveParkActions } from "../parkActions.ts";
+import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { toParkedTicketView } from "../parkActions.ts";
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -404,46 +402,6 @@ const make = Effect.gen(function* () {
 
       return rechecked;
     });
-
-  // Mirrors WorkflowRpcHandlers' toParkedTicketView: re-resolves actions from
-  // the CURRENT board definition (never the event's stored actionsSnapshot),
-  // degrading to an absent `actions` (never a stale snapshot) when the
-  // definition is unavailable or the origin no longer resolves.
-  const toParkedTicketView = (
-    ticket: TicketRow,
-    definition: WorkflowDefinition | null,
-  ): BoardTicketView["parked"] => {
-    if (
-      ticket.status !== "parked" ||
-      ticket.parkedSubstate == null ||
-      ticket.parkedLabel == null ||
-      ticket.parkedReason == null ||
-      ticket.parkedAt == null ||
-      ticket.parkedEventId == null
-    ) {
-      return undefined;
-    }
-    const actions =
-      definition === null || ticket.parkOrigin == null
-        ? null
-        : resolveParkActions(definition, ticket.currentLaneKey as LaneKey, ticket.parkOrigin);
-    return {
-      substate: ticket.parkedSubstate as WorkflowParkSubstate,
-      label: ticket.parkedLabel,
-      reason: ticket.parkedReason,
-      parkedAt: ticket.parkedAt,
-      parkedEventId: ticket.parkedEventId as never,
-      ...(actions === null
-        ? {}
-        : {
-            actions: actions.map((action) => ({
-              label: action.label,
-              to: action.to as LaneKey,
-              ...(action.hint === undefined ? {} : { hint: action.hint }),
-            })),
-          }),
-    };
-  };
 
   const publishTicketView = (ticketId: PersistedWorkflowEvent["ticketId"]) =>
     Effect.gen(function* () {

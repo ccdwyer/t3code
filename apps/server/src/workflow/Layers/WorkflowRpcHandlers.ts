@@ -46,7 +46,6 @@ import type {
   WorkflowGenerateWorkflowDraftInput as WorkflowGenerateWorkflowDraftInputType,
   WorkflowGenerateWorkflowDraftResult,
   ModelSelection as ModelSelectionType,
-  WorkflowParkSubstate,
 } from "@t3tools/contracts";
 import type { WorkSourceConnectionView } from "@t3tools/contracts/workSource";
 import type { WorkSourceProviderName } from "@t3tools/contracts/workSource";
@@ -79,7 +78,7 @@ import type { WorkspaceFileSystem } from "../../workspace/WorkspaceFileSystem.ts
 import { slugifyBoardName, uniqueBoardSlug } from "../boardSlug.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "../boardTemplates.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
-import { resolveParkActions } from "../parkActions.ts";
+import { toParkedTicketView } from "../parkActions.ts";
 import {
   MAX_IMPORT_DEFINITION_CHARS,
   MAX_IMPORT_LANES,
@@ -304,49 +303,6 @@ const ENV_BOUND_LINT_CODES: ReadonlySet<LintError["code"]> = new Set([
   "unknown_provider_instance",
   "missing_instruction_file",
 ]);
-
-// Re-resolves a parked ticket's actions from the CURRENT board definition
-// (never the event's stored actionsSnapshot — that's history-only, see
-// parkActions.ts) so an edited/reverted board never executes a stale
-// snapshot. `undefined` `definition` (board unregistered/unloaded) and
-// `null` `resolveParkActions` (origin unparseable / target edited away)
-// both degrade to an absent `actions` — the view's "actions unavailable"
-// idiom — never a lie about what the ticket can do.
-const toParkedTicketView = (
-  ticket: TicketRow,
-  definition: WorkflowDefinitionType | null,
-): BoardTicketView["parked"] => {
-  if (
-    ticket.status !== "parked" ||
-    ticket.parkedSubstate == null ||
-    ticket.parkedLabel == null ||
-    ticket.parkedReason == null ||
-    ticket.parkedAt == null ||
-    ticket.parkedEventId == null
-  ) {
-    return undefined;
-  }
-  const actions =
-    definition === null || ticket.parkOrigin == null
-      ? null
-      : resolveParkActions(definition, ticket.currentLaneKey as LaneKey, ticket.parkOrigin);
-  return {
-    substate: ticket.parkedSubstate as WorkflowParkSubstate,
-    label: ticket.parkedLabel,
-    reason: ticket.parkedReason,
-    parkedAt: ticket.parkedAt,
-    parkedEventId: ticket.parkedEventId as never,
-    ...(actions === null
-      ? {}
-      : {
-          actions: actions.map((action) => ({
-            label: action.label,
-            to: action.to as LaneKey,
-            ...(action.hint === undefined ? {} : { hint: action.hint }),
-          })),
-        }),
-  };
-};
 
 const toBoardTicketView = (
   ticket: TicketRow,

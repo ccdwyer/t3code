@@ -1,13 +1,16 @@
 import type {
+  BoardTicketView,
   LaneKey,
   StepRouting,
   WorkflowDefinition,
   WorkflowLaneAction,
+  WorkflowParkSubstate,
   WorkflowParkTarget,
   WorkflowRouteTarget,
 } from "@t3tools/contracts";
 import { isParkTarget } from "@t3tools/contracts";
 
+import type { TicketRow } from "./Services/WorkflowReadModel.ts";
 import { parkTargetFingerprint, parseParkOrigin } from "./parkOrigin.ts";
 
 // LaneRouting and StepRouting share the same {success,failure,blocked} shape, so
@@ -102,4 +105,50 @@ export const resolveParkActions = (
     }
   }
   return null;
+};
+
+// Assembles the public `parked` view for a ticket row, shared by every
+// BoardTicketView construction site (the RPC snapshot/detail reads in
+// WorkflowRpcHandlers.ts AND the live board-push in WorkflowEventCommitter.ts)
+// so they can never drift. Re-resolves actions from the CURRENT board
+// definition (never the event's stored actionsSnapshot — that's history-only)
+// so an edited/reverted board never executes a stale snapshot. `null`
+// `definition` (board unregistered/unloaded) and `null` `resolveParkActions`
+// (origin unparseable / target edited away) both degrade to an absent
+// `actions` — the view's "actions unavailable" idiom — never a lie about what
+// the ticket can do.
+export const toParkedTicketView = (
+  ticket: TicketRow,
+  definition: WorkflowDefinition | null,
+): BoardTicketView["parked"] => {
+  if (
+    ticket.status !== "parked" ||
+    ticket.parkedSubstate == null ||
+    ticket.parkedLabel == null ||
+    ticket.parkedReason == null ||
+    ticket.parkedAt == null ||
+    ticket.parkedEventId == null
+  ) {
+    return undefined;
+  }
+  const actions =
+    definition === null || ticket.parkOrigin == null
+      ? null
+      : resolveParkActions(definition, ticket.currentLaneKey as LaneKey, ticket.parkOrigin);
+  return {
+    substate: ticket.parkedSubstate as WorkflowParkSubstate,
+    label: ticket.parkedLabel,
+    reason: ticket.parkedReason,
+    parkedAt: ticket.parkedAt,
+    parkedEventId: ticket.parkedEventId as never,
+    ...(actions === null
+      ? {}
+      : {
+          actions: actions.map((action) => ({
+            label: action.label,
+            to: action.to as LaneKey,
+            ...(action.hint === undefined ? {} : { hint: action.hint }),
+          })),
+        }),
+  };
 };

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 import type { WorkflowParkTarget } from "@t3tools/contracts";
 
@@ -53,7 +53,7 @@ export const parkTargetFingerprint = (target: WorkflowParkTarget): string => {
     label: target.label,
     actions: target.actions,
   });
-  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  return NodeCrypto.createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 };
 
 export interface BuildParkOriginInput {

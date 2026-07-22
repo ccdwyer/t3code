@@ -1963,7 +1963,7 @@ function ScriptStepLogViewer({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!api) {
+    if (!api?.terminal) {
       setHistory("");
       setError(null);
       return;

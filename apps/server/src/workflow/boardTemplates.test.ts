@@ -124,6 +124,7 @@ describe("BOARD_TEMPLATES", () => {
       assert.fail("expected a budget-exhausted transition targeting a park");
     } else {
       assert.equal(budgetExhausted.to.park, "waiting");
+      assert.equal(budgetExhausted.to.label, "Needs manual review");
       assert.deepEqual(plainActions(budgetExhausted.to.actions), expectedActions);
     }
   });

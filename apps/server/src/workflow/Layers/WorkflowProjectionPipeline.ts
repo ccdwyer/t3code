@@ -32,6 +32,19 @@ const encodeStepOutput = (output: unknown) =>
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  // Shared exit-from-parked reset. Every event that moves/queues/admits a
+  // ticket out of a parked state must clear ALL parked_* columns, or a
+  // re-parked ticket could read stale parked_event_id/park_origin from a
+  // previous park.
+  const PARKED_CLEAR = sql`
+    parked_substate = NULL,
+    parked_label = NULL,
+    parked_reason = NULL,
+    parked_at = NULL,
+    parked_event_id = NULL,
+    park_origin = NULL
+  `;
+
   const getOptionalServices = Effect.context<never>().pipe(
     Effect.map((context) => ({
       registry: Context.getOption(context as Context.Context<BoardRegistry>, BoardRegistry),
@@ -131,9 +144,11 @@ const make = Effect.gen(function* () {
                 attention_reason = NULL,
                 current_lane_entry_token = ${event.payload.laneEntryToken},
                 current_lane_entered_at = ${event.occurredAt},
+                current_step_label = NULL,
                 queued_at = NULL,
                 terminal_at = ${terminalAt},
-                updated_at = ${event.occurredAt}
+                updated_at = ${event.occurredAt},
+                ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
           break;
@@ -224,9 +239,11 @@ const make = Effect.gen(function* () {
                 attention_kind = NULL,
                 attention_reason = NULL,
                 current_lane_entry_token = NULL,
+                current_step_label = NULL,
                 queued_at = ${event.occurredAt},
                 terminal_at = NULL,
-                updated_at = ${event.occurredAt}
+                updated_at = ${event.occurredAt},
+                ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
           break;
@@ -247,7 +264,8 @@ const make = Effect.gen(function* () {
                 current_lane_entered_at = ${event.occurredAt},
                 queued_at = NULL,
                 terminal_at = ${terminalAt},
-                updated_at = ${event.occurredAt}
+                updated_at = ${event.occurredAt},
+                ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
           break;
@@ -315,6 +333,11 @@ const make = Effect.gen(function* () {
                 finished_at = ${event.occurredAt}
             WHERE pipeline_run_id = ${event.payload.pipelineRunId}
           `;
+          yield* sql`
+            UPDATE projection_ticket
+            SET current_step_label = NULL
+            WHERE ticket_id = ${event.ticketId}
+          `;
           break;
         }
         case "StepStarted": {
@@ -340,6 +363,11 @@ const make = Effect.gen(function* () {
               ${event.occurredAt}
             )
             ON CONFLICT(step_run_id) DO NOTHING
+          `;
+          yield* sql`
+            UPDATE projection_ticket
+            SET current_step_label = ${event.payload.stepKey}
+            WHERE ticket_id = ${event.ticketId}
           `;
           break;
         }
@@ -511,6 +539,43 @@ const make = Effect.gen(function* () {
               pr_state = 'open',
               updated_at = excluded.updated_at
           `;
+          break;
+        }
+        case "TicketRouteDecided": {
+          // History-only decision record for automatic (non-park) route
+          // moves; route-history readers (listTicketRouteDecisions et al.)
+          // read it directly from the event log, so it projects nothing here
+          // (pre-existing behavior — confirmed, not a gap being fixed).
+          break;
+        }
+        case "TicketParked": {
+          yield* sql`
+            UPDATE projection_ticket
+            SET status = 'parked',
+                parked_substate = ${event.payload.substate},
+                parked_label = ${event.payload.label},
+                parked_reason = ${event.payload.reason},
+                parked_at = ${event.occurredAt},
+                parked_event_id = ${event.eventId},
+                park_origin = ${event.payload.parkOrigin},
+                attention_kind = ${event.payload.substate === "issue" ? "parked_issue" : "parked_waiting"},
+                attention_reason = ${event.payload.reason},
+                current_lane_entry_token = NULL,
+                current_step_label = NULL,
+                queued_at = NULL,
+                updated_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+          `;
+          break;
+        }
+        case "TicketExternalEventSkipped": {
+          // History-only event: an onEvent routing attempt against a parked
+          // ticket is recorded but intentionally projects no ticket-state
+          // change (parked-while-suspended invariant).
+          break;
+        }
+        default: {
+          event satisfies never;
           break;
         }
       }

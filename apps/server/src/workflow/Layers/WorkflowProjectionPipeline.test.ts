@@ -1386,4 +1386,612 @@ layer("WorkflowProjectionPipeline", (it) => {
       assert.equal(rows[0]?.currentLaneEnteredAt, "2026-06-14T12:00:01.000Z");
     }),
   );
+
+  it.effect(
+    "TicketParked sets status/parked columns/attention/tokens exactly, lane key unchanged",
+    () =>
+      Effect.gen(function* () {
+        const pipeline = yield* WorkflowProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const base = {
+          ticketId: "t-park-issue" as never,
+          occurredAt: "2026-07-22T00:00:00.000Z" as never,
+        };
+
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketCreated",
+          eventId: "park-issue-a" as never,
+          streamVersion: 0,
+          payload: {
+            boardId: "b-park" as never,
+            title: "Park issue ticket" as never,
+            laneKey: "implement" as never,
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketMovedToLane",
+          eventId: "park-issue-b" as never,
+          streamVersion: 1,
+          occurredAt: "2026-07-22T00:00:01.000Z" as never,
+          payload: {
+            toLane: "implement" as never,
+            laneEntryToken: "tok-park-issue" as never,
+            reason: "manual",
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketParked",
+          eventId: "park-issue-event" as never,
+          streamVersion: 2,
+          occurredAt: "2026-07-22T00:00:02.000Z" as never,
+          payload: {
+            substate: "issue",
+            label: "Issue encountered",
+            reason: "step failed: boom",
+            parkOrigin: '{"src":"step","stepKey":"code","fp":"deadbeef"}',
+            actionsSnapshot: [{ label: "Retry", to: "implement" as never }],
+          },
+        } as never);
+
+        const rows = yield* sql<{
+          readonly status: string;
+          readonly currentLaneKey: string;
+          readonly currentLaneEntryToken: string | null;
+          readonly currentStepLabel: string | null;
+          readonly queuedAt: string | null;
+          readonly parkedSubstate: string | null;
+          readonly parkedLabel: string | null;
+          readonly parkedReason: string | null;
+          readonly parkedAt: string | null;
+          readonly parkedEventId: string | null;
+          readonly parkOrigin: string | null;
+          readonly attentionKind: string | null;
+          readonly attentionReason: string | null;
+          readonly updatedAt: string;
+        }>`
+          SELECT
+            status,
+            current_lane_key AS "currentLaneKey",
+            current_lane_entry_token AS "currentLaneEntryToken",
+            current_step_label AS "currentStepLabel",
+            queued_at AS "queuedAt",
+            parked_substate AS "parkedSubstate",
+            parked_label AS "parkedLabel",
+            parked_reason AS "parkedReason",
+            parked_at AS "parkedAt",
+            parked_event_id AS "parkedEventId",
+            park_origin AS "parkOrigin",
+            attention_kind AS "attentionKind",
+            attention_reason AS "attentionReason",
+            updated_at AS "updatedAt"
+          FROM projection_ticket
+          WHERE ticket_id = 't-park-issue'
+        `;
+
+        assert.equal(rows[0]?.status, "parked");
+        assert.equal(rows[0]?.currentLaneKey, "implement");
+        assert.equal(rows[0]?.currentLaneEntryToken, null);
+        assert.equal(rows[0]?.currentStepLabel, null);
+        assert.equal(rows[0]?.queuedAt, null);
+        assert.equal(rows[0]?.parkedSubstate, "issue");
+        assert.equal(rows[0]?.parkedLabel, "Issue encountered");
+        assert.equal(rows[0]?.parkedReason, "step failed: boom");
+        assert.equal(rows[0]?.parkedAt, "2026-07-22T00:00:02.000Z");
+        assert.equal(rows[0]?.parkedEventId, "park-issue-event");
+        assert.equal(rows[0]?.parkOrigin, '{"src":"step","stepKey":"code","fp":"deadbeef"}');
+        assert.equal(rows[0]?.attentionKind, "parked_issue");
+        assert.equal(rows[0]?.attentionReason, "step failed: boom");
+        assert.equal(rows[0]?.updatedAt, "2026-07-22T00:00:02.000Z");
+      }),
+  );
+
+  it.effect("TicketParked with substate=waiting sets attention_kind=parked_waiting", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const base = {
+        ticketId: "t-park-waiting" as never,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "park-waiting-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-park" as never,
+          title: "Park waiting ticket" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketParked",
+        eventId: "park-waiting-event" as never,
+        streamVersion: 1,
+        occurredAt: "2026-07-22T00:00:01.000Z" as never,
+        payload: {
+          substate: "waiting",
+          label: "Waiting on you",
+          reason: "review budget exhausted after 3 passes",
+          parkOrigin: '{"src":"transition","key":"budget-exhausted","fp":"cafebabe"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      const rows = yield* sql<{
+        readonly attentionKind: string | null;
+      }>`
+        SELECT attention_kind AS "attentionKind"
+        FROM projection_ticket
+        WHERE ticket_id = 't-park-waiting'
+      `;
+      assert.equal(rows[0]?.attentionKind, "parked_waiting");
+    }),
+  );
+
+  it.effect("TicketMovedToLane after TicketParked clears all parked_* columns", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const base = {
+        ticketId: "t-park-clear-move" as never,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "park-clear-move-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-park" as never,
+          title: "Park clear (move)" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketParked",
+        eventId: "park-clear-move-event" as never,
+        streamVersion: 1,
+        occurredAt: "2026-07-22T00:00:01.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "step failed",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"aaaa"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketMovedToLane",
+        eventId: "park-clear-move-b" as never,
+        streamVersion: 2,
+        occurredAt: "2026-07-22T00:00:02.000Z" as never,
+        payload: {
+          toLane: "implement" as never,
+          laneEntryToken: "tok-park-clear-move" as never,
+          reason: "manual",
+        },
+      });
+
+      const rows = yield* sql<{
+        readonly status: string;
+        readonly parkedSubstate: string | null;
+        readonly parkedLabel: string | null;
+        readonly parkedReason: string | null;
+        readonly parkedAt: string | null;
+        readonly parkedEventId: string | null;
+        readonly parkOrigin: string | null;
+        readonly currentStepLabel: string | null;
+      }>`
+        SELECT
+          status,
+          parked_substate AS "parkedSubstate",
+          parked_label AS "parkedLabel",
+          parked_reason AS "parkedReason",
+          parked_at AS "parkedAt",
+          parked_event_id AS "parkedEventId",
+          park_origin AS "parkOrigin",
+          current_step_label AS "currentStepLabel"
+        FROM projection_ticket
+        WHERE ticket_id = 't-park-clear-move'
+      `;
+      assert.equal(rows[0]?.status, "idle");
+      assert.equal(rows[0]?.parkedSubstate, null);
+      assert.equal(rows[0]?.parkedLabel, null);
+      assert.equal(rows[0]?.parkedReason, null);
+      assert.equal(rows[0]?.parkedAt, null);
+      assert.equal(rows[0]?.parkedEventId, null);
+      assert.equal(rows[0]?.parkOrigin, null);
+      assert.equal(rows[0]?.currentStepLabel, null);
+    }),
+  );
+
+  it.effect("TicketQueued after TicketParked clears all parked_* columns", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const base = {
+        ticketId: "t-park-clear-queue" as never,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "park-clear-queue-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-park" as never,
+          title: "Park clear (queue)" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketParked",
+        eventId: "park-clear-queue-event" as never,
+        streamVersion: 1,
+        occurredAt: "2026-07-22T00:00:01.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "step failed",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"bbbb"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketQueued",
+        eventId: "park-clear-queue-b" as never,
+        streamVersion: 2,
+        occurredAt: "2026-07-22T00:00:02.000Z" as never,
+        payload: { lane: "implement" as never },
+      } as never);
+
+      const rows = yield* sql<{
+        readonly status: string;
+        readonly parkedSubstate: string | null;
+        readonly parkedEventId: string | null;
+        readonly parkOrigin: string | null;
+        readonly currentStepLabel: string | null;
+      }>`
+        SELECT
+          status,
+          parked_substate AS "parkedSubstate",
+          parked_event_id AS "parkedEventId",
+          park_origin AS "parkOrigin",
+          current_step_label AS "currentStepLabel"
+        FROM projection_ticket
+        WHERE ticket_id = 't-park-clear-queue'
+      `;
+      assert.equal(rows[0]?.status, "queued");
+      assert.equal(rows[0]?.parkedSubstate, null);
+      assert.equal(rows[0]?.parkedEventId, null);
+      assert.equal(rows[0]?.parkOrigin, null);
+      assert.equal(rows[0]?.currentStepLabel, null);
+    }),
+  );
+
+  it.effect("TicketAdmitted after TicketParked clears all parked_* columns", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const base = {
+        ticketId: "t-park-clear-admit" as never,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "park-clear-admit-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-park" as never,
+          title: "Park clear (admit)" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketParked",
+        eventId: "park-clear-admit-event" as never,
+        streamVersion: 1,
+        occurredAt: "2026-07-22T00:00:01.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "step failed",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"cccc"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketAdmitted",
+        eventId: "park-clear-admit-b" as never,
+        streamVersion: 2,
+        occurredAt: "2026-07-22T00:00:02.000Z" as never,
+        payload: {
+          lane: "implement" as never,
+          laneEntryToken: "tok-park-clear-admit" as never,
+        },
+      } as never);
+
+      const rows = yield* sql<{
+        readonly status: string;
+        readonly parkedSubstate: string | null;
+        readonly parkedEventId: string | null;
+        readonly parkOrigin: string | null;
+      }>`
+        SELECT
+          status,
+          parked_substate AS "parkedSubstate",
+          parked_event_id AS "parkedEventId",
+          park_origin AS "parkOrigin"
+        FROM projection_ticket
+        WHERE ticket_id = 't-park-clear-admit'
+      `;
+      assert.equal(rows[0]?.status, "idle");
+      assert.equal(rows[0]?.parkedSubstate, null);
+      assert.equal(rows[0]?.parkedEventId, null);
+      assert.equal(rows[0]?.parkOrigin, null);
+    }),
+  );
+
+  it.effect("StepStarted sets current_step_label; PipelineCompleted clears it", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const base = {
+        ticketId: "t-step-label" as never,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "step-label-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-step-label" as never,
+          title: "Step label ticket" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "PipelineStarted",
+        eventId: "step-label-b" as never,
+        streamVersion: 1,
+        payload: {
+          pipelineRunId: "pr-step-label" as never,
+          laneKey: "implement" as never,
+          laneEntryToken: "tok-step-label" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "StepStarted",
+        eventId: "step-label-c" as never,
+        streamVersion: 2,
+        payload: {
+          pipelineRunId: "pr-step-label" as never,
+          stepRunId: "sr-step-label" as never,
+          stepKey: "plan" as never,
+          stepType: "agent",
+        },
+      });
+
+      const running = yield* sql<{ readonly currentStepLabel: string | null }>`
+        SELECT current_step_label AS "currentStepLabel"
+        FROM projection_ticket
+        WHERE ticket_id = 't-step-label'
+      `;
+      assert.equal(running[0]?.currentStepLabel, "plan");
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "PipelineCompleted",
+        eventId: "step-label-d" as never,
+        streamVersion: 3,
+        payload: { pipelineRunId: "pr-step-label" as never, result: "success" },
+      });
+
+      const completed = yield* sql<{ readonly currentStepLabel: string | null }>`
+        SELECT current_step_label AS "currentStepLabel"
+        FROM projection_ticket
+        WHERE ticket_id = 't-step-label'
+      `;
+      assert.equal(completed[0]?.currentStepLabel, null);
+    }),
+  );
+
+  it.effect("TicketExternalEventSkipped projects nothing (row unchanged)", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const base = {
+        ticketId: "t-external-skipped" as never,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "external-skipped-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-external-skipped" as never,
+          title: "External skipped ticket" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketParked",
+        eventId: "external-skipped-event" as never,
+        streamVersion: 1,
+        occurredAt: "2026-07-22T00:00:01.000Z" as never,
+        payload: {
+          substate: "waiting",
+          label: "Waiting on you",
+          reason: "review needed",
+          parkOrigin: '{"src":"lane_on","key":"success","fp":"dddd"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      const before = yield* sql<{
+        readonly status: string;
+        readonly updatedAt: string;
+        readonly parkedEventId: string | null;
+      }>`
+        SELECT status, updated_at AS "updatedAt", parked_event_id AS "parkedEventId"
+        FROM projection_ticket
+        WHERE ticket_id = 't-external-skipped'
+      `;
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketExternalEventSkipped",
+        eventId: "external-skipped-b" as never,
+        streamVersion: 2,
+        occurredAt: "2026-07-22T00:00:02.000Z" as never,
+        payload: { eventName: "ci.completed", reason: "parked" },
+      });
+
+      const after = yield* sql<{
+        readonly status: string;
+        readonly updatedAt: string;
+        readonly parkedEventId: string | null;
+      }>`
+        SELECT status, updated_at AS "updatedAt", parked_event_id AS "parkedEventId"
+        FROM projection_ticket
+        WHERE ticket_id = 't-external-skipped'
+      `;
+      assert.deepEqual(after, before);
+    }),
+  );
+
+  it.effect(
+    "replay [create, move, park, move, park again] rebuilds the projection to the final park's values",
+    () =>
+      Effect.gen(function* () {
+        const pipeline = yield* WorkflowProjectionPipeline;
+        const sql = yield* SqlClient.SqlClient;
+        const base = {
+          ticketId: "t-replay-park" as never,
+          occurredAt: "2026-07-22T00:00:00.000Z" as never,
+        };
+
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketCreated",
+          eventId: "replay-park-a" as never,
+          streamVersion: 0,
+          payload: {
+            boardId: "b-replay-park" as never,
+            title: "Replay park ticket" as never,
+            laneKey: "implement" as never,
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketMovedToLane",
+          eventId: "replay-park-b" as never,
+          streamVersion: 1,
+          occurredAt: "2026-07-22T00:00:01.000Z" as never,
+          payload: {
+            toLane: "implement" as never,
+            laneEntryToken: "tok-replay-1" as never,
+            reason: "manual",
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketParked",
+          eventId: "replay-park-c" as never,
+          streamVersion: 2,
+          occurredAt: "2026-07-22T00:00:02.000Z" as never,
+          payload: {
+            substate: "issue",
+            label: "Issue encountered",
+            reason: "first failure",
+            parkOrigin: '{"src":"step","stepKey":"code","fp":"first"}',
+            actionsSnapshot: [],
+          },
+        } as never);
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketMovedToLane",
+          eventId: "replay-park-d" as never,
+          streamVersion: 3,
+          occurredAt: "2026-07-22T00:00:03.000Z" as never,
+          payload: {
+            toLane: "implement" as never,
+            laneEntryToken: "tok-replay-2" as never,
+            reason: "manual",
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketParked",
+          eventId: "replay-park-e" as never,
+          streamVersion: 4,
+          occurredAt: "2026-07-22T00:00:04.000Z" as never,
+          payload: {
+            substate: "waiting",
+            label: "Waiting on you",
+            reason: "second failure",
+            parkOrigin: '{"src":"step","stepKey":"code","fp":"second"}',
+            actionsSnapshot: [],
+          },
+        } as never);
+
+        const rows = yield* sql<{
+          readonly status: string;
+          readonly currentLaneKey: string;
+          readonly currentLaneEntryToken: string | null;
+          readonly parkedSubstate: string | null;
+          readonly parkedLabel: string | null;
+          readonly parkedReason: string | null;
+          readonly parkedEventId: string | null;
+          readonly parkOrigin: string | null;
+          readonly attentionKind: string | null;
+        }>`
+          SELECT
+            status,
+            current_lane_key AS "currentLaneKey",
+            current_lane_entry_token AS "currentLaneEntryToken",
+            parked_substate AS "parkedSubstate",
+            parked_label AS "parkedLabel",
+            parked_reason AS "parkedReason",
+            parked_event_id AS "parkedEventId",
+            park_origin AS "parkOrigin",
+            attention_kind AS "attentionKind"
+          FROM projection_ticket
+          WHERE ticket_id = 't-replay-park'
+        `;
+
+        assert.equal(rows[0]?.status, "parked");
+        assert.equal(rows[0]?.currentLaneKey, "implement");
+        assert.equal(rows[0]?.currentLaneEntryToken, null);
+        assert.equal(rows[0]?.parkedSubstate, "waiting");
+        assert.equal(rows[0]?.parkedLabel, "Waiting on you");
+        assert.equal(rows[0]?.parkedReason, "second failure");
+        assert.equal(rows[0]?.parkedEventId, "replay-park-e");
+        assert.equal(rows[0]?.parkOrigin, '{"src":"step","stepKey":"code","fp":"second"}');
+        assert.equal(rows[0]?.attentionKind, "parked_waiting");
+      }),
+  );
 });

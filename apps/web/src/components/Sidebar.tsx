@@ -70,7 +70,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
   MAX_SIDEBAR_THREAD_PREVIEW_COUNT,
   MIN_SIDEBAR_THREAD_PREVIEW_COUNT,
@@ -1341,9 +1341,7 @@ interface SidebarProjectBoardsProps {
  * Uses the @effect/atom query layer to load boards, and delegates
  * rename/delete mutations through the workflowApi facade.
  */
-const SidebarProjectBoards = memo(function SidebarProjectBoards(
-  props: SidebarProjectBoardsProps,
-) {
+const SidebarProjectBoards = memo(function SidebarProjectBoards(props: SidebarProjectBoardsProps) {
   const { environmentId, projectId } = props;
 
   // ── Active board detection from route params ───────────────────────────────
@@ -2788,10 +2786,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             key={scopedProjectKey(scopeProjectRef(member.environmentId, member.id))}
             className="mx-0.5 my-0 w-full translate-x-0 gap-0.5 overflow-hidden px-1 py-0 sm:mx-1 sm:px-1.5"
           >
-            <SidebarProjectBoards
-              environmentId={member.environmentId}
-              projectId={member.id}
-            />
+            <SidebarProjectBoards environmentId={member.environmentId} projectId={member.id} />
           </SidebarMenuSub>
         ))}
 

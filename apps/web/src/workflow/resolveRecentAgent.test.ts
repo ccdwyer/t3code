@@ -93,6 +93,8 @@ const makeShell = (input: {
   interactionMode: DEFAULT_INTERACTION_MODE,
   createdAt: input.createdAt,
   archivedAt: null,
+  settledOverride: null,
+  settledAt: null,
   updatedAt: input.updatedAt ?? input.createdAt,
   branch: null,
   worktreePath: null,

@@ -48,6 +48,10 @@ export default Effect.gen(function* () {
   // attention_kind / attention_reason were added via ALTER in the former 034
   // (BoardNotifications) — folded inline here (TEXT, nullable, matching the
   // ALTER-produced columns).
+  // parked_substate / parked_label / parked_reason / parked_at /
+  // parked_event_id / park_origin / current_step_label folded in on
+  // 2026-07-22 for the park-in-place sub-states feature (all TEXT, nullable,
+  // no defaults).
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_ticket (
       ticket_id TEXT PRIMARY KEY,
@@ -68,7 +72,14 @@ export default Effect.gen(function* () {
       terminal_at TEXT,
       token_budget INTEGER,
       attention_kind TEXT,
-      attention_reason TEXT
+      attention_reason TEXT,
+      parked_substate TEXT,
+      parked_label TEXT,
+      parked_reason TEXT,
+      parked_at TEXT,
+      parked_event_id TEXT,
+      park_origin TEXT,
+      current_step_label TEXT
     )
   `;
 

@@ -407,6 +407,24 @@ layer("033_WorkflowSchema", (it) => {
     }),
   );
 
+  it.effect(
+    "projection_ticket has parked_substate, parked_label, parked_reason, parked_at, parked_event_id, park_origin, and current_step_label columns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations();
+        const cols = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_ticket)`;
+        const colNames = new Set(cols.map((c) => c.name));
+        assert.isTrue(colNames.has("parked_substate"), "parked_substate column missing");
+        assert.isTrue(colNames.has("parked_label"), "parked_label column missing");
+        assert.isTrue(colNames.has("parked_reason"), "parked_reason column missing");
+        assert.isTrue(colNames.has("parked_at"), "parked_at column missing");
+        assert.isTrue(colNames.has("parked_event_id"), "parked_event_id column missing");
+        assert.isTrue(colNames.has("park_origin"), "park_origin column missing");
+        assert.isTrue(colNames.has("current_step_label"), "current_step_label column missing");
+      }),
+  );
+
   it.effect("idx_workflow_events_ticket_type_time index exists on workflow_events", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

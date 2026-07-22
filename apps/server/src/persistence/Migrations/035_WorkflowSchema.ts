@@ -14,7 +14,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * / parked_reason / parked_at / parked_event_id / park_origin /
  * current_step_label — see projection_ticket below) were folded into this
  * migration IN PLACE after the collapse, so it is no longer byte-for-byte
- * identical to that original chain. A dev DB that already applied 033 before
+ * identical to that original chain. Renumbered 033→034 on 2026-07-22 when
+ * upstream took slot 33 (ProjectionThreadsSettled). A dev DB that already
+ * applied this migration under id 33 (or pre-park 033) before
  * this fold will be MISSING the park columns and must be wiped (or ALTERed per
  * docs/superpowers/specs/2026-07-22-workflow-substates-design.md §Backwards
  * compatibility) — startup fails otherwise.

@@ -85,7 +85,7 @@ The most common defect in this repo is a change that works on the path you teste
 
 ## Local Development
 
-- Schema-migration note: a pre-park dev DB (one that applied migration `033_WorkflowSchema` before the 2026-07-22 park-in-place fold) fails startup on this branch because the park columns were folded into 033 in place. Wipe local state (`state.sqlite` / `~/.t3`) or apply the ALTER recipe in `docs/superpowers/specs/2026-07-22-workflow-substates-design.md` §Backwards compatibility.
+- Schema-migration note: a dev DB that applied `WorkflowSchema` as migration 33 (pre-rebase numbering, or pre-park without the parked columns) fails startup on this branch — the migration is now `034_WorkflowSchema` (upstream took slot 33) with park columns folded in place. Wipe local state (`state.sqlite` / `~/.t3`) or apply the ALTER recipe in `docs/superpowers/specs/2026-07-22-workflow-substates-design.md` §Backwards compatibility.
 
 ## Test data
 

@@ -10,8 +10,10 @@ import { migrationEntries, runMigrations } from "../Migrations.ts";
  * Equivalence gate for the collapsed workflow schema.
  *
  * `GOLDEN` below was captured from the real, original 23-step migration chain
- * (033 -> 055) — it is the authoritative reference. The consolidated migration
- * 033_WorkflowSchema must reproduce it EXACTLY. The dump filters to
+ * (033 -> 055) — it is the authoritative reference. projection_threads also
+ * includes settled_override/settled_at from upstream's 033_ProjectionThreadsSettled,
+ * which now precedes this migration (2026-07-22 rebase renumber 033→034). The consolidated migration
+ * 035_WorkflowSchema (formerly 033/034; renumbered again when upstream took slot 34) must reproduce it EXACTLY. The dump filters to
  * `tbl_name LIKE 'workflow_%' OR tbl_name = 'projection_threads'` (the objects
  * the workflow feature owns or extends) and normalizes whitespace.
  *
@@ -36,7 +38,7 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     type: "table",
     name: "projection_threads",
     tbl_name: "projection_threads",
-    sql: "CREATE TABLE projection_threads ( thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, branch TEXT, worktree_path TEXT, latest_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT , runtime_mode TEXT NOT NULL DEFAULT 'full-access', interaction_mode TEXT NOT NULL DEFAULT 'default', model_selection_json TEXT, archived_at TEXT, latest_user_message_at TEXT, pending_approval_count INTEGER NOT NULL DEFAULT 0, pending_user_input_count INTEGER NOT NULL DEFAULT 0, has_actionable_proposed_plan INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0)",
+    sql: "CREATE TABLE projection_threads ( thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, branch TEXT, worktree_path TEXT, latest_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT , runtime_mode TEXT NOT NULL DEFAULT 'full-access', interaction_mode TEXT NOT NULL DEFAULT 'default', model_selection_json TEXT, archived_at TEXT, latest_user_message_at TEXT, pending_approval_count INTEGER NOT NULL DEFAULT 0, pending_user_input_count INTEGER NOT NULL DEFAULT 0, has_actionable_proposed_plan INTEGER NOT NULL DEFAULT 0, settled_override TEXT, settled_at TEXT, hidden INTEGER NOT NULL DEFAULT 0)",
   },
   {
     type: "index",
@@ -221,12 +223,12 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
 ];
 
 const GOLDEN_PROJECTION_THREADS_COLUMNS =
-  "thread_id,project_id,title,branch,worktree_path,latest_turn_id,created_at,updated_at,deleted_at,runtime_mode,interaction_mode,model_selection_json,archived_at,latest_user_message_at,pending_approval_count,pending_user_input_count,has_actionable_proposed_plan,hidden";
+  "thread_id,project_id,title,branch,worktree_path,latest_turn_id,created_at,updated_at,deleted_at,runtime_mode,interaction_mode,model_selection_json,archived_at,latest_user_message_at,pending_approval_count,pending_user_input_count,has_actionable_proposed_plan,settled_override,settled_at,hidden";
 
-layer("033_WorkflowSchema", (it) => {
-  it.effect("migration entry exists at id 33", () =>
+layer("035_WorkflowSchema", (it) => {
+  it.effect("migration entry exists at id 34", () =>
     Effect.gen(function* () {
-      assert.isTrue(migrationEntries.some(([id, name]) => id === 33 && name === "WorkflowSchema"));
+      assert.isTrue(migrationEntries.some(([id, name]) => id === 35 && name === "WorkflowSchema"));
     }),
   );
 
@@ -234,7 +236,7 @@ layer("033_WorkflowSchema", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 33 });
+      yield* runMigrations({ toMigrationInclusive: 35 });
 
       const rows = yield* sql<MasterRow>`
         SELECT type, name, tbl_name, sql
@@ -553,10 +555,10 @@ layer("033_WorkflowSchema", (it) => {
     }),
   );
 
-  it.effect("33 is the highest migration entry", () =>
+  it.effect("35 is the highest migration entry", () =>
     Effect.gen(function* () {
       const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 33);
+      assert.strictEqual(highest, 35);
       const top = migrationEntries.find(([id]) => id === highest);
       assert.strictEqual(top?.[1], "WorkflowSchema");
     }),

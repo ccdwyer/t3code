@@ -1119,11 +1119,24 @@ const make = Effect.gen(function* () {
           ticketId,
         }).pipe(
           Effect.flatMap(() =>
-            commit({
-              type: "TicketBlocked",
-              ticketId,
-              payload: { reason },
-            }),
+            // Token-guard the fallback block, mirroring the "no route" block
+            // below: an external park may have nulled/rotated the token before
+            // this handler ran, and a TicketBlocked here would overwrite the
+            // parked status and orphan the parked_* columns. Only block if this
+            // run still owns the ticket's lane-entry token.
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                const token = yield* currentToken(ticketId);
+                if (token !== laneEntryToken) {
+                  return;
+                }
+                yield* commit({
+                  type: "TicketBlocked",
+                  ticketId,
+                  payload: { reason },
+                });
+              }),
+            ),
           ),
           Effect.catch(() => Effect.void),
         );
@@ -1150,10 +1163,27 @@ const make = Effect.gen(function* () {
       const laneStepKeys = steps.map((s) => s.key);
 
       if (routeDecision === null) {
+        let firstStep = true;
         for (const step of steps.slice(startIndex)) {
           if (result !== "success") {
             break;
           }
+          // Inter-step supersession guard: before dispatching any step after the
+          // first, re-read the ticket's lane-entry token. An external park (or a
+          // manual move) can null/rotate the token mid-pipeline; continuing would
+          // run further agent/script work and StepStarted writes against a
+          // parked/moved row. If the token no longer matches this run's entry
+          // token, abort SILENTLY — emit nothing, so we never write onto the
+          // superseded row. The first step is exempt: the pipeline was just
+          // admitted on this exact token, and re-checking there cannot catch a
+          // race the start-guard already covered.
+          if (!firstStep) {
+            const tokenNow = yield* currentToken(ticketId);
+            if (tokenNow !== laneEntryToken) {
+              return;
+            }
+          }
+          firstStep = false;
           const maxAttempts = retryAttemptsForStep(step);
           let attempt = 1;
           let stepOutcome = yield* runStep(
@@ -1471,7 +1501,19 @@ const make = Effect.gen(function* () {
     // INSIDE the serialized section. A null/undefined `parked_event_id` on the
     // row always fails the guard toward "none" (never toward acting). The
     // supersession side effect runs only AFTER this guard passes.
-    readonly parkedGuard?: { readonly expectedParkedEventId: WorkflowEventId } | undefined;
+    //
+    // `revalidate`, when present, runs INSIDE the lock right after the identity
+    // check passes and BEFORE any emission. It re-reads the CURRENT board
+    // definition and re-resolves the park action, failing with a typed error if
+    // a concurrent board save changed/removed it between the pre-lock resolution
+    // and here. It FAILS (does not no-op) so the caller learns the definition
+    // drifted rather than silently moving to a stale target.
+    readonly parkedGuard?:
+      | {
+          readonly expectedParkedEventId: WorkflowEventId;
+          readonly revalidate?: Effect.Effect<void, WorkflowEventStoreError> | undefined;
+        }
+      | undefined;
     // When a terminal lane is entered, whether to call `provider.stopSession` for
     // the ticket's stored agent threads IN-BAND. Defaults to `true` for the public
     // move (no chunk tx is open). The unlocked source-committer callers pass
@@ -1555,6 +1597,13 @@ const make = Effect.gen(function* () {
             rowParkedEventId !== parkedGuard.expectedParkedEventId
           ) {
             return none;
+          }
+          // Identity holds — re-resolve the action against the CURRENT board
+          // definition IN-LOCK before emitting. A board save that changed or
+          // removed the action between the caller's pre-lock resolution and here
+          // fails this typed (definition drift), so we never enter a stale lane.
+          if (parkedGuard.revalidate !== undefined) {
+            yield* parkedGuard.revalidate;
           }
           // Guard passed — only now supersede any (defense-in-depth) running
           // work. Parked tickets have no running pipeline by invariant, so this
@@ -1732,7 +1781,10 @@ const make = Effect.gen(function* () {
     ticketId: TicketId,
     boardId: BoardId,
     toLane: LaneKey,
-    parkedGuard: { readonly expectedParkedEventId: WorkflowEventId },
+    parkedGuard: {
+      readonly expectedParkedEventId: WorkflowEventId;
+      readonly revalidate?: Effect.Effect<void, WorkflowEventStoreError> | undefined;
+    },
   ): Effect.Effect<"moved" | "queued" | "none", WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const lockResult = yield* enterLaneCore(ticketId, boardId, toLane, "manual", {
@@ -1752,12 +1804,26 @@ const make = Effect.gen(function* () {
 
   // Parks a ticket in place. The ENTIRE critical section runs under the board
   // admission lock (uninterruptible), mirroring enterLaneCore's idiom: re-read
-  // the lane-entry token in-lock and bail if it changed (a concurrent move
-  // supersedes the park — no TOCTOU), emit TicketParked (its token-null
-  // projection frees this lane's WIP occupancy), then admit the next queued
-  // ticket. Collected starts run AFTER the lock releases, exactly like
-  // enterLane. `expectedToken` is the ticket's lane-entry token captured before
-  // the lock (string form so the projection value passes without a cast).
+  // the ticket in-lock and bail unless BOTH its lane-entry token AND its lane
+  // key still match the park decision (a concurrent move supersedes the park —
+  // no TOCTOU), emit TicketParked (its token-null projection frees this lane's
+  // WIP occupancy), then admit the next queued ticket. Collected starts run
+  // AFTER the lock releases, exactly like enterLane. `expectedToken` is the
+  // ticket's lane-entry token captured before the lock (string form so the
+  // projection value passes without a cast); `laneKey` is the lane the park
+  // decision was computed for.
+  //
+  // Lane binding (not just token) is load-bearing: a QUEUED ticket has a NULL
+  // token, so a token-only guard would treat `NULL === NULL` as identity and
+  // could park it in the WRONG lane after a concurrent move re-queued it
+  // elsewhere. The lane key is what disambiguates the queued case.
+  //
+  // `supersedeRunningWork`, when provided, runs INSIDE the lock AFTER the guard
+  // passes — this is the external-park path stopping the still-running pipeline
+  // fiber (interrupt + cancel turns + tombstone dispatches), mirroring
+  // enterLaneCore's external lane-move branch. It MUST be omitted on the
+  // in-pipeline completion path (parkTicket then runs ON the pipeline fiber, so
+  // superseding would interrupt the caller itself).
   const parkTicket = (
     ticketId: TicketId,
     boardId: BoardId,
@@ -1767,6 +1833,7 @@ const make = Effect.gen(function* () {
     parkOrigin: string,
     reason: string,
     pipelineRunId?: PipelineRunId,
+    supersedeRunningWork?: Effect.Effect<void, WorkflowEventStoreError>,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const starts: Array<PipelineStartAction> = [];
@@ -1774,10 +1841,18 @@ const make = Effect.gen(function* () {
         boardId,
         Effect.uninterruptible(
           Effect.gen(function* () {
-            const token = yield* currentToken(ticketId);
-            if (token !== expectedToken) {
-              // Superseded by a concurrent move — do not park.
+            const detail = yield* read.getTicketDetail(ticketId);
+            const token = detail?.ticket.currentLaneEntryToken ?? null;
+            const laneNow = detail?.ticket.currentLaneKey ?? null;
+            if (token !== expectedToken || laneNow !== (laneKey as string)) {
+              // Superseded by a concurrent move/re-queue (token OR lane drifted)
+              // — do not park.
               return;
+            }
+            // Only a confirmed-fresh park may kill the ticket's running work;
+            // a superseded park must have zero side effects.
+            if (supersedeRunningWork !== undefined) {
+              yield* supersedeRunningWork;
             }
             const label =
               target.label ?? (target.park === "issue" ? "Issue encountered" : "Waiting on you");
@@ -2135,6 +2210,16 @@ const make = Effect.gen(function* () {
           message: `step run ${input.stepRunId} not found`,
         });
       }
+      // Refuse to answer a parked ticket: park and an open agent wait cannot
+      // coexist by design, so a parked status here means a stale fiber's wait
+      // survived a supersede. Resuming it would write StepUserResolved/running
+      // over the parked row. Fail typed instead of orphaning the park.
+      const parkedCheck = yield* read.getTicketDetail(ticketId);
+      if (parkedCheck?.ticket.status === "parked") {
+        return yield* new WorkflowEventStoreError({
+          message: "ticket is parked",
+        });
+      }
       const awaitingState = yield* awaitingStateForStepRun(input.stepRunId);
       const pending = yield* pendingWaitFor(input.stepRunId);
       const responseKind =
@@ -2254,11 +2339,37 @@ const make = Effect.gen(function* () {
           message: `park action targets lane '${action.to}' which no longer exists in the board definition`,
         });
       }
-      // The authoritative parked guard + the manual move run together in the
-      // admission-locked serialized section. A concurrent invoke/move that
-      // already unparked the ticket makes the guard miss → "none" → "stale".
+      // Re-resolution repeated IN-LOCK: a concurrent board save may install a
+      // new definition between this pre-lock resolution and the admission-lock
+      // acquisition below. The pre-lock read gives a fast fail path; this
+      // effect re-reads the CURRENT definition inside the lock (alongside the
+      // parked identity guard) and requires the SAME action (label + target
+      // lane) still resolve at the SAME index. Any drift fails typed and emits
+      // nothing, so an action removed/changed by a save can never execute.
+      const revalidate = Effect.gen(function* () {
+        const currentDefinition = yield* registry.getDefinition(boardId);
+        const currentActions =
+          currentDefinition === null
+            ? null
+            : resolveParkActions(currentDefinition, laneKey, originJson);
+        const currentAction = currentActions === null ? undefined : currentActions[actionIndex];
+        if (
+          currentAction === undefined ||
+          currentAction.to !== action.to ||
+          currentAction.label !== action.label
+        ) {
+          return yield* new WorkflowEventStoreError({
+            message: "park actions unavailable — board definition changed",
+          });
+        }
+      });
+      // The authoritative parked guard + the in-lock re-resolution + the manual
+      // move all run together in the admission-locked serialized section. A
+      // concurrent invoke/move that already unparked the ticket makes the guard
+      // miss → "none" → "stale".
       const acted = yield* enterLaneWithParkedGuard(ticketId, boardId, action.to, {
         expectedParkedEventId: parkedEventId,
+        revalidate,
       });
       return acted === "none" ? ("stale" as const) : acted;
     });
@@ -2710,8 +2821,14 @@ const make = Effect.gen(function* () {
       // A matched onEvent target may park in place instead of moving lanes.
       // Never build a TicketRouteDecided from a park target — park is recorded
       // solely by TicketParked.
-      // Park does not supersede a still-running pipeline fiber; its next token
-      // check no-ops it. See Task 8 recovery tests.
+      //
+      // An external park MUST stop the ticket's still-running pipeline fiber:
+      // unlike the in-pipeline completion park (which runs ON that fiber), the
+      // event ingest runs on a foreign fiber, so the pipeline would otherwise
+      // continue executing every remaining step against a parked/token-null row.
+      // parkTicket runs the supersede INSIDE the admission lock, only after its
+      // token+lane guard confirms the park still applies — mirroring the
+      // external lane-move branch in enterLaneCore.
       if (isParkTarget(target)) {
         yield* parkTicket(
           input.ticketId,
@@ -2721,6 +2838,8 @@ const make = Effect.gen(function* () {
           target,
           buildParkOrigin({ src: "event", target, name: input.name }),
           `external event '${input.name}'`,
+          undefined,
+          supersedeRunningWorkFor(input.ticketId),
         );
         return { outcome: "noop" as const };
       }
@@ -3078,6 +3197,19 @@ const make = Effect.gen(function* () {
   const resolveApproval: WorkflowEngineShape["resolveApproval"] = (stepRunId, approved) =>
     Effect.gen(function* () {
       const resolve = Effect.gen(function* () {
+        // Refuse to resolve an approval on a parked ticket: a park cannot
+        // coexist with an open approval wait by design, so a parked status here
+        // means a stale fiber's wait survived a supersede. Resolving it would
+        // write StepUserResolved/running over the parked row. Fail typed.
+        const approvalTicketId = yield* ticketIdForStepRun(stepRunId);
+        if (approvalTicketId !== null) {
+          const approvalTicket = yield* read.getTicketDetail(approvalTicketId);
+          if (approvalTicket?.ticket.status === "parked") {
+            return yield* new WorkflowEventStoreError({
+              message: "ticket is parked",
+            });
+          }
+        }
         const pending = yield* pendingWaitFor(stepRunId);
         const { providerResponses } = yield* getOptionalServices;
         if (pending?.payload.providerResponseKind === "user-input") {

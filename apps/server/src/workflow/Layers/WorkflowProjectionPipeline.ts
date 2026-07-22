@@ -287,6 +287,10 @@ const make = Effect.gen(function* () {
           break;
         }
         case "TicketBlocked": {
+          // Invariant: a parked row is exited only by move/queue/admit (which
+          // carry PARKED_CLEAR) or unpark — never by a status write from a stale
+          // fiber. Refuse to overwrite `parked` here so a late TicketBlocked from
+          // a superseded pipeline cannot orphan the parked_* columns.
           yield* sql`
             UPDATE projection_ticket
             SET status = 'blocked',
@@ -294,6 +298,7 @@ const make = Effect.gen(function* () {
                 attention_reason = ${event.payload.reason},
                 updated_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId}
+              AND status != 'parked'
           `;
           break;
         }
@@ -317,6 +322,10 @@ const make = Effect.gen(function* () {
             )
             ON CONFLICT(pipeline_run_id) DO NOTHING
           `;
+          // Invariant: a parked row is exited only by move/queue/admit (which
+          // carry PARKED_CLEAR) or unpark. A PipelineStarted from a stale fiber
+          // (or replayed while the row is parked) must not flip `parked` back to
+          // `running` and orphan the parked_* columns.
           yield* sql`
             UPDATE projection_ticket
             SET status = 'running',
@@ -324,6 +333,7 @@ const make = Effect.gen(function* () {
                 attention_reason = NULL,
                 updated_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId}
+              AND status != 'parked'
           `;
           break;
         }
@@ -380,6 +390,11 @@ const make = Effect.gen(function* () {
                 provider_response_kind = ${event.payload.providerResponseKind ?? null}
             WHERE step_run_id = ${event.payload.stepRunId}
           `;
+          // Invariant: a parked row is exited only by move/queue/admit (which
+          // carry PARKED_CLEAR) or unpark. Park and an open agent wait cannot
+          // coexist, so a StepAwaitingUser landing on a parked row is a stale
+          // fiber — refuse the ticket-status write (the step-row update above
+          // still proceeds) so it cannot orphan the parked_* columns.
           yield* sql`
             UPDATE projection_ticket
             SET status = 'waiting_on_user',
@@ -387,6 +402,7 @@ const make = Effect.gen(function* () {
                 attention_reason = ${event.payload.waitingReason},
                 updated_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId}
+              AND status != 'parked'
           `;
           break;
         }
@@ -398,6 +414,10 @@ const make = Effect.gen(function* () {
                 provider_response_kind = NULL
             WHERE step_run_id = ${event.payload.stepRunId}
           `;
+          // Invariant: a parked row is exited only by move/queue/admit (which
+          // carry PARKED_CLEAR) or unpark. A StepUserResolved from a stale
+          // fiber must not flip `parked` back to `running` and orphan the
+          // parked_* columns (the step-row update above still proceeds).
           yield* sql`
             UPDATE projection_ticket
             SET status = 'running',
@@ -405,6 +425,7 @@ const make = Effect.gen(function* () {
                 attention_reason = NULL,
                 updated_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId}
+              AND status != 'parked'
           `;
           break;
         }

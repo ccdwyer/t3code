@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -944,6 +945,582 @@ it.layer(baseLayer(gatedExecutorLayer))("park token guard executes under a real 
       // ...and the in-lock guard bailed: NO park was emitted.
       assert.isUndefined(events.find((event) => event.type === "TicketParked"));
       assert.notEqual(detail?.ticket.status, "parked");
+    }),
+  );
+});
+
+// ===========================================================================
+// GATE 1 fixes: stale-fiber supersession, inter-step token guard, parked
+// projection refusals, lane-bound park guard, in-lock action re-resolution.
+// ===========================================================================
+
+const promiseSleep = (ms: number) =>
+  Effect.promise<void>(() => new Promise((resolve) => setTimeout(resolve, ms)));
+
+// A gate the test releases; the held step then COMPLETES (unlike the failing
+// gatedExecutorLayer above). Used to hold a pipeline mid-flight so the test can
+// externally park / re-token it while it is provably running.
+const gatedCompletingExecutorLayer = Layer.effect(
+  StepExecutor,
+  Effect.gen(function* () {
+    const gate = yield* Deferred.make<void>();
+    const shape: GatedExecutor = {
+      execute: () =>
+        Deferred.await(gate).pipe(Effect.map((): StepOutcome => ({ _tag: "completed" }))),
+      releaseGate: () => Deferred.succeed(gate, undefined),
+    };
+    return shape;
+  }),
+);
+
+const stepStartedCountFor = (ticketId: string) =>
+  Effect.gen(function* () {
+    const store = yield* WorkflowEventStore;
+    const events = yield* Stream.runCollect(store.readByTicket(ticketId as never)).pipe(
+      Effect.map((chunk) => Array.from(chunk)),
+    );
+    return events.filter((event) => event.type === "StepStarted").length;
+  });
+
+// ---------------------------------------------------------------------------
+// F1a: external park mid multi-step pipeline supersedes the running fiber —
+// no further StepStarted, status stays parked, parked columns not orphaned.
+// ---------------------------------------------------------------------------
+
+it.layer(baseLayer(gatedCompletingExecutorLayer))(
+  "external park supersedes a running multi-step pipeline",
+  (it) => {
+    it.effect("interrupts the fiber: no further StepStarted, status stays parked", () =>
+      Effect.gen(function* () {
+        const registry = yield* BoardRegistry;
+        yield* registry.register(
+          "b-superpark" as never,
+          {
+            name: "superpark",
+            lanes: [
+              {
+                key: "impl",
+                name: "Impl",
+                entry: "auto",
+                pipeline: [
+                  {
+                    key: "code",
+                    type: "agent",
+                    agent: { instance: "claude_main", model: "sonnet" },
+                    instruction: "do it",
+                  },
+                  {
+                    key: "test",
+                    type: "agent",
+                    agent: { instance: "claude_main", model: "sonnet" },
+                    instruction: "test it",
+                  },
+                ],
+                onEvent: [
+                  {
+                    name: "halt",
+                    to: {
+                      park: "issue",
+                      label: "Halted",
+                      actions: [{ label: "Retry", to: "impl" }],
+                    },
+                  },
+                ],
+              },
+            ],
+          } as never,
+        );
+        const engine = yield* WorkflowEngine;
+        const read = yield* WorkflowReadModel;
+        const executor = (yield* StepExecutor) as GatedExecutor;
+
+        const ticketId = yield* engine.createTicket({
+          boardId: "b-superpark" as never,
+          title: "Multi-step",
+          initialLane: "impl" as never,
+        });
+
+        // First step running (blocked on the gate), token live.
+        yield* awaitTicketWhere(
+          ticketId as string,
+          (detail) =>
+            (detail?.steps?.length ?? 0) >= 1 && detail?.ticket.currentLaneEntryToken !== null,
+        );
+
+        // External park while the pipeline is mid-flight: it must interrupt the
+        // fiber so the second step never dispatches.
+        const result = yield* engine.ingestExternalEvent({
+          boardId: "b-superpark" as never,
+          name: "halt",
+          ticketId,
+          payload: null,
+        });
+        assert.equal(result.outcome, "noop");
+
+        const parked = yield* awaitParked(ticketId as string);
+        assert.equal(parked?.ticket.status, "parked");
+        assert.equal(parked?.ticket.currentLaneEntryToken, null);
+        assert.equal(parked?.ticket.attentionKind, "parked_issue");
+
+        // Release the (now-interrupted) gate and give any stray continuation a
+        // chance to (incorrectly) run the second step.
+        yield* executor.releaseGate();
+        yield* promiseSleep(60);
+
+        // Only the FIRST step ever started — the fiber was superseded.
+        assert.equal(yield* stepStartedCountFor(ticketId as string), 1);
+
+        // Status is still parked with parked columns intact (not orphaned by a
+        // late StepStarted / PipelineCompleted / TicketBlocked from a stale fiber).
+        const after = yield* read.getTicketDetail(ticketId);
+        assert.equal(after?.ticket.status, "parked");
+        assert.equal(after?.ticket.parkedSubstate, "issue");
+        assert.notEqual(after?.ticket.parkedEventId, null);
+      }),
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// F1b: inter-step token guard — a token flip BETWEEN steps (without an
+// interrupt) aborts the remaining pipeline silently.
+// ---------------------------------------------------------------------------
+
+it.layer(baseLayer(gatedCompletingExecutorLayer))("inter-step token guard", (it) => {
+  it.effect("a token flip between steps stops the next step from dispatching", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      const committer = yield* WorkflowEventCommitter;
+      const read = yield* WorkflowReadModel;
+      yield* registry.register(
+        "b-interstep" as never,
+        {
+          name: "interstep",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                },
+                {
+                  key: "test",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "test it",
+                },
+              ],
+            },
+            { key: "elsewhere", name: "Elsewhere", entry: "manual" },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+      const executor = (yield* StepExecutor) as GatedExecutor;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-interstep" as never,
+        title: "Two steps",
+        initialLane: "impl" as never,
+      });
+
+      // First step running (blocked on the gate) holding token T1.
+      yield* awaitTicketWhere(
+        ticketId as string,
+        (detail) =>
+          (detail?.steps?.length ?? 0) >= 1 && detail?.ticket.currentLaneEntryToken !== null,
+      );
+
+      // Flip the token WITHOUT interrupting the fiber (commit a move directly,
+      // bypassing engine.moveTicket precisely so the loop runs to the inter-step
+      // guard). The first step then completes on a stale token.
+      yield* committer.commit({
+        type: "TicketMovedToLane",
+        ticketId,
+        payload: {
+          toLane: "elsewhere",
+          laneEntryToken: "interstep-fresh-token",
+          reason: "manual",
+        },
+        eventId: "evt-interstep-move",
+        occurredAt: "2026-07-22T00:00:00.000Z",
+      } as never);
+
+      yield* executor.releaseGate();
+      yield* promiseSleep(60);
+
+      // Only the FIRST step started; the inter-step guard aborted before the
+      // second step's StepStarted, and no PipelineCompleted was emitted.
+      assert.equal(yield* stepStartedCountFor(ticketId as string), 1);
+      const store = yield* WorkflowEventStore;
+      const events = yield* Stream.runCollect(store.readByTicket(ticketId)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      );
+      assert.isUndefined(events.find((event) => event.type === "PipelineCompleted"));
+      const detail = yield* read.getTicketDetail(ticketId);
+      assert.equal(detail?.ticket.currentLaneKey, "elsewhere");
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F1d: answering / approving a parked ticket fails typed and leaves it parked.
+// ---------------------------------------------------------------------------
+
+const answerParkExecutor = makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" }));
+const answerParkLayer = it.layer(baseLayer(answerParkExecutor.layer));
+
+answerParkLayer("answer while parked", (it) => {
+  it.effect("answerTicketStep on a parked ticket fails typed and does not unpark it", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-answerpark" as never,
+        {
+          name: "answerpark",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                },
+              ],
+              on: { failure: { park: "issue", actions: [{ label: "Retry", to: "impl" }] } },
+            },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+      const read = yield* WorkflowReadModel;
+      const store = yield* WorkflowEventStore;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-answerpark" as never,
+        title: "Parks",
+        initialLane: "impl" as never,
+      });
+
+      yield* awaitParked(ticketId as string);
+
+      // The parked ticket has a StepStarted (the step that failed), so its
+      // stepRunId maps back to the ticket — the parked guard fires before any
+      // awaiting-state logic.
+      const events = yield* Stream.runCollect(store.readByTicket(ticketId)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      );
+      const stepStarted = events.find((event) => event.type === "StepStarted");
+      assert.ok(stepStarted?.type === "StepStarted");
+      const stepRunId =
+        stepStarted?.type === "StepStarted" ? stepStarted.payload.stepRunId : undefined;
+      assert.isDefined(stepRunId);
+
+      const failure = yield* engine
+        .answerTicketStep({ stepRunId: stepRunId as never, text: "here you go" })
+        .pipe(Effect.flip);
+      assert.include(failure.message, "parked");
+
+      // Still parked, no orphaned parked_* left over a running status.
+      const detail = yield* read.getTicketDetail(ticketId);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.notEqual(detail?.ticket.parkedEventId, null);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F1a (semaphore): parking a running ticket via external event frees the global
+// concurrency permit so a waiting ticket is admitted promptly.
+// ---------------------------------------------------------------------------
+
+it.layer(baseLayer(gatedCompletingExecutorLayer))("park frees the concurrency permit", (it) => {
+  it.effect("maxConcurrentTickets=1: external park of A lets B acquire the permit", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-permit" as never,
+        {
+          name: "permit",
+          settings: { maxConcurrentTickets: 1 },
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                },
+              ],
+              onEvent: [
+                {
+                  name: "halt",
+                  to: { park: "issue", label: "Halted", actions: [{ label: "Retry", to: "impl" }] },
+                },
+              ],
+            },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+
+      const ticketA = yield* engine.createTicket({
+        boardId: "b-permit" as never,
+        title: "A",
+        initialLane: "impl" as never,
+      });
+      // A holds the single permit and is blocked in its step.
+      yield* awaitTicketWhere(ticketA as string, (detail) => (detail?.steps?.length ?? 0) >= 1);
+
+      const ticketB = yield* engine.createTicket({
+        boardId: "b-permit" as never,
+        title: "B",
+        initialLane: "impl" as never,
+      });
+      // B is admitted to the lane but cannot start its step — A holds the permit.
+      yield* promiseSleep(40);
+      assert.equal(yield* stepStartedCountFor(ticketB as string), 0);
+
+      // Externally park A: supersede interrupts A's fiber, releasing the permit.
+      yield* engine.ingestExternalEvent({
+        boardId: "b-permit" as never,
+        name: "halt",
+        ticketId: ticketA,
+        payload: null,
+      });
+
+      // B now acquires the permit and starts its step — WITHOUT A's gate ever
+      // being released (A's fiber ended by interruption, not natural completion).
+      for (let attempt = 0; attempt < 150; attempt += 1) {
+        if ((yield* stepStartedCountFor(ticketB as string)) >= 1) {
+          break;
+        }
+        yield* promiseSleep(10);
+        yield* Effect.yieldNow;
+      }
+      assert.equal(yield* stepStartedCountFor(ticketB as string), 1);
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F2: lane-bound park guard — a queued ticket (NULL token) re-queued into a
+// different lane is NOT parked by a delayed external park bound to its old lane.
+// ---------------------------------------------------------------------------
+
+it.layer(baseLayer(gatedCompletingExecutorLayer))("lane-bound park guard (queued ABA)", (it) => {
+  it.effect("a delayed park bound to lane A does not park a ticket re-queued into lane B", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      const committer = yield* WorkflowEventCommitter;
+      const read = yield* WorkflowReadModel;
+      const store = yield* WorkflowEventStore;
+      yield* registry.register(
+        "b-laneaba" as never,
+        {
+          name: "laneaba",
+          lanes: [
+            {
+              key: "a",
+              name: "A",
+              entry: "auto",
+              wipLimit: 1,
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                },
+              ],
+              onEvent: [
+                {
+                  name: "halt",
+                  to: { park: "issue", label: "Halted", actions: [{ label: "Retry", to: "a" }] },
+                },
+              ],
+            },
+            { key: "b", name: "B", entry: "manual" },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+
+      // Occupy lane A's single WIP slot so the second ticket queues (NULL token).
+      const holder = yield* engine.createTicket({
+        boardId: "b-laneaba" as never,
+        title: "Holder",
+        initialLane: "a" as never,
+      });
+      yield* awaitTicketWhere(holder as string, (detail) => (detail?.steps?.length ?? 0) >= 1);
+
+      const queued = yield* engine.createTicket({
+        boardId: "b-laneaba" as never,
+        title: "Queued",
+        initialLane: "a" as never,
+      });
+      yield* awaitTicketWhere(
+        queued as string,
+        (detail) =>
+          detail?.ticket.status === "queued" && detail.ticket.currentLaneEntryToken === null,
+      );
+
+      // A holder fiber grabs the admission lock and keeps it until released.
+      const lockHeld = yield* Deferred.make<void>();
+      const releaseLock = yield* Deferred.make<void>();
+      const holderFiber = yield* engine
+        .withBoardAdmissionLock(
+          "b-laneaba" as never,
+          Effect.gen(function* () {
+            yield* Deferred.succeed(lockHeld, undefined);
+            yield* Deferred.await(releaseLock);
+            // While STILL holding the lock, re-queue the ticket into lane B (NULL
+            // token again — the ABA a token-only guard could not catch).
+            yield* committer.commit({
+              type: "TicketQueued",
+              ticketId: queued,
+              payload: { lane: "b" },
+              eventId: "evt-laneaba-requeue",
+              occurredAt: "2026-07-22T00:00:00.000Z",
+            } as never);
+          }),
+        )
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(lockHeld);
+      // Fork the external park: it reads the ticket (lane A, NULL token) then
+      // blocks on parkTicket's admission lock (held by the holder). The sleep
+      // ensures its pre-lock read of lane A completes before the holder flips to
+      // lane B. On release, the park's IN-LOCK read sees lane B; its lane binding
+      // refuses the park.
+      const parkFiber = yield* engine
+        .ingestExternalEvent({
+          boardId: "b-laneaba" as never,
+          name: "halt",
+          ticketId: queued,
+          payload: null,
+        })
+        .pipe(Effect.forkChild);
+      yield* promiseSleep(40);
+      yield* Deferred.succeed(releaseLock, undefined);
+      yield* Fiber.join(holderFiber);
+      yield* Fiber.join(parkFiber);
+
+      const detail = yield* read.getTicketDetail(queued);
+      assert.equal(detail?.ticket.currentLaneKey, "b");
+      assert.notEqual(detail?.ticket.status, "parked");
+
+      const events = yield* Stream.runCollect(store.readByTicket(queued)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      );
+      assert.isUndefined(events.find((event) => event.type === "TicketParked"));
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// F3: in-lock action re-resolution — a board save landing between the pre-lock
+// resolution and the admission lock makes invokeParkAction fail typed, no move.
+// ---------------------------------------------------------------------------
+
+const f3ActionParkExecutor = makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" }));
+const f3Layer = it.layer(baseLayer(f3ActionParkExecutor.layer));
+
+const f3DefinitionWith = (actionLabel: string) =>
+  ({
+    name: "f3",
+    lanes: [
+      {
+        key: "impl",
+        name: "Impl",
+        entry: "auto",
+        pipeline: [
+          {
+            key: "code",
+            type: "agent",
+            agent: { instance: "claude_main", model: "sonnet" },
+            instruction: "do it",
+            on: {
+              failure: {
+                park: "issue",
+                label: "Snag",
+                actions: [{ label: actionLabel, to: "land" }],
+              },
+            },
+          },
+        ],
+      },
+      { key: "land", name: "Land", entry: "manual" },
+    ],
+  }) as never;
+
+f3Layer("in-lock action re-resolution", (it) => {
+  it.effect("a concurrent board save before the lock makes invoke fail typed with no move", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      const read = yield* WorkflowReadModel;
+      yield* registry.register("b-f3" as never, f3DefinitionWith("Approve & land"));
+      const engine = yield* WorkflowEngine;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-f3" as never,
+        title: "Parks",
+        initialLane: "impl" as never,
+      });
+      const parked = yield* awaitParked(ticketId as string);
+      const parkedEventId = parked?.ticket.parkedEventId;
+      assert.isDefined(parkedEventId);
+
+      // A holder fiber grabs the admission lock and keeps it until released.
+      const lockHeld = yield* Deferred.make<void>();
+      const releaseLock = yield* Deferred.make<void>();
+      const holderFiber = yield* engine
+        .withBoardAdmissionLock(
+          "b-f3" as never,
+          Effect.gen(function* () {
+            yield* Deferred.succeed(lockHeld, undefined);
+            yield* Deferred.await(releaseLock);
+            // Board save while STILL holding the lock: same origin site, different
+            // action → its fingerprint no longer matches the parked origin.
+            yield* registry.register("b-f3" as never, f3DefinitionWith("Send back"));
+          }),
+        )
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(lockHeld);
+      // Fork the invoke: its pre-lock resolution reads the CURRENT (pre-save)
+      // definition and resolves the action, then it blocks on the admission lock.
+      // The sleep ensures that pre-lock resolution completes before the save. On
+      // release, the IN-LOCK re-resolution reads the saved definition and fails
+      // typed. `Effect.flip` turns the expected typed failure into the joined
+      // value (if invoke wrongly succeeded, the fiber would fail and error here).
+      const invokeFiber = yield* engine
+        .invokeParkAction(ticketId, 0, parkedEventId as never)
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* promiseSleep(40);
+      yield* Deferred.succeed(releaseLock, undefined);
+      yield* Fiber.join(holderFiber);
+
+      const error = yield* Fiber.join(invokeFiber);
+      assert.include(error.message, "board definition changed");
+
+      // No move happened — the ticket is still parked in impl.
+      const detail = yield* read.getTicketDetail(ticketId);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneKey, "impl");
     }),
   );
 });

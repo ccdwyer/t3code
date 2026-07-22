@@ -1700,6 +1700,146 @@ layer("WorkflowReadModel", (it) => {
       }),
   );
 
+  it.effect("ticket detail and list expose raw parked-state columns for a parked ticket", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const base = { ticketId: "t-parked-detail" as never };
+      const parkOrigin = encodeUnknownJsonString({
+        src: "step_on",
+        stepKey: "implement",
+        fp: "abc123",
+      });
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "parked-detail-a" as never,
+        streamVersion: 0,
+        occurredAt: "2026-07-22T00:00:00.000Z" as never,
+        payload: {
+          boardId: "b-parked-detail" as never,
+          title: "Parked ticket" as never,
+          laneKey: "implement" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketMovedToLane",
+        eventId: "parked-detail-b" as never,
+        streamVersion: 1,
+        occurredAt: "2026-07-22T00:00:01.000Z" as never,
+        payload: {
+          toLane: "implement" as never,
+          laneEntryToken: "tok-parked-detail" as never,
+          reason: "initial",
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketParked",
+        eventId: "parked-detail-c" as never,
+        streamVersion: 2,
+        occurredAt: "2026-07-22T00:00:02.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "step failed: boom",
+          parkOrigin,
+          actionsSnapshot: [{ label: "Retry", to: "implement" as never }],
+        },
+      });
+
+      const detail = yield* read.getTicketDetail("t-parked-detail" as never);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneEntryToken, null);
+      assert.equal(detail?.ticket.parkedSubstate, "issue");
+      assert.equal(detail?.ticket.parkedLabel, "Issue encountered");
+      assert.equal(detail?.ticket.parkedReason, "step failed: boom");
+      assert.equal(detail?.ticket.parkedAt, "2026-07-22T00:00:02.000Z");
+      assert.equal(detail?.ticket.parkedEventId, "parked-detail-c");
+      assert.equal(detail?.ticket.parkOrigin, parkOrigin);
+      assert.equal(detail?.ticket.currentStepLabel, null);
+
+      const tickets = yield* read.listTickets("b-parked-detail" as never);
+      const listed = tickets.find((t) => t.ticketId === "t-parked-detail");
+      assert.equal(listed?.parkedSubstate, "issue");
+      assert.equal(listed?.parkedLabel, "Issue encountered");
+      assert.equal(listed?.parkedReason, "step failed: boom");
+      assert.equal(listed?.parkedAt, "2026-07-22T00:00:02.000Z");
+      assert.equal(listed?.parkedEventId, "parked-detail-c");
+      assert.equal(listed?.parkOrigin, parkOrigin);
+      assert.equal(listed?.currentStepLabel, null);
+    }),
+  );
+
+  it.effect(
+    "ticket detail and list expose currentStepLabel and null parked columns for a non-parked ticket",
+    () =>
+      Effect.gen(function* () {
+        const read = yield* WorkflowReadModel;
+        const pipeline = yield* WorkflowProjectionPipeline;
+        const base = {
+          ticketId: "t-nonparked-detail" as never,
+          occurredAt: "2026-07-22T00:00:00.000Z" as never,
+        };
+
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketCreated",
+          eventId: "nonparked-detail-a" as never,
+          streamVersion: 0,
+          payload: {
+            boardId: "b-nonparked-detail" as never,
+            title: "Running ticket" as never,
+            laneKey: "implement" as never,
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "TicketMovedToLane",
+          eventId: "nonparked-detail-b" as never,
+          streamVersion: 1,
+          payload: {
+            toLane: "implement" as never,
+            laneEntryToken: "tok-nonparked-detail" as never,
+            reason: "initial",
+          },
+        });
+        yield* pipeline.projectEvent({
+          ...base,
+          type: "StepStarted",
+          eventId: "nonparked-detail-c" as never,
+          streamVersion: 2,
+          payload: {
+            pipelineRunId: "pr-nonparked-detail" as never,
+            stepRunId: "sr-nonparked-detail" as never,
+            stepKey: "implement" as never,
+            stepType: "agent",
+          },
+        });
+
+        const detail = yield* read.getTicketDetail("t-nonparked-detail" as never);
+        assert.equal(detail?.ticket.currentStepLabel, "implement");
+        assert.equal(detail?.ticket.parkedSubstate, null);
+        assert.equal(detail?.ticket.parkedLabel, null);
+        assert.equal(detail?.ticket.parkedReason, null);
+        assert.equal(detail?.ticket.parkedAt, null);
+        assert.equal(detail?.ticket.parkedEventId, null);
+        assert.equal(detail?.ticket.parkOrigin, null);
+
+        const tickets = yield* read.listTickets("b-nonparked-detail" as never);
+        const listed = tickets.find((t) => t.ticketId === "t-nonparked-detail");
+        assert.equal(listed?.currentStepLabel, "implement");
+        assert.equal(listed?.parkedSubstate, null);
+        assert.equal(listed?.parkedLabel, null);
+        assert.equal(listed?.parkedReason, null);
+        assert.equal(listed?.parkedAt, null);
+        assert.equal(listed?.parkedEventId, null);
+        assert.equal(listed?.parkOrigin, null);
+      }),
+  );
+
   it.effect(
     "listNeedsAttentionTickets returns only waiting/blocked tickets with board name, oldest first",
     () =>

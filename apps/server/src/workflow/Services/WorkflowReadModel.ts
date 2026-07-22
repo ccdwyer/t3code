@@ -98,6 +98,21 @@ export interface TicketRow {
   // Current lane detail (key/name/actions) — present on detail reads, resolved
   // from the board definition.
   readonly currentLane?: WorkflowCurrentLaneRow;
+  // Raw parked-state columns, present whenever a SELECT joins them in — null
+  // when the ticket is not currently parked. Internal plumbing only: no action
+  // re-resolution happens here (that's the engine's `invokeParkAction`
+  // compare-and-act, fed by `parkedEventId` / `parkOrigin`); public view
+  // assembly is a separate concern. Optional like `attentionKind` above, for
+  // the same reason: not every historical row-building site is guaranteed to
+  // select them.
+  readonly parkedSubstate?: string | null;
+  readonly parkedLabel?: string | null;
+  readonly parkedReason?: string | null;
+  readonly parkedAt?: string | null;
+  readonly parkedEventId?: string | null;
+  readonly parkOrigin?: string | null;
+  // Current step key label; null when no pipeline step is running.
+  readonly currentStepLabel?: string | null;
 }
 
 // A ticket awaiting human attention across the boards in this environment's DB,

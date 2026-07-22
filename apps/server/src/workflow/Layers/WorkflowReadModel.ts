@@ -730,7 +730,14 @@ const make = Effect.gen(function* () {
         pr.pr_url AS "prUrl",
         pr.pr_state AS "prState",
         pr.last_ci_state AS "prCiState",
-        status
+        status,
+        parked_substate AS "parkedSubstate",
+        parked_label AS "parkedLabel",
+        parked_reason AS "parkedReason",
+        parked_at AS "parkedAt",
+        parked_event_id AS "parkedEventId",
+        park_origin AS "parkOrigin",
+        current_step_label AS "currentStepLabel"
       FROM projection_ticket
       LEFT JOIN workflow_pr_state AS pr
         ON pr.ticket_id = projection_ticket.ticket_id
@@ -791,7 +798,14 @@ const make = Effect.gen(function* () {
           FROM projection_ticket_dependency AS dep
           WHERE dep.ticket_id = projection_ticket.ticket_id
         ) AS "dependsOnJson",
-        status
+        status,
+        parked_substate AS "parkedSubstate",
+        parked_label AS "parkedLabel",
+        parked_reason AS "parkedReason",
+        parked_at AS "parkedAt",
+        parked_event_id AS "parkedEventId",
+        park_origin AS "parkOrigin",
+        current_step_label AS "currentStepLabel"
       FROM projection_ticket
       WHERE board_id = ${boardId}
         AND current_lane_key = ${laneKey}
@@ -857,6 +871,13 @@ const make = Effect.gen(function* () {
           status,
           attention_kind AS "attentionKind",
           attention_reason AS "attentionReason",
+          parked_substate AS "parkedSubstate",
+          parked_label AS "parkedLabel",
+          parked_reason AS "parkedReason",
+          parked_at AS "parkedAt",
+          parked_event_id AS "parkedEventId",
+          park_origin AS "parkOrigin",
+          current_step_label AS "currentStepLabel",
           wsm.source_metadata_json AS "sourceMetadataJson"
         FROM projection_ticket
         LEFT JOIN workflow_pr_state AS pr

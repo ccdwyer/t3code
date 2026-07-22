@@ -844,6 +844,199 @@ layer("WorkflowEventCommitter", (it) => {
       }),
   );
 
+  it.effect("writes exactly one outbox row when a ticket parks with substate=issue", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-park-issue";
+      const ticketId = "t-outbox-park-issue";
+      const committer = yield* WorkflowEventCommitter;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({ ticketId, boardId, title: "Park issue", status: "running" });
+
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-park-issue" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:01.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "step failed: boom",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"deadbeef"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      const rows = yield* outboxRows(ticketId);
+      assert.equal(rows.length, 1);
+      const row = rows[0]!;
+      assert.equal(row.status, "parked");
+      assert.equal(row.attentionKind, "parked_issue");
+      assert.equal(row.attentionReason, '"Park issue" hit an issue: step failed: boom');
+      assert.equal(row.deliveryState, "pending");
+    }),
+  );
+
+  it.effect("writes exactly one outbox row when a ticket parks with substate=waiting", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-park-waiting";
+      const ticketId = "t-outbox-park-waiting";
+      const committer = yield* WorkflowEventCommitter;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({ ticketId, boardId, title: "Park waiting", status: "running" });
+
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-park-waiting" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:01.000Z" as never,
+        payload: {
+          substate: "waiting",
+          label: "Needs manual review",
+          reason: "review budget exhausted after 3 passes",
+          parkOrigin: '{"src":"transition","key":"budget-exhausted","fp":"cafebabe"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      const rows = yield* outboxRows(ticketId);
+      assert.equal(rows.length, 1);
+      const row = rows[0]!;
+      assert.equal(row.status, "parked");
+      assert.equal(row.attentionKind, "parked_waiting");
+      assert.equal(row.attentionReason, '"Park waiting" is waiting on you: Needs manual review');
+      assert.equal(row.deliveryState, "pending");
+    }),
+  );
+
+  it.effect("notifies twice across a park -> move -> re-park sequence", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-park-cycle";
+      const ticketId = "t-outbox-park-cycle";
+      const committer = yield* WorkflowEventCommitter;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({ ticketId, boardId, title: "Cycle", status: "running" });
+
+      // 1) Park (issue) -> crosses into parked -> one row.
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-park-cycle-1" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:01.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "first failure",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"aaaa"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      assert.equal(yield* outboxCount(ticketId), 1);
+
+      // 2) Manual move out of parked -> clears parked columns, not a needs-you status.
+      yield* committer.commit({
+        type: "TicketMovedToLane",
+        eventId: "e-outbox-park-cycle-2" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:02.000Z" as never,
+        payload: {
+          toLane: "impl" as never,
+          laneEntryToken: "tok-park-cycle" as never,
+          reason: "manual",
+        },
+      });
+      assert.equal(yield* outboxCount(ticketId), 1);
+
+      // 3) Re-park -> crosses into parked again -> a second row.
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-park-cycle-3" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:03.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "second failure",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"aaaa"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+
+      const rows = yield* outboxRows(ticketId);
+      assert.equal(rows.length, 2);
+      assert.deepEqual(
+        rows.map((row) => row.status),
+        ["parked", "parked"],
+      );
+    }),
+  );
+
+  it.effect("does not write a second outbox row when a ticket stays parked", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-park-stay";
+      const ticketId = "t-outbox-park-stay";
+      const committer = yield* WorkflowEventCommitter;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({ ticketId, boardId, title: "Stay parked", status: "running" });
+
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-park-stay-1" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:01.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "first failure",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"aaaa"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      assert.equal(yield* outboxCount(ticketId), 1);
+
+      // A second TicketParked while status is already "parked" — newStatus is
+      // needs-you but equals prevStatus, so no new transition/row.
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-park-stay-2" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:02.000Z" as never,
+        payload: {
+          substate: "issue",
+          label: "Issue encountered",
+          reason: "second failure",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"aaaa"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      assert.equal(yield* outboxCount(ticketId), 1);
+    }),
+  );
+
+  it.effect("writes no outbox row for TicketExternalEventSkipped", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-external-skipped";
+      const ticketId = "t-outbox-external-skipped";
+      const committer = yield* WorkflowEventCommitter;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({
+        ticketId,
+        boardId,
+        title: "Skipped",
+        status: "parked",
+      });
+
+      yield* committer.commit({
+        type: "TicketExternalEventSkipped",
+        eventId: "e-outbox-external-skipped" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T00:00:01.000Z" as never,
+        payload: { eventName: "on.merged", reason: "parked" },
+      } as never);
+
+      assert.equal(yield* outboxCount(ticketId), 0);
+    }),
+  );
+
   it.effect(
     "the supersede guard does not strand the current row on idempotent re-projection of the same sequence",
     () =>

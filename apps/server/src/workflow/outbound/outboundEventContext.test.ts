@@ -24,8 +24,12 @@ describe("outbound event context", () => {
       TicketBlocked: "blocked",
       TicketMovedToLane: "lane_entered",
       TicketAdmitted: "lane_entered",
+      // TicketParked has no single trigger — asserted per-substate below.
     };
     for (const eventType of OUTBOUND_EVENT_TYPES) {
+      if (eventType === "TicketParked") {
+        continue;
+      }
       expect(expected[eventType], `missing expected trigger for ${eventType}`).toBeDefined();
       const ctx = buildOutboundContext({
         eventType,
@@ -41,6 +45,40 @@ describe("outbound event context", () => {
       });
       expect(ctx.trigger).toBe(expected[eventType]);
     }
+  });
+  it("TicketParked maps to a non-fallback trigger for both substates", () => {
+    expect(OUTBOUND_EVENT_TYPES.has("TicketParked")).toBe(true);
+    const issueCtx = buildOutboundContext({
+      eventType: "TicketParked",
+      ticketId: "t",
+      boardId: "b",
+      title: "x",
+      fromLane: null,
+      toLane: null,
+      postStatus: "parked",
+      isTerminal: false,
+      reason: undefined,
+      occurredAt: "2026-06-14T00:00:00.000Z",
+      parkSubstate: "issue",
+    });
+    expect(issueCtx.trigger).toBe("blocked");
+    const waitingCtx = buildOutboundContext({
+      eventType: "TicketParked",
+      ticketId: "t",
+      boardId: "b",
+      title: "x",
+      fromLane: null,
+      toLane: null,
+      postStatus: "parked",
+      isTerminal: false,
+      reason: undefined,
+      occurredAt: "2026-06-14T00:00:00.000Z",
+      parkSubstate: "waiting",
+    });
+    expect(waitingCtx.trigger).toBe("needs_attention");
+  });
+  it("TicketExternalEventSkipped is NOT outbound-gated", () => {
+    expect(OUTBOUND_EVENT_TYPES.has("TicketExternalEventSkipped")).toBe(false);
   });
   it("StepAwaitingUser → needs_attention", () => {
     const ctx = buildOutboundContext({

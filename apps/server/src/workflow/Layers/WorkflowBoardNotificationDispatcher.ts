@@ -28,13 +28,16 @@ const DEFAULT_BODY = "Needs your attention";
 
 // Statuses that mean the ticket still wants a human. Anything else (running,
 // idle, done, failed, or a vanished ticket) means it self-resolved before we
-// notified — supersede the row so we don't buzz.
-const NEEDS_YOU_STATUSES = new Set(["waiting_on_user", "blocked"]);
+// notified — supersede the row so we don't buzz. "parked" covers a ticket
+// parked in-place (issue or waiting substate) per the substates spec.
+const NEEDS_YOU_STATUSES = new Set(["waiting_on_user", "blocked", "parked"]);
 
 const VALID_ATTENTION_KINDS = new Set<RelayBoardTicketState["attentionKind"]>([
   "waiting_for_approval",
   "waiting_for_input",
   "blocked",
+  "parked_issue",
+  "parked_waiting",
 ]);
 
 const normalizeAttentionKind = (raw: string | null): RelayBoardTicketState["attentionKind"] =>

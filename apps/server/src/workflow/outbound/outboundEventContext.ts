@@ -1,15 +1,21 @@
-import type { OutboundEventContext, OutboundTrigger } from "@t3tools/contracts";
+import type {
+  OutboundEventContext,
+  OutboundTrigger,
+  WorkflowParkSubstate,
+} from "@t3tools/contracts";
 import { redactSensitiveText } from "../redactSensitiveText.ts";
 
 // INVARIANT: every member here must have an explicit case in `primaryTrigger`
 // (pinned by the "every gated event type maps to an explicit (non-fallback) trigger"
 // coverage test). Adding a tag without updating the switch would silently get the
-// `lane_entered` fallback and fire `lane_entered` rules spuriously.
+// `lane_entered` fallback and fire `lane_entered` rules spuriously. TicketParked is
+// pinned separately (its trigger depends on `parkSubstate`, not just the event type).
 export const OUTBOUND_EVENT_TYPES = new Set<string>([
   "StepAwaitingUser",
   "TicketBlocked",
   "TicketMovedToLane",
   "TicketAdmitted",
+  "TicketParked",
 ]);
 
 export interface OutboundContextInput {
@@ -23,16 +29,26 @@ export interface OutboundContextInput {
   readonly isTerminal: boolean;
   readonly reason: string | undefined;
   readonly occurredAt: string;
+  // Only set (and only consulted) for `eventType: "TicketParked"` — the parked
+  // substate decides which outbound category the park falls into (spec: "Attention,
+  // notifications, mobile — honest surface"). `parked_issue` -> blocked family,
+  // `parked_waiting` -> needs_attention family.
+  readonly parkSubstate?: WorkflowParkSubstate;
 }
 
 // The PRIMARY trigger label the event maps to (ctx.trigger). `done` is NOT a primary label —
 // it's computed in matchesTrigger as lane_entered && isTerminal so a `when` on `trigger` is predictable.
-const primaryTrigger = (eventType: string): OutboundTrigger => {
+const primaryTrigger = (
+  eventType: string,
+  parkSubstate: WorkflowParkSubstate | undefined,
+): OutboundTrigger => {
   switch (eventType) {
     case "StepAwaitingUser":
       return "needs_attention";
     case "TicketBlocked":
       return "blocked";
+    case "TicketParked":
+      return parkSubstate === "issue" ? "blocked" : "needs_attention";
     case "TicketMovedToLane":
     case "TicketAdmitted":
       return "lane_entered";
@@ -42,7 +58,7 @@ const primaryTrigger = (eventType: string): OutboundTrigger => {
 };
 
 export const buildOutboundContext = (input: OutboundContextInput): OutboundEventContext => ({
-  trigger: primaryTrigger(input.eventType),
+  trigger: primaryTrigger(input.eventType, input.parkSubstate),
   ticketId: input.ticketId,
   boardId: input.boardId,
   title: input.title,

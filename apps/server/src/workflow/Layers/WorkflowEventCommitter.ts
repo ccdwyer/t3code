@@ -40,14 +40,17 @@ const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 // Statuses that mean "a human needs to act". Crossing INTO one of these (and only
 // into — not staying) emits exactly one durable notification outbox row.
-const NEEDS_YOU_STATUSES = new Set(["waiting_on_user", "blocked"]);
+// "parked" is included per the substates spec: a ticket parked in-place (issue or
+// waiting) is a deliberate behavior change from today's silent parking lanes — it
+// now notifies, same as waiting_on_user/blocked.
+const NEEDS_YOU_STATUSES = new Set(["waiting_on_user", "blocked", "parked"]);
 
-// Only these two event types can ever project a needs-you status (per the
-// projection audit: StepAwaitingUser → waiting_on_user, TicketBlocked → blocked).
-// Every other event skips the status-diff reads entirely, keeping the hot step
-// loop (StepStarted/StepCompleted/StepRefsCaptured/PipelineStarted/...) free of
-// the two extra projection_ticket point-reads.
-const NOTIFIABLE_EVENT_TYPES = new Set(["StepAwaitingUser", "TicketBlocked"]);
+// Only these event types can ever project a needs-you status (per the projection
+// audit: StepAwaitingUser → waiting_on_user, TicketBlocked → blocked, TicketParked
+// → parked). Every other event skips the status-diff reads entirely, keeping the
+// hot step loop (StepStarted/StepCompleted/StepRefsCaptured/PipelineStarted/...)
+// free of the two extra projection_ticket point-reads.
+const NOTIFIABLE_EVENT_TYPES = new Set(["StepAwaitingUser", "TicketBlocked", "TicketParked"]);
 
 const isWorkflowEventStoreError = Schema.is(WorkflowEventStoreError);
 const toCommitterError = (cause: unknown) =>
@@ -158,6 +161,17 @@ const make = Effect.gen(function* () {
       ) {
         const outboxId = yield* ids.eventId();
         const createdAt = yield* nowIso;
+        // StepAwaitingUser/TicketBlocked carry a single free-form reason, projected
+        // verbatim into attention_reason and used as-is. TicketParked's payload
+        // splits into an issue-substate `reason` and a waiting-substate `label`, so
+        // the notification copy is composed here per the spec's "hit an issue" /
+        // "is waiting on you" wording rather than reusing the raw projected value.
+        const notificationReason =
+          event.type === "TicketParked"
+            ? event.payload.substate === "issue"
+              ? `"${next.title}" hit an issue: ${event.payload.reason}`
+              : `"${next.title}" is waiting on you: ${event.payload.label}`
+            : next.attentionReason;
         // Supersede any prior PENDING rows for this ticket so at most one pending
         // row (the latest transition) ever reaches the dispatcher. Without this, a
         // ticket that rapidly transitions through multiple needs-you states within
@@ -179,7 +193,7 @@ const make = Effect.gen(function* () {
             attention_kind, attention_reason, delivery_state, attempt_count, created_at
           ) VALUES (
             ${outboxId}, ${event.ticketId}, ${next.boardId}, ${persisted.sequence}, ${next.status},
-            ${next.attentionKind}, ${next.attentionReason}, 'pending', 0, ${createdAt}
+            ${next.attentionKind}, ${notificationReason}, 'pending', 0, ${createdAt}
           )
         `;
       }
@@ -210,7 +224,9 @@ const make = Effect.gen(function* () {
               ? event.payload.reason
               : event.type === "TicketMovedToLane"
                 ? event.payload.reason
-                : undefined;
+                : event.type === "TicketParked"
+                  ? event.payload.reason
+                  : undefined;
           // Row created_at is commit time; the context carries the event's OWN
           // occurrence time (persisted.occurredAt) so replayed/batched/delayed
           // events render with when they actually happened, not when committed.
@@ -223,6 +239,10 @@ const make = Effect.gen(function* () {
             fromLane: prevLane,
             toLane,
             postStatus: next.status,
+            // Only TicketParked's trigger depends on the payload — split by
+            // substate into the blocked-family (issue) or needs_attention-family
+            // (waiting) outbound category per the spec.
+            ...(event.type === "TicketParked" ? { parkSubstate: event.payload.substate } : {}),
             isTerminal,
             reason,
             occurredAt: persisted.occurredAt,

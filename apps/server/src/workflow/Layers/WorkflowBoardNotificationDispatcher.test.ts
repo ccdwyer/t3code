@@ -430,4 +430,111 @@ describe.sequential("WorkflowBoardNotificationDispatcher", () => {
       );
     },
   );
+
+  it.effect("publishes a parked_issue row unchanged (status='parked' is needs-you)", () => {
+    const recorder = makeRecorder();
+    return Effect.gen(function* () {
+      yield* insertOutboxRow({
+        outboxId: "ob-park-issue",
+        ticketId: "ticket-park-issue",
+        boardId: "board-1",
+        sequence: 20,
+        status: "parked",
+        attentionKind: "parked_issue",
+        attentionReason: '"Fix" hit an issue: boom',
+      });
+      const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+      const result = yield* dispatcher.sweep();
+
+      assert.strictEqual(result.sent, 1);
+      assert.strictEqual(result.superseded, 0);
+      assert.strictEqual(recorder.calls.length, 1);
+      // normalizeAttentionKind must pass parked_issue through unchanged, not
+      // fall back to waiting_for_input.
+      assert.strictEqual(recorder.calls[0]!.state.attentionKind, "parked_issue");
+      assert.strictEqual((yield* readOutbox("ob-park-issue")).delivery_state, "sent");
+    }).pipe(
+      Effect.provide(
+        buildLayer(recorder, {
+          "ticket-park-issue": detail(
+            makeTicketRow({
+              ticketId: "ticket-park-issue",
+              status: "parked",
+              attentionKind: "parked_issue",
+              attentionReason: '"Fix" hit an issue: boom',
+            }),
+          ),
+        }),
+      ),
+    );
+  });
+
+  it.effect("publishes a parked_waiting row unchanged (status='parked' is needs-you)", () => {
+    const recorder = makeRecorder();
+    return Effect.gen(function* () {
+      yield* insertOutboxRow({
+        outboxId: "ob-park-waiting",
+        ticketId: "ticket-park-waiting",
+        boardId: "board-1",
+        sequence: 21,
+        status: "parked",
+        attentionKind: "parked_waiting",
+        attentionReason: '"Fix" is waiting on you: Needs manual review',
+      });
+      const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+      const result = yield* dispatcher.sweep();
+
+      assert.strictEqual(result.sent, 1);
+      assert.strictEqual(result.superseded, 0);
+      assert.strictEqual(recorder.calls.length, 1);
+      assert.strictEqual(recorder.calls[0]!.state.attentionKind, "parked_waiting");
+    }).pipe(
+      Effect.provide(
+        buildLayer(recorder, {
+          "ticket-park-waiting": detail(
+            makeTicketRow({
+              ticketId: "ticket-park-waiting",
+              status: "parked",
+              attentionKind: "parked_waiting",
+              attentionReason: '"Fix" is waiting on you: Needs manual review',
+            }),
+          ),
+        }),
+      ),
+    );
+  });
+
+  it.effect("falls back an unknown attention kind to waiting_for_input (regression)", () => {
+    const recorder = makeRecorder();
+    return Effect.gen(function* () {
+      yield* insertOutboxRow({
+        outboxId: "ob-unknown-kind",
+        ticketId: "ticket-unknown-kind",
+        boardId: "board-1",
+        sequence: 22,
+        status: "waiting_on_user",
+        attentionKind: "some_future_kind",
+        attentionReason: "please review",
+      });
+      const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+      const result = yield* dispatcher.sweep();
+
+      assert.strictEqual(result.sent, 1);
+      assert.strictEqual(recorder.calls.length, 1);
+      assert.strictEqual(recorder.calls[0]!.state.attentionKind, "waiting_for_input");
+    }).pipe(
+      Effect.provide(
+        buildLayer(recorder, {
+          "ticket-unknown-kind": detail(
+            makeTicketRow({
+              ticketId: "ticket-unknown-kind",
+              status: "waiting_on_user",
+              attentionKind: "some_future_kind",
+              attentionReason: "please review",
+            }),
+          ),
+        }),
+      ),
+    );
+  });
 });

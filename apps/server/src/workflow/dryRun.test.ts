@@ -2,6 +2,7 @@ import type { WorkflowDefinition } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
+import { defaultBoardDefinition } from "./defaultBoard.ts";
 import { PredicateEvaluatorLive } from "./Layers/PredicateEvaluator.ts";
 import { PredicateEvaluator } from "./Services/PredicateEvaluator.ts";
 import { simulateBoardRoute } from "./dryRun.ts";
@@ -416,6 +417,33 @@ layer("simulateBoardRoute", (it) => {
         assert.isUndefined(hop?.toLane);
         assert.equal(hop?.park?.substate, "issue");
         assert.equal(hop?.park?.label, "Needs a human");
+      }),
+  );
+
+  // ── Task 11: sanity dry-run against the shipped default board template ──
+
+  it.effect(
+    "the shipped default board's Planning failure scenario ends parked, proving editor dry-run works on it",
+    () =>
+      Effect.gen(function* () {
+        const evaluator = yield* PredicateEvaluator;
+        const definition = defaultBoardDefinition({
+          name: "Default board",
+          agent: { instance: "codex_main", model: "gpt-5.5" },
+        });
+        const run = yield* simulateBoardRoute({
+          definition,
+          startLane: "planning" as never,
+          scenario: "failure",
+          evaluator,
+        });
+        assert.equal(run.end, "parked");
+        assert.equal(run.endLane, "planning");
+        assert.lengthOf(run.hops, 1);
+        const hop = run.hops[0];
+        assert.equal(hop?.source, "lane_on");
+        assert.isUndefined(hop?.toLane);
+        assert.equal(hop?.park?.substate, "issue");
       }),
   );
 });

@@ -47,14 +47,58 @@ If the work is ready, make sure no .t3/ticket/{{ticket.id}}/REVIEW.md file remai
 
 const REVIEW_OUTPUT_HINT = `Your result object must be {"verdict": "approve"} or {"verdict": "revise"}.`;
 
+// Shared "issue" park for Planning/Specifying failures and blocks: retry
+// planning, or send the ticket back to Backlog untouched.
+const planningIssuePark = {
+  park: "issue",
+  actions: [
+    {
+      label: "Retry planning",
+      to: "planning",
+      hint: "Run planning and specification again.",
+    },
+    {
+      label: "Back to backlog",
+      to: "backlog",
+      hint: "Park the ticket; nothing runs until you start it again.",
+    },
+  ],
+};
+
+// Shared "issue" park for Implementation's malformed-verdict path and its
+// own/Land's failures/blocks: retry implementation, re-plan from scratch, or
+// send the ticket back to Backlog untouched.
+const implementationIssuePark = {
+  park: "issue",
+  actions: [
+    {
+      label: "Retry implementation",
+      to: "implementation",
+      hint: "Run the implement + review pipeline again.",
+    },
+    {
+      label: "Re-plan",
+      to: "planning",
+      hint: "Start over from planning with what you learned.",
+    },
+    {
+      label: "Back to backlog",
+      to: "backlog",
+      hint: "Park the ticket; nothing runs until you start it again.",
+    },
+  ],
+};
+
 /**
  * Default board: Backlog → Planning → Specifying → Implementation (with an
  * implement/review loop bounded by lane.runCount) → Owner Review → Land →
- * Done. Failures park in a phase-specific issues lane — Planning Issues for
- * plan/spec problems, Implementation Issues for build/land problems — and
- * Manual Review holds tickets whose review loop budget is exhausted. The
- * loop budget is the "3" in the Implementation transitions — edit it in the
- * workflow editor to allow more or fewer passes.
+ * Done. Failures park in place instead of moving to a dedicated lane:
+ * Planning/Specifying failures and blocks park as an "issue"; Implementation
+ * parks "issue" on a malformed verdict (`on.success`), a failure, or a block,
+ * and Land parks the same "issue" on failure/block. When the implement/review
+ * loop exhausts its budget (the "3" in the Implementation transitions — edit
+ * it in the workflow editor to allow more or fewer passes), the ticket parks
+ * "waiting" for a human to approve-and-land or send it back for another pass.
  */
 export const defaultBoardDefinition = (input: {
   readonly name: string;
@@ -94,7 +138,7 @@ export const defaultBoardDefinition = (input: {
             retry: { maxAttempts: 2 },
           },
         ],
-        on: { success: "specifying", failure: "planning_issues", blocked: "planning_issues" },
+        on: { success: "specifying", failure: planningIssuePark, blocked: planningIssuePark },
       },
       {
         key: "specifying",
@@ -109,24 +153,7 @@ export const defaultBoardDefinition = (input: {
             retry: { maxAttempts: 2 },
           },
         ],
-        on: { success: "implementation", failure: "planning_issues", blocked: "planning_issues" },
-      },
-      {
-        key: "planning_issues",
-        name: "Planning Issues",
-        entry: "manual",
-        actions: [
-          {
-            label: "Retry planning",
-            to: "planning",
-            hint: "Run planning and specification again.",
-          },
-          {
-            label: "Back to backlog",
-            to: "backlog",
-            hint: "Park the ticket; nothing runs until you start it again.",
-          },
-        ],
+        on: { success: "implementation", failure: planningIssuePark, blocked: planningIssuePark },
       },
       {
         key: "implementation",
@@ -160,7 +187,22 @@ export const defaultBoardDefinition = (input: {
           },
           {
             when: { "==": [{ var: "steps.review.output.verdict" }, "revise"] },
-            to: "manual_review",
+            to: {
+              park: "waiting",
+              label: "Needs manual review",
+              actions: [
+                {
+                  label: "Approve & land",
+                  to: "land",
+                  hint: "Merge the ticket's work into the branch checked out in your repo.",
+                },
+                {
+                  label: "Send back",
+                  to: "implementation",
+                  hint: "Run another implement + review pass with a fresh loop budget.",
+                },
+              ],
+            },
           },
           {
             when: { "==": [{ var: "steps.review.output.verdict" }, "approve"] },
@@ -170,9 +212,9 @@ export const defaultBoardDefinition = (input: {
         // No transition matched means the review verdict was malformed or
         // missing — that needs eyes, not an owner-review rubber stamp.
         on: {
-          success: "implementation_issues",
-          failure: "implementation_issues",
-          blocked: "implementation_issues",
+          success: implementationIssuePark,
+          failure: implementationIssuePark,
+          blocked: implementationIssuePark,
         },
       },
       {
@@ -203,46 +245,7 @@ export const defaultBoardDefinition = (input: {
             cleanupPaths: [".t3/ticket/{{ticket.id}}"],
           },
         ],
-        on: { success: "done", failure: "implementation_issues", blocked: "implementation_issues" },
-      },
-      {
-        key: "manual_review",
-        name: "Manual Review",
-        entry: "manual",
-        actions: [
-          {
-            label: "Approve & land",
-            to: "land",
-            hint: "Merge the ticket's work into the branch checked out in your repo.",
-          },
-          {
-            label: "Send back",
-            to: "implementation",
-            hint: "Run another implement + review pass with a fresh loop budget.",
-          },
-        ],
-      },
-      {
-        key: "implementation_issues",
-        name: "Implementation Issues",
-        entry: "manual",
-        actions: [
-          {
-            label: "Retry implementation",
-            to: "implementation",
-            hint: "Run the implement + review pipeline again.",
-          },
-          {
-            label: "Re-plan",
-            to: "planning",
-            hint: "Start over from planning with what you learned.",
-          },
-          {
-            label: "Back to backlog",
-            to: "backlog",
-            hint: "Park the ticket; nothing runs until you start it again.",
-          },
-        ],
+        on: { success: "done", failure: implementationIssuePark, blocked: implementationIssuePark },
       },
       { key: "done", name: "Done", entry: "manual", terminal: true, retention: "14 days" },
     ],

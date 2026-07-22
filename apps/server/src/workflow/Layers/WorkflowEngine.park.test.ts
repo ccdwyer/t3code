@@ -16,6 +16,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { defaultBoardDefinition } from "../defaultBoard.ts";
 import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
 import { parkTargetFingerprint, parseParkOrigin } from "../parkOrigin.ts";
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
@@ -1811,6 +1812,60 @@ f4Layer("external park lost-race outcome", (it) => {
         (yield* WorkflowEventStore).readByTicket(ticketId),
       ).pipe(Effect.map((chunk) => Array.from(chunk)));
       assert.isUndefined(events.find((event) => event.type === "TicketParked"));
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Task 11 (defaultBoard collapse): a real default-board ticket whose plan
+// step fails both retry attempts ends parked-issue in place in Planning —
+// the live-shaped regression test for the collapsed template.
+// ---------------------------------------------------------------------------
+
+const defaultBoardPlanFailExecutor = makeScriptedExecutor(() => ({
+  _tag: "failed",
+  error: "plan step blew up",
+}));
+const defaultBoardPlanFailLayer = it.layer(baseLayer(defaultBoardPlanFailExecutor.layer));
+
+defaultBoardPlanFailLayer("default board template: plan step exhausts its retry budget", (it) => {
+  it.effect("parks issue in place in the Planning lane, without moving to a parking lane", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-default-board" as never,
+        defaultBoardDefinition({
+          name: "Default board",
+          agent: { instance: "claude_main", model: "sonnet" },
+        }) as never,
+      );
+      const engine = yield* WorkflowEngine;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-default-board" as never,
+        title: "Doomed plan",
+        initialLane: "planning" as never,
+      });
+
+      const detail = yield* awaitParked(ticketId as string);
+      assert.equal(detail?.ticket.status, "parked");
+      assert.equal(detail?.ticket.currentLaneKey, "planning");
+      assert.equal(detail?.ticket.parkedSubstate, "issue");
+      assert.equal(detail?.ticket.attentionKind, "parked_issue");
+      // The plan step's retry.maxAttempts is 2 — both attempts fail before
+      // the lane's on.failure park target is resolved.
+      assert.equal(defaultBoardPlanFailExecutor.calls.count, 2);
+
+      const parked = yield* parkedEventsFor(ticketId as string);
+      assert.equal(parked.length, 1);
+      const event = parked[0];
+      assert.ok(event?.type === "TicketParked");
+      if (event?.type === "TicketParked") {
+        assert.equal(event.payload.substate, "issue");
+        const origin = parseParkOrigin(event.payload.parkOrigin);
+        assert.equal(origin?.src, "lane_on");
+        assert.equal(origin?.key, "failure");
+      }
     }),
   );
 });

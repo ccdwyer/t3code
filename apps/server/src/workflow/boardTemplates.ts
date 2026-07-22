@@ -81,11 +81,27 @@ actionable issues to ${DESIGN_DIR}/BUILD-REVIEW.md (overwrite it) so the next
 build pass can address them. If the work is ready, ensure no
 ${DESIGN_DIR}/BUILD-REVIEW.md remains.`;
 
+// Shared actions for the lite loop's in-place parks: retry the implement +
+// review pass, or send the ticket back to To do untouched.
+const liteLoopParkActions = [
+  {
+    label: "Retry",
+    to: "in-progress",
+    hint: "Run another implement + review pass.",
+  },
+  {
+    label: "Back to to-do",
+    to: "to-do",
+    hint: "Park the ticket.",
+  },
+];
+
 /**
  * Lite agent loop: To do → In progress (implement → review, looping back on a
- * "revise" verdict while the lane.runCount budget lasts, then parking in Needs
- * attention) → Done. A minimal agent-driven board for small tickets that do not
- * need the full plan/spec scaffolding of the default SDLC board.
+ * "revise" verdict while the lane.runCount budget lasts, then parking in place
+ * — "waiting" once the budget is exhausted, "issue" on a malformed verdict,
+ * failure, or block) → Done. A minimal agent-driven board for small tickets
+ * that do not need the full plan/spec scaffolding of the default SDLC board.
  */
 const liteAgentLoopDefinition = (input: {
   readonly name: string;
@@ -143,7 +159,7 @@ const liteAgentLoopDefinition = (input: {
           },
           {
             when: { "==": [{ var: "steps.review.output.verdict" }, "revise"] },
-            to: "needs-attention",
+            to: { park: "waiting", label: "Needs manual review", actions: liteLoopParkActions },
           },
           {
             when: { "==": [{ var: "steps.review.output.verdict" }, "approve"] },
@@ -152,24 +168,11 @@ const liteAgentLoopDefinition = (input: {
         ],
         // No transition matched means the review verdict was malformed or
         // missing — that needs eyes.
-        on: { success: "needs-attention", failure: "needs-attention", blocked: "needs-attention" },
-      },
-      {
-        key: "needs-attention",
-        name: "Needs attention",
-        entry: "manual",
-        actions: [
-          {
-            label: "Retry",
-            to: "in-progress",
-            hint: "Run another implement + review pass.",
-          },
-          {
-            label: "Back to to-do",
-            to: "to-do",
-            hint: "Park the ticket.",
-          },
-        ],
+        on: {
+          success: { park: "issue", actions: liteLoopParkActions },
+          failure: { park: "issue", actions: liteLoopParkActions },
+          blocked: { park: "issue", actions: liteLoopParkActions },
+        },
       },
       { key: "done", name: "Done", entry: "manual", terminal: true, retention: "14 days" },
     ],

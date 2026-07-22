@@ -1,10 +1,31 @@
-import type { ProviderOptionSelection, WorkflowDefinition } from "@t3tools/contracts";
+import type {
+  ProviderOptionSelection,
+  WorkflowDefinition,
+  WorkflowLaneAction,
+  WorkflowRouteTarget,
+} from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import { isParkTarget } from "@t3tools/contracts";
 import { defaultBoardDefinition } from "./defaultBoard.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "./boardTemplates.ts";
 import { lintWorkflowDefinition } from "./workflowFile.ts";
 
 const baseAgent = { instance: "i", model: "m" } as const;
+
+// Strips the LaneKey brand from a park target's actions so they can be
+// compared against plain object literals without a type-level brand mismatch.
+const plainActions = (
+  actions: ReadonlyArray<WorkflowLaneAction>,
+): ReadonlyArray<{
+  readonly label: string;
+  readonly to: string;
+  readonly hint: string | undefined;
+}> =>
+  actions.map((action) => ({
+    label: action.label as string,
+    to: action.to as string,
+    hint: action.hint as string | undefined,
+  }));
 
 const lintErrors = (def: WorkflowDefinition) =>
   lintWorkflowDefinition(def, {
@@ -32,21 +53,29 @@ describe("BOARD_TEMPLATES", () => {
         assert.deepEqual(lintErrors(def), []);
       });
 
-      it("has every transition/on/action `to` target among the lane keys", () => {
+      it("has every transition/on/action `to` target among the lane keys (park targets' action.to too)", () => {
         const laneKeys = new Set(def.lanes.map((lane) => lane.key as string));
+        const assertTarget = (target: WorkflowRouteTarget | undefined, where: string) => {
+          if (target === undefined) return;
+          if (isParkTarget(target)) {
+            for (const action of target.actions) {
+              assert.ok(laneKeys.has(action.to as string), `${where} park action ${action.to}`);
+            }
+            return;
+          }
+          assert.ok(laneKeys.has(target as string), `${where} ${target}`);
+        };
         for (const lane of def.lanes) {
           for (const action of lane.actions ?? []) {
-            assert.ok(laneKeys.has(action.to as string), `action ${action.to}`);
+            assertTarget(action.to, "action");
           }
           for (const transition of lane.transitions ?? []) {
-            assert.ok(laneKeys.has(transition.to as string), `transition ${transition.to}`);
+            assertTarget(transition.to, "transition");
           }
           if (lane.on) {
-            for (const target of [lane.on.success, lane.on.failure, lane.on.blocked]) {
-              if (target !== undefined) {
-                assert.ok(laneKeys.has(target as string), `on ${target}`);
-              }
-            }
+            assertTarget(lane.on.success, "on.success");
+            assertTarget(lane.on.failure, "on.failure");
+            assertTarget(lane.on.blocked, "on.blocked");
           }
         }
       });
@@ -65,6 +94,69 @@ describe("BOARD_TEMPLATES", () => {
     const loopTransition = transitions.find((t) => (t.to as string) === "in-progress");
     assert.ok(loopTransition, "expected a self-loop transition back to in-progress");
     assert.ok(JSON.stringify(loopTransition.when).includes("lane.runCount"));
+  });
+
+  it("lite-agent-loop has exactly 3 lanes and no needs-attention lane", () => {
+    const def = BOARD_TEMPLATES.find((t) => t.id === "lite-agent-loop")!.build({
+      name: "X",
+      agent: baseAgent,
+    });
+    assert.deepEqual(
+      def.lanes.map((lane) => lane.key as string),
+      ["to-do", "in-progress", "done"],
+    );
+  });
+
+  it("lite-agent-loop parks the exhausted-budget revise transition as waiting", () => {
+    const def = BOARD_TEMPLATES.find((t) => t.id === "lite-agent-loop")!.build({
+      name: "X",
+      agent: baseAgent,
+    });
+    const inProgress = def.lanes.find((lane) => (lane.key as string) === "in-progress")!;
+    const expectedActions = [
+      { label: "Retry", to: "in-progress", hint: "Run another implement + review pass." },
+      { label: "Back to to-do", to: "to-do", hint: "Park the ticket." },
+    ];
+    const budgetExhausted = (inProgress.transitions ?? []).find(
+      (t) => t.to !== "in-progress" && isParkTarget(t.to),
+    );
+    if (budgetExhausted === undefined || !isParkTarget(budgetExhausted.to)) {
+      assert.fail("expected a budget-exhausted transition targeting a park");
+    } else {
+      assert.equal(budgetExhausted.to.park, "waiting");
+      assert.deepEqual(plainActions(budgetExhausted.to.actions), expectedActions);
+    }
+  });
+
+  it("lite-agent-loop parks in-progress success/failure/blocked as an issue with the same actions", () => {
+    const def = BOARD_TEMPLATES.find((t) => t.id === "lite-agent-loop")!.build({
+      name: "X",
+      agent: baseAgent,
+    });
+    const inProgress = def.lanes.find((lane) => (lane.key as string) === "in-progress")!;
+    const expectedActions = [
+      { label: "Retry", to: "in-progress", hint: "Run another implement + review pass." },
+      { label: "Back to to-do", to: "to-do", hint: "Park the ticket." },
+    ];
+    for (const key of ["success", "failure", "blocked"] as const) {
+      const target = inProgress.on?.[key];
+      if (target === undefined || !isParkTarget(target)) {
+        assert.fail(`expected in-progress.on.${key} to be a park target`);
+      } else {
+        assert.equal(target.park, "issue");
+        assert.deepEqual(plainActions(target.actions), expectedActions);
+      }
+    }
+  });
+
+  it("lite-agent-loop keeps the approve transition targeting done unchanged", () => {
+    const def = BOARD_TEMPLATES.find((t) => t.id === "lite-agent-loop")!.build({
+      name: "X",
+      agent: baseAgent,
+    });
+    const inProgress = def.lanes.find((lane) => (lane.key as string) === "in-progress")!;
+    const approveTransition = (inProgress.transitions ?? []).find((t) => t.to === "done");
+    assert.ok(approveTransition, "expected an approve transition targeting done");
   });
 
   it("full-sdlc.build deep-equals defaultBoardDefinition", () => {

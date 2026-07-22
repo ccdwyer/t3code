@@ -62,7 +62,9 @@ export function AgentSessionDialog({
   const [session, setSession] = useState<SessionState | null>(null);
 
   useEffect(() => {
-    if (!open || !api) {
+    // Board-route api facades carry no orchestration client — degrade to the
+    // empty-session state instead of crashing (see StepActivityFeed).
+    if (!open || !api?.orchestration) {
       return;
     }
     setSession(null);

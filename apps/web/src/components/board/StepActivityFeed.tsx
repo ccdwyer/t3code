@@ -41,7 +41,11 @@ export function StepActivityFeed({
   const [activities, setActivities] = useState<ReadonlyArray<OrchestrationThreadActivity>>([]);
 
   useEffect(() => {
-    if (!api) {
+    // The board route's api facade is workflow-only (no orchestration client);
+    // degrade to an empty feed rather than crash — same contract as the
+    // ScriptStepLogViewer terminal guard. Wiring orchestration into the board
+    // route is the recorded follow-up alongside api.terminal.
+    if (!api?.orchestration) {
       return;
     }
     setActivities([]);

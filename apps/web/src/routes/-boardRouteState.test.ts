@@ -190,6 +190,7 @@ describe("filterBoardStateByQuery", () => {
         pipelineStepCount: 1,
         admittedTicketIds: ["t1", "t2"],
         queuedTicketIds: ["t3"],
+        parkedTicketIds: [],
       },
     ],
     ticketIds: ["t1", "t2", "t3"],

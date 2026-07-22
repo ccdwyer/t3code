@@ -13,6 +13,7 @@ const boardState = {
       wipLimit: 1,
       admittedTicketIds: ["ticket-1"],
       queuedTicketIds: ["ticket-3"],
+      parkedTicketIds: [],
     },
     {
       key: "done",
@@ -22,6 +23,7 @@ const boardState = {
       terminal: true,
       admittedTicketIds: ["ticket-2"],
       queuedTicketIds: [],
+      parkedTicketIds: [],
     },
   ],
   ticketIds: ["ticket-1", "ticket-2", "ticket-3"],
@@ -70,5 +72,48 @@ describe("BoardView", () => {
     expect(resolveBoardDropLaneKey(boardState, "ticket-1", "lane:done")).toBe("done");
     expect(resolveBoardDropLaneKey(boardState, "ticket-1", "ticket-2")).toBe("done");
     expect(resolveBoardDropLaneKey(boardState, "ticket-1", "ticket-1")).toBeNull();
+  });
+
+  it("renders a parked ticket in its lane while excluding it from the WIP header count", () => {
+    const stateWithParked = {
+      lanes: [
+        {
+          key: "backlog",
+          name: "Backlog",
+          entry: "manual",
+          pipelineStepCount: 0,
+          wipLimit: 2,
+          admittedTicketIds: ["ticket-1", "ticket-parked"],
+          queuedTicketIds: [],
+          parkedTicketIds: ["ticket-parked"],
+        },
+      ],
+      ticketIds: ["ticket-1", "ticket-parked"],
+      ticketById: {
+        "ticket-1": {
+          ticketId: "ticket-1",
+          title: "Add board lanes",
+          currentLaneKey: "backlog",
+          status: "waiting_on_user",
+        },
+        "ticket-parked": {
+          ticketId: "ticket-parked",
+          title: "Parked ticket",
+          currentLaneKey: "backlog",
+          status: "parked",
+        },
+      },
+    } satisfies BoardViewState;
+
+    const markup = renderToStaticMarkup(
+      <BoardView state={stateWithParked} onMove={() => {}} onOpen={() => {}} />,
+    );
+
+    // Both cards render in the lane...
+    expect(markup).toContain("Add board lanes");
+    expect(markup).toContain("Parked ticket");
+    // ...but the WIP header excludes the parked ticket from the count.
+    expect(markup).toContain("1/2");
+    expect(markup).not.toContain("2/2");
   });
 });

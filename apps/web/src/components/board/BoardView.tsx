@@ -26,6 +26,27 @@ export interface BoardViewTicket {
         readonly ciState?: "pending" | "success" | "failure" | undefined;
       }
     | undefined;
+  readonly attentionKind?: string | undefined;
+  readonly currentStepLabel?: string | undefined;
+  // Park-in-place details — present while status is "parked". `actions` is
+  // re-resolved from the current board definition at read time; absent
+  // means the definition changed and actions are unavailable.
+  readonly parked?:
+    | {
+        readonly substate: "issue" | "waiting";
+        readonly label: string;
+        readonly reason: string;
+        readonly parkedAt: string;
+        readonly parkedEventId: string;
+        readonly actions?:
+          | ReadonlyArray<{
+              readonly label: string;
+              readonly to: string;
+              readonly hint?: string | undefined;
+            }>
+          | undefined;
+      }
+    | undefined;
 }
 
 export interface BoardViewState {

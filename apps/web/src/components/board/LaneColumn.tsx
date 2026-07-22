@@ -12,8 +12,12 @@ export interface LaneColumnView {
   readonly pipelineStepCount: number;
   readonly wipLimit?: number | undefined;
   readonly terminal?: boolean | undefined;
+  // Rendered in-lane, in stable order — includes parked tickets (a parked
+  // ticket holds no admission token server-side, so it must not count
+  // toward WIP; see `parkedTicketIds`, a subset of this array).
   readonly admittedTicketIds: ReadonlyArray<string>;
   readonly queuedTicketIds: ReadonlyArray<string>;
+  readonly parkedTicketIds: ReadonlyArray<string>;
 }
 
 export function LaneColumn({
@@ -29,10 +33,13 @@ export function LaneColumn({
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `lane:${lane.key}` });
   const tickets = [...admittedTickets, ...queuedTickets];
+  // Parked tickets render inline with the admitted list (no admission token
+  // to lose), but hold no WIP slot — subtract them from the header count.
+  const admittedCountForWip = admittedTickets.length - lane.parkedTicketIds.length;
   const headerCount =
     lane.wipLimit === undefined
       ? String(tickets.length)
-      : `${admittedTickets.length}/${lane.wipLimit}`;
+      : `${admittedCountForWip}/${lane.wipLimit}`;
 
   return (
     <section ref={setNodeRef} className="flex w-72 shrink-0 flex-col" aria-label={lane.name}>

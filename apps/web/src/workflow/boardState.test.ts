@@ -61,4 +61,192 @@ describe("boardState", () => {
     expect(state.lanes[0]?.queuedTicketIds).toEqual([]);
     expect(state.lanes[1]?.admittedTicketIds).toEqual(["t-queued"]);
   });
+
+  const parkedFields = {
+    attentionKind: "parked_waiting",
+    currentStepLabel: "Waiting for CI",
+    parked: {
+      substate: "waiting",
+      label: "Waiting for CI",
+      reason: "parked",
+      parkedAt: "2026-07-22T00:00:00.000Z",
+      parkedEventId: "evt-parked-1",
+      actions: [{ label: "Resume", to: "in-progress" }],
+    },
+  };
+
+  it("retains parked, currentStepLabel, and attentionKind from a snapshot", () => {
+    const state = applyBoardStreamItem(emptyBoardState, {
+      kind: "snapshot",
+      snapshot: {
+        projectId: "project-1",
+        board: {
+          boardId: "b-1",
+          name: "Delivery",
+          lanes: [
+            {
+              key: "in-progress",
+              name: "In progress",
+              entry: "auto",
+              pipelineStepCount: 1,
+              wipLimit: 2,
+            },
+          ],
+        },
+        tickets: [
+          {
+            ticketId: "t-parked",
+            boardId: "b-1",
+            title: "Parked ticket",
+            currentLaneKey: "in-progress",
+            status: "parked",
+            ...parkedFields,
+          },
+        ],
+      },
+    } as never);
+
+    const ticket = state.ticketById["t-parked"];
+    expect(ticket?.attentionKind).toBe("parked_waiting");
+    expect(ticket?.currentStepLabel).toBe("Waiting for CI");
+    expect(ticket?.parked?.substate).toBe("waiting");
+    expect(ticket?.parked?.parkedEventId).toBe("evt-parked-1");
+    expect(ticket?.parked?.actions).toEqual([{ label: "Resume", to: "in-progress" }]);
+  });
+
+  it("retains parked, currentStepLabel, and attentionKind across an incremental update", () => {
+    let state = applyBoardStreamItem(emptyBoardState, {
+      kind: "snapshot",
+      snapshot: {
+        projectId: "project-1",
+        board: {
+          boardId: "b-1",
+          name: "Delivery",
+          lanes: [
+            {
+              key: "in-progress",
+              name: "In progress",
+              entry: "auto",
+              pipelineStepCount: 1,
+              wipLimit: 2,
+            },
+          ],
+        },
+        tickets: [
+          {
+            ticketId: "t-1",
+            boardId: "b-1",
+            title: "Ticket",
+            currentLaneKey: "in-progress",
+            status: "running",
+          },
+        ],
+      },
+    } as never);
+
+    state = applyBoardStreamItem(state, {
+      kind: "ticket",
+      ticket: {
+        ticketId: "t-1",
+        boardId: "b-1",
+        title: "Ticket",
+        currentLaneKey: "in-progress",
+        status: "parked",
+        ...parkedFields,
+      },
+    } as never);
+
+    const ticket = state.ticketById["t-1"];
+    expect(ticket?.attentionKind).toBe("parked_waiting");
+    expect(ticket?.currentStepLabel).toBe("Waiting for CI");
+    expect(ticket?.parked?.reason).toBe("parked");
+    expect(ticket?.parked?.parkedAt).toBe("2026-07-22T00:00:00.000Z");
+    expect(ticket?.parked?.actions).toEqual([{ label: "Resume", to: "in-progress" }]);
+  });
+
+  it("groups a parked ticket into its lane's render list but excludes it from WIP counting", () => {
+    const state = applyBoardStreamItem(emptyBoardState, {
+      kind: "snapshot",
+      snapshot: {
+        projectId: "project-1",
+        board: {
+          boardId: "b-1",
+          name: "Delivery",
+          lanes: [
+            {
+              key: "in-progress",
+              name: "In progress",
+              entry: "auto",
+              pipelineStepCount: 1,
+              wipLimit: 2,
+            },
+          ],
+        },
+        tickets: [
+          {
+            ticketId: "t-running",
+            boardId: "b-1",
+            title: "Running",
+            currentLaneKey: "in-progress",
+            status: "running",
+          },
+          {
+            ticketId: "t-parked",
+            boardId: "b-1",
+            title: "Parked",
+            currentLaneKey: "in-progress",
+            status: "parked",
+            ...parkedFields,
+          },
+        ],
+      },
+    } as never);
+
+    const lane = state.lanes[0];
+    // Renders in-lane alongside the running ticket, in stable order.
+    expect(lane?.admittedTicketIds).toEqual(["t-running", "t-parked"]);
+    expect(lane?.queuedTicketIds).toEqual([]);
+    // But is excluded from the WIP-counted set.
+    expect(lane?.parkedTicketIds).toEqual(["t-parked"]);
+    const wipCount = (lane?.admittedTicketIds.length ?? 0) - (lane?.parkedTicketIds.length ?? 0);
+    expect(wipCount).toBe(1);
+  });
+
+  it("leaves queued/admitted classification unchanged for non-parked tickets", () => {
+    const state = applyBoardStreamItem(emptyBoardState, {
+      kind: "snapshot",
+      snapshot: {
+        projectId: "project-1",
+        board: {
+          boardId: "b-1",
+          name: "Delivery",
+          lanes: [
+            { key: "backlog", name: "Backlog", entry: "manual", pipelineStepCount: 0, wipLimit: 2 },
+          ],
+        },
+        tickets: [
+          {
+            ticketId: "t-admitted",
+            boardId: "b-1",
+            title: "Admitted",
+            currentLaneKey: "backlog",
+            status: "idle",
+          },
+          {
+            ticketId: "t-queued",
+            boardId: "b-1",
+            title: "Queued",
+            currentLaneKey: "backlog",
+            queuedAt: "2026-06-07T00:00:00.000Z",
+            status: "queued",
+          },
+        ],
+      },
+    } as never);
+
+    const lane = state.lanes[0];
+    expect(lane?.admittedTicketIds).toEqual(["t-admitted"]);
+    expect(lane?.queuedTicketIds).toEqual(["t-queued"]);
+    expect(lane?.parkedTicketIds).toEqual([]);
+  });
 });

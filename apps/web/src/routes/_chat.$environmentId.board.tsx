@@ -199,9 +199,7 @@ function WorkflowBoardRouteView() {
   // board's projectId isn't yet populated or the project isn't in the catalog.
   const projectRef = useMemo(
     () =>
-      state.projectId
-        ? scopeProjectRef(environmentId, ProjectId.make(state.projectId))
-        : null,
+      state.projectId ? scopeProjectRef(environmentId, ProjectId.make(state.projectId)) : null,
     [environmentId, state.projectId],
   );
   const projectData = useProject(projectRef);
@@ -432,7 +430,9 @@ function WorkflowBoardRouteView() {
   }, []);
   const handleApprove = useCallback(
     (stepRunId: string, approved: boolean): Promise<void> => {
-      return resolveApproval(routeApi, StepRunId.make(stepRunId), approved).then(reloadTicketDetail);
+      return resolveApproval(routeApi, StepRunId.make(stepRunId), approved).then(
+        reloadTicketDetail,
+      );
     },
     [routeApi, reloadTicketDetail],
   );
@@ -797,6 +797,7 @@ export function filterBoardStateByQuery(state: BoardState, query: string): Board
       ...lane,
       admittedTicketIds: lane.admittedTicketIds.filter(matches),
       queuedTicketIds: lane.queuedTicketIds.filter(matches),
+      parkedTicketIds: lane.parkedTicketIds.filter(matches),
     })),
   };
 }

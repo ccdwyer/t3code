@@ -84,6 +84,7 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
       createTicket: (input) => run(w.createTicket, input),
       editTicket: (input) => run(w.editTicket, input),
       moveTicket: (input) => run(w.moveTicket, input),
+      invokeParkAction: (input) => run(w.invokeParkAction, input),
       runLane: (input) => run(w.runLane, input),
       resolveApproval: (input) => run(w.resolveApproval, input),
       answerTicketStep: (input) => run(w.answerTicketStep, input),

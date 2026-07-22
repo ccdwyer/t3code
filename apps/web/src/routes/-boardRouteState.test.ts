@@ -4,16 +4,25 @@ import {
   type EnvironmentApi,
   type TicketAttachment,
   TicketId,
+  WorkflowEventId,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
+
+import { stackedThreadToast, toastManager } from "../components/ui/toast";
 
 import {
   filterBoardStateByQuery,
   getBoardRouteEmptyState,
+  submitParkActionFromBoardRoute,
   submitTicketAnswerFromBoardRoute,
   submitTicketEditFromBoardRoute,
   submitTicketMessageEditFromBoardRoute,
 } from "./_chat.$environmentId.board";
+
+vi.mock("../components/ui/toast", () => ({
+  stackedThreadToast: vi.fn((options: Record<string, unknown>) => options),
+  toastManager: { add: vi.fn() },
+}));
 
 describe("getBoardRouteEmptyState", () => {
   it("distinguishes no selection from a missing requested board", () => {
@@ -174,6 +183,145 @@ describe("board route ticket actions", () => {
         vi.fn(),
       ),
     ).rejects.toThrow("Environment API unavailable.");
+  });
+});
+
+describe("submitParkActionFromBoardRoute", () => {
+  const baseInput = {
+    ticketId: "ticket-parked",
+    actionIndex: 0,
+    parkedEventId: "event-1",
+  };
+
+  it("reloads the open ticket's detail on a 'moved' result, without a toast", async () => {
+    const api = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => "moved" as const),
+      },
+    } as unknown as EnvironmentApi;
+    const reloadTicketDetailIfOpen = vi.fn();
+    const pendingTicketIds = new Set<string>();
+
+    await submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds,
+    });
+
+    expect(api.workflow.invokeParkAction).toHaveBeenCalledWith({
+      ticketId: TicketId.make("ticket-parked"),
+      actionIndex: 0,
+      parkedEventId: WorkflowEventId.make("event-1"),
+    });
+    expect(reloadTicketDetailIfOpen).toHaveBeenCalledOnce();
+    expect(toastManager.add).not.toHaveBeenCalled();
+    // The guard releases the ticket once the RPC settles.
+    expect(pendingTicketIds.has("ticket-parked")).toBe(false);
+  });
+
+  it("surfaces an informational toast and still reloads on a 'stale' result", async () => {
+    const api = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => "stale" as const),
+      },
+    } as unknown as EnvironmentApi;
+    const reloadTicketDetailIfOpen = vi.fn();
+
+    await submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds: new Set<string>(),
+    });
+
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "info",
+        title: "Already handled — the board moved on.",
+      }),
+    );
+    expect(toastManager.add).toHaveBeenCalledOnce();
+    expect(reloadTicketDetailIfOpen).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces an error toast (and does not reload) when the RPC rejects", async () => {
+    const api = {
+      workflow: {
+        invokeParkAction: vi.fn(async () => {
+          throw new Error("park action index out of range");
+        }),
+      },
+    } as unknown as EnvironmentApi;
+    const reloadTicketDetailIfOpen = vi.fn();
+    const pendingTicketIds = new Set<string>();
+
+    await expect(
+      submitParkActionFromBoardRoute(api, baseInput, {
+        reloadTicketDetailIfOpen,
+        pendingTicketIds,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: "Couldn't update ticket",
+        description: "park action index out of range",
+      }),
+    );
+    expect(reloadTicketDetailIfOpen).not.toHaveBeenCalled();
+    expect(pendingTicketIds.has("ticket-parked")).toBe(false);
+  });
+
+  it("rejects when the environment API is unavailable, without touching the guard", async () => {
+    const pendingTicketIds = new Set<string>();
+
+    await expect(
+      submitParkActionFromBoardRoute(null, baseInput, {
+        reloadTicketDetailIfOpen: vi.fn(),
+        pendingTicketIds,
+      }),
+    ).rejects.toThrow("Environment API unavailable.");
+
+    expect(pendingTicketIds.size).toBe(0);
+  });
+
+  it("treats a second invocation for the same ticket as a no-op while the first is in flight", async () => {
+    let resolveRpc: ((result: "moved") => void) | undefined;
+    const rpcPromise = new Promise<"moved">((resolve) => {
+      resolveRpc = resolve;
+    });
+    const api = {
+      workflow: {
+        invokeParkAction: vi.fn(() => rpcPromise),
+      },
+    } as unknown as EnvironmentApi;
+    const reloadTicketDetailIfOpen = vi.fn();
+    const pendingTicketIds = new Set<string>();
+
+    const first = submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds,
+    });
+    // The ticket is now marked in-flight — a second invoke (e.g. a doubled
+    // click) must not fire a second RPC.
+    const second = submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds,
+    });
+
+    expect(api.workflow.invokeParkAction).toHaveBeenCalledOnce();
+    await expect(second).resolves.toBeUndefined();
+    expect(reloadTicketDetailIfOpen).not.toHaveBeenCalled();
+
+    resolveRpc?.("moved");
+    await expect(first).resolves.toBeUndefined();
+    expect(reloadTicketDetailIfOpen).toHaveBeenCalledOnce();
+    expect(pendingTicketIds.has("ticket-parked")).toBe(false);
+
+    // Once released, a subsequent invoke is no longer suppressed.
+    await submitParkActionFromBoardRoute(api, baseInput, {
+      reloadTicketDetailIfOpen,
+      pendingTicketIds,
+    });
+    expect(api.workflow.invokeParkAction).toHaveBeenCalledTimes(2);
   });
 });
 

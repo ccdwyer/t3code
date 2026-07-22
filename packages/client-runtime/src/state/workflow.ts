@@ -44,10 +44,13 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       tag: WORKFLOW_WS_METHODS.subscribeBoard,
       transform: (stream) =>
         stream.pipe(
-          Stream.mapAccum(() => emptyBoardState, (current: BoardState, item) => {
-            const next = applyBoardStreamItem(current, item);
-            return [next, [next]] as const;
-          }),
+          Stream.mapAccum(
+            () => emptyBoardState,
+            (current: BoardState, item) => {
+              const next = applyBoardStreamItem(current, item);
+              return [next, [next]] as const;
+            },
+          ),
         ),
     }),
 
@@ -183,6 +186,11 @@ export function createWorkflowEnvironmentAtoms<R, E>(
     moveTicket: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:workflow:move-ticket",
       tag: WORKFLOW_WS_METHODS.moveTicket,
+      concurrency: serialPerEnv,
+    }),
+    invokeParkAction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:invoke-park-action",
+      tag: WORKFLOW_WS_METHODS.invokeParkAction,
       concurrency: serialPerEnv,
     }),
     runLane: createEnvironmentRpcCommand(runtime, {

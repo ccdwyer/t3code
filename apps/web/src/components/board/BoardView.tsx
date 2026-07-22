@@ -88,10 +88,16 @@ export function BoardView({
   state,
   onMove,
   onOpen,
+  onParkAction,
 }: {
   readonly state: BoardViewState;
   readonly onMove: (ticketId: string, toLane: string) => void;
   readonly onOpen: (id: string) => void;
+  // Threaded to TicketCard but not yet consumed there — TicketCard's parked
+  // inline actions land in Task 15 (plan `2026-07-22-workflow-substates.md`).
+  readonly onParkAction?:
+    | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+    | undefined;
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -116,6 +122,7 @@ export function BoardView({
             key={lane.key}
             lane={lane}
             onOpen={onOpen}
+            onParkAction={onParkAction}
             admittedTickets={ticketsForIds(state, lane.admittedTicketIds)}
             queuedTickets={ticketsForIds(state, lane.queuedTicketIds)}
           />

@@ -12,6 +12,7 @@ import {
   StepRunId,
   type TicketAttachment,
   TicketId,
+  WorkflowEventId,
   type WorkflowDefinitionEncoded,
   type WorkflowTicketDetailView,
 } from "@t3tools/contracts";
@@ -36,6 +37,7 @@ import {
   createTicket,
   editTicket,
   editTicketMessage,
+  invokeParkAction,
   moveTicket,
   postTicketMessage,
   resolveApproval,
@@ -157,6 +159,76 @@ export const submitTicketMessageEditFromBoardRoute = (
   }).then(reloadTicketDetail);
 };
 
+export interface BoardRouteParkActionInput {
+  readonly ticketId: string;
+  readonly actionIndex: number;
+  readonly parkedEventId: string;
+}
+
+/**
+ * Unpark a ticket via one of its re-resolved park actions. Compare-and-act on
+ * `parkedEventId` server-side: a `"stale"` result means the ticket already
+ * moved on (superseded by another action, a manual move, or a re-park) — we
+ * surface an informational toast rather than an error, since nothing actually
+ * failed. A rejected RPC (e.g. the board definition changed underneath the
+ * action, or the index no longer resolves) surfaces the RPC's message as an
+ * error toast instead.
+ *
+ * `pendingTicketIds` is the in-flight guard: a ticket already mid-invocation
+ * is a no-op (resolves immediately, RPC not re-sent) until the prior call
+ * settles, so a doubled click/tap can't race two park actions for the same
+ * ticket. The set lives in the route component (a ref, not React state —
+ * this guard only needs to block re-entry, not trigger a re-render).
+ */
+export function submitParkActionFromBoardRoute(
+  api: Pick<EnvironmentApi, "workflow"> | null | undefined,
+  input: BoardRouteParkActionInput,
+  callbacks: {
+    readonly reloadTicketDetailIfOpen: () => void;
+    readonly pendingTicketIds: Set<string>;
+  },
+): Promise<void> {
+  if (callbacks.pendingTicketIds.has(input.ticketId)) {
+    return Promise.resolve();
+  }
+  if (!api) {
+    return Promise.reject(environmentApiUnavailable());
+  }
+
+  callbacks.pendingTicketIds.add(input.ticketId);
+  return invokeParkAction(
+    api as EnvironmentApi,
+    TicketId.make(input.ticketId),
+    input.actionIndex,
+    WorkflowEventId.make(input.parkedEventId),
+  )
+    .then(
+      (result) => {
+        if (result === "stale") {
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "Already handled — the board moved on.",
+            }),
+          );
+        }
+        callbacks.reloadTicketDetailIfOpen();
+      },
+      (error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn't update ticket",
+            description: actionErrorMessage(error),
+          }),
+        );
+      },
+    )
+    .finally(() => {
+      callbacks.pendingTicketIds.delete(input.ticketId);
+    });
+}
+
 function WorkflowBoardRouteView() {
   const { environmentId: rawEnvironmentId } = Route.useParams();
   const { boardId: rawBoardId, ticket: rawTicket } = Route.useSearch();
@@ -172,6 +244,10 @@ function WorkflowBoardRouteView() {
   const [editorSourcesTrigger, setEditorSourcesTrigger] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const ticketStatusRef = useRef(new Map<string, string>());
+  // In-flight guard for handleParkAction: tickets currently mid-invocation, so
+  // a doubled click can't fire a second invokeParkAction RPC for the same
+  // ticket while the first is still pending.
+  const pendingParkActionTicketIdsRef = useRef(new Set<string>());
   const selectedTicketIdRef = useRef<TicketId | null>(null);
   selectedTicketIdRef.current = selectedTicketId;
   const lastDetailTicketIdRef = useRef<string | null>(null);
@@ -428,6 +504,22 @@ function WorkflowBoardRouteView() {
   const reloadTicketDetail = useCallback(() => {
     setTicketDetailReloadKey((key) => key + 1);
   }, []);
+  const handleParkAction = useCallback(
+    (ticketId: string, actionIndex: number, parkedEventId: string): Promise<void> =>
+      submitParkActionFromBoardRoute(
+        routeApi,
+        { ticketId, actionIndex, parkedEventId },
+        {
+          pendingTicketIds: pendingParkActionTicketIdsRef.current,
+          reloadTicketDetailIfOpen: () => {
+            if (selectedTicketIdRef.current === TicketId.make(ticketId)) {
+              reloadTicketDetail();
+            }
+          },
+        },
+      ),
+    [routeApi, reloadTicketDetail],
+  );
   const handleApprove = useCallback(
     (stepRunId: string, approved: boolean): Promise<void> => {
       return resolveApproval(routeApi, StepRunId.make(stepRunId), approved).then(
@@ -702,7 +794,12 @@ function WorkflowBoardRouteView() {
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
-              <BoardView state={visibleState} onMove={handleMove} onOpen={handleOpenTicket} />
+              <BoardView
+                state={visibleState}
+                onMove={handleMove}
+                onOpen={handleOpenTicket}
+                onParkAction={handleParkAction}
+              />
               {boardId && !boardHasSources ? (
                 <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-muted/20 px-4 py-2">
                   <p className="text-xs text-muted-foreground">

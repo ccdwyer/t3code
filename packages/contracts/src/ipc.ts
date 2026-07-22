@@ -1367,10 +1367,8 @@ export interface EnvironmentApi {
     moveTicket: (input: { readonly ticketId: TicketId; readonly toLane: LaneKey }) => Promise<void>;
     // Unpark a parked ticket via one of its re-resolved actions. Compare-and-act
     // on `parkedEventId`: a stale/superseded invocation resolves to `"stale"`
-    // rather than moving the wrong ticket. Optional until the web/client-runtime
-    // wrapper lands (plan Task 14) so this interface stays satisfiable by every
-    // existing consumer in the meantime.
-    invokeParkAction?: (input: {
+    // rather than moving the wrong ticket.
+    invokeParkAction: (input: {
       readonly ticketId: TicketId;
       readonly actionIndex: number;
       readonly parkedEventId: WorkflowEventId;

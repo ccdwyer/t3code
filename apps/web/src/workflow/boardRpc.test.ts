@@ -7,6 +7,7 @@ import {
   type ProjectId,
   StepRunId,
   TicketId,
+  WorkflowEventId,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -15,6 +16,7 @@ import {
   createBoard,
   deleteBoard,
   editTicket,
+  invokeParkAction,
   listBoards,
   renameBoard,
 } from "./boardRpc";
@@ -48,6 +50,7 @@ describe("boardRpc", () => {
         renameBoard: vi.fn(async () => undefined),
         answerTicketStep: vi.fn(async () => undefined),
         editTicket: vi.fn(async () => undefined),
+        invokeParkAction: vi.fn(async () => "moved" as const),
       },
     } as unknown as EnvironmentApi;
 
@@ -72,6 +75,9 @@ describe("boardRpc", () => {
         description: "",
       }),
     ).resolves.toBeUndefined();
+    await expect(
+      invokeParkAction(api, TicketId.make("ticket-1"), 0, WorkflowEventId.make("event-1")),
+    ).resolves.toBe("moved");
 
     expect(api.workflow.listBoards).toHaveBeenCalledWith({ projectId });
     expect(api.workflow.createBoard).toHaveBeenCalledWith({ projectId, name: "Delivery", agent });
@@ -86,6 +92,11 @@ describe("boardRpc", () => {
       ticketId: TicketId.make("ticket-1"),
       title: "Updated",
       description: "",
+    });
+    expect(api.workflow.invokeParkAction).toHaveBeenCalledWith({
+      ticketId: TicketId.make("ticket-1"),
+      actionIndex: 0,
+      parkedEventId: WorkflowEventId.make("event-1"),
     });
   });
 });

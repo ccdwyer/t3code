@@ -9,9 +9,11 @@ import type {
   ProjectId,
   StepRunId,
   TicketId,
+  WorkflowEventId,
   WorkflowImportBoardInput,
   WorkflowCreateWorkflowBoardInput,
   WorkflowGenerateWorkflowDraftInput,
+  WorkflowParkActionResult,
   WorkflowProposeBoardImprovementInput,
   WorkflowResolveBoardProposalInput,
 } from "@t3tools/contracts";
@@ -82,6 +84,14 @@ export const editTicket = (
 
 export const moveTicket = (api: EnvironmentApi, ticketId: TicketId, toLane: LaneKey) =>
   api.workflow.moveTicket({ ticketId, toLane });
+
+export const invokeParkAction = (
+  api: EnvironmentApi,
+  ticketId: TicketId,
+  actionIndex: number,
+  parkedEventId: WorkflowEventId,
+): Promise<WorkflowParkActionResult> =>
+  api.workflow.invokeParkAction({ ticketId, actionIndex, parkedEventId });
 
 export const resolveApproval = (api: EnvironmentApi, stepRunId: StepRunId, approved: boolean) =>
   api.workflow.resolveApproval({ stepRunId, approved });

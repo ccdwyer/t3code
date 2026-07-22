@@ -25,11 +25,16 @@ export function LaneColumn({
   admittedTickets,
   queuedTickets,
   onOpen,
+  onParkAction,
 }: {
   readonly lane: LaneColumnView;
   readonly admittedTickets: ReadonlyArray<TicketCardView>;
   readonly queuedTickets: ReadonlyArray<TicketCardView>;
   readonly onOpen: (id: string) => void;
+  // Threaded to TicketCard but not yet consumed there — see BoardView.
+  readonly onParkAction?:
+    | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+    | undefined;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `lane:${lane.key}` });
   const tickets = [...admittedTickets, ...queuedTickets];
@@ -68,7 +73,12 @@ export function LaneColumn({
           )}
         >
           {admittedTickets.map((ticket) => (
-            <TicketCard key={ticket.ticketId} ticket={ticket} onOpen={onOpen} />
+            <TicketCard
+              key={ticket.ticketId}
+              ticket={ticket}
+              onOpen={onOpen}
+              onParkAction={onParkAction}
+            />
           ))}
           {queuedTickets.length > 0 ? (
             <div className="mt-1 border-t border-border/70 pt-2">
@@ -77,7 +87,12 @@ export function LaneColumn({
               </div>
               <div className="flex flex-col gap-2">
                 {queuedTickets.map((ticket) => (
-                  <TicketCard key={ticket.ticketId} ticket={ticket} onOpen={onOpen} />
+                  <TicketCard
+                    key={ticket.ticketId}
+                    ticket={ticket}
+                    onOpen={onOpen}
+                    onParkAction={onParkAction}
+                  />
                 ))}
               </div>
             </div>

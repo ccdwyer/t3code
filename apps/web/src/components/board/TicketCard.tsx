@@ -91,9 +91,17 @@ const statusMetaByStatus: Record<string, TicketStatusMeta | undefined> = {
 export function TicketCard({
   ticket,
   onOpen,
+  // Accepted but not yet consumed — the parked inline action row that calls
+  // this lands in Task 15 (plan `2026-07-22-workflow-substates.md`), which
+  // restructures this card's shell. Threaded now so that Task 15 doesn't need
+  // a second prop-drilling pass through BoardView/LaneColumn.
+  onParkAction: _onParkAction,
 }: {
   readonly ticket: TicketCardView;
   readonly onOpen: (id: string) => void;
+  readonly onParkAction?:
+    | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
+    | undefined;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: ticket.ticketId,

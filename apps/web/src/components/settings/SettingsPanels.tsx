@@ -586,6 +586,9 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Project Grouping"]
         : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
+      ...(settings.renderHtmlEmbeds !== DEFAULT_UNIFIED_SETTINGS.renderHtmlEmbeds
+        ? ["HTML previews"]
+        : []),
       ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
         ? ["Diff whitespace changes"]
         : []),
@@ -633,6 +636,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAssistantStreaming,
       settings.enableProviderUpdateChecks,
       settings.sidebarProjectGroupingMode,
+      settings.renderHtmlEmbeds,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
       settings.wordWrap,
@@ -654,6 +658,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
+      renderHtmlEmbeds: DEFAULT_UNIFIED_SETTINGS.renderHtmlEmbeds,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
@@ -1245,6 +1250,30 @@ export function GeneralSettingsPanel() {
                 </SelectItem>
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          title="HTML previews"
+          description="Render html code blocks from the assistant as live sandboxed previews."
+          resetAction={
+            settings.renderHtmlEmbeds !== DEFAULT_UNIFIED_SETTINGS.renderHtmlEmbeds ? (
+              <SettingResetButton
+                label="HTML previews"
+                onClick={() =>
+                  updateSettings({
+                    renderHtmlEmbeds: DEFAULT_UNIFIED_SETTINGS.renderHtmlEmbeds,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.renderHtmlEmbeds}
+              onCheckedChange={(checked) => updateSettings({ renderHtmlEmbeds: Boolean(checked) })}
+              aria-label="Render assistant html code blocks as live sandboxed previews"
+            />
           }
         />
 

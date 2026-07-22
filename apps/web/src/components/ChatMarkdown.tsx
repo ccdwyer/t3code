@@ -8,7 +8,7 @@ import {
   Minimize2Icon,
   WrapTextIcon,
 } from "lucide-react";
-import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import type { ClientSettings, ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -40,6 +40,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
 import { CHAT_FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip";
+import { HtmlEmbedCard, HtmlFileEmbedCard } from "./chat/HtmlEmbedCard";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import {
   resolveExternalWebLinkHost,
@@ -59,7 +60,8 @@ import { LRUCache } from "../lib/lruCache";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { useTheme } from "../hooks/useTheme";
-import { getClientSettings } from "../hooks/useSettings";
+import { getClientSettings, useClientSettings } from "../hooks/useSettings";
+import { extractHtmlEmbedFileRef, isFenceClosedAt } from "../markdown-html-embed";
 import {
   chatMarkdownClipboardPayload,
   serializeTableElementToCsv,
@@ -314,6 +316,10 @@ function estimateHighlightedSize(html: string, code: string): number {
 
 function readInitialWordWrapSetting(): boolean {
   return getClientSettings().wordWrap;
+}
+
+function selectRenderHtmlEmbeds(settings: ClientSettings): boolean {
+  return settings.renderHtmlEmbeds;
 }
 
 function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
@@ -1262,6 +1268,7 @@ function ChatMarkdown({
   lineBreaks = false,
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
+  const renderHtmlEmbeds = useClientSettings(selectRenderHtmlEmbeds);
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
   });
@@ -1555,8 +1562,9 @@ function ChatMarkdown({
         }
 
         const language = extractFenceLanguage(codeBlock.className);
-        const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
-        return (
+        const codeMeta = extractPreCodeMeta(node);
+        const fenceTitle = extractFenceTitle(codeMeta);
+        const codeBlockElement = (
           <MarkdownCodeBlock
             code={codeBlock.code}
             language={language}
@@ -1575,6 +1583,51 @@ function ChatMarkdown({
             </RenderErrorBoundary>
           </MarkdownCodeBlock>
         );
+        if (
+          language === "html" &&
+          renderHtmlEmbeds &&
+          isFenceClosedAt(
+            text,
+            node?.position?.start.offset,
+            node?.position?.end.offset,
+            isStreaming,
+          )
+        ) {
+          const blankBody = codeBlock.code.trim().length === 0;
+          const embedFileRef = blankBody ? extractHtmlEmbedFileRef(codeMeta) : null;
+          if (embedFileRef && threadRef && cwd) {
+            return (
+              <HtmlFileEmbedCard
+                environmentId={threadRef.environmentId}
+                cwd={cwd}
+                relativePath={embedFileRef}
+                renderCodeBlock={(code) => (
+                  <MarkdownCodeBlock
+                    code={code}
+                    language="html"
+                    fenceTitle={embedFileRef}
+                    theme={resolvedTheme}
+                  >
+                    <RenderErrorBoundary fallback={<pre>{code}</pre>}>
+                      <Suspense fallback={<pre>{code}</pre>}>
+                        <SuspenseShikiCodeBlock
+                          className="language-html"
+                          code={code}
+                          themeName={diffThemeName}
+                          isStreaming={false}
+                        />
+                      </Suspense>
+                    </RenderErrorBoundary>
+                  </MarkdownCodeBlock>
+                )}
+              />
+            );
+          }
+          if (!blankBody) {
+            return <HtmlEmbedCard html={codeBlock.code} codeBlock={codeBlockElement} />;
+          }
+        }
+        return codeBlockElement;
       },
     };
   }, [
@@ -1583,6 +1636,7 @@ function ChatMarkdown({
     fileLinkParentSuffixByPath,
     inlineCodeFileLinkMetaByText,
     isStreaming,
+    renderHtmlEmbeds,
     markdownFileLinkMetaByHref,
     onTaskListChange,
     openInPreferredEditor,

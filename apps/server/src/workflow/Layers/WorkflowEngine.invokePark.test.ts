@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -542,6 +543,129 @@ guardLayer("missing-lane guard for manual vs routed moves", (it) => {
       assert.equal(detail?.ticket.attentionKind, "blocked");
       const events = yield* eventsFor(ticketId as string);
       assert.ok(events.some((event) => event.type === "TicketBlocked"));
+    }),
+  );
+});
+
+// ── (f) error-copy split (Gate 1 minor #6): an out-of-range actionIndex is a
+//        client bug (actions DID resolve) and must report a DIFFERENT message
+//        than an unresolvable origin/definition. ───────────────────────────
+
+const oobExecutor = makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" }));
+const oobLayer = it.layer(baseLayer(oobExecutor.layer));
+
+oobLayer("invokeParkAction with an out-of-range actionIndex", (it) => {
+  it.effect("fails with 'park action index out of range', not the definition-changed copy", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-oob" as never,
+        {
+          name: "oob-wf",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                  on: {
+                    failure: {
+                      park: "issue",
+                      label: "Broke",
+                      // Only one action resolves (index 0); index 1 is OOB.
+                      actions: [{ label: "Retry", to: "impl" }],
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-oob" as never,
+        title: "Fails",
+        initialLane: "impl" as never,
+      });
+      yield* awaitParked(ticketId as string);
+
+      const parked = yield* parkedEventFor(ticketId as string);
+      assert.ok(parked?.type === "TicketParked");
+
+      const error = yield* engine.invokeParkAction(ticketId, 1, parked.eventId).pipe(Effect.flip);
+      assert.include(error.message, "park action index out of range");
+      assert.notInclude(error.message, "board definition changed");
+
+      const detail = yield* awaitParked(ticketId as string);
+      assert.equal(detail?.ticket.status, "parked");
+    }),
+  );
+});
+
+const nullOriginExecutor = makeScriptedExecutor(() => ({ _tag: "failed", error: "boom" }));
+const nullOriginLayer = it.layer(baseLayer(nullOriginExecutor.layer));
+
+nullOriginLayer("invokeParkAction with an unresolvable (null) park origin", (it) => {
+  it.effect("fails with the definition-changed copy, not the OOB copy", () =>
+    Effect.gen(function* () {
+      const registry = yield* BoardRegistry;
+      yield* registry.register(
+        "b-null-origin" as never,
+        {
+          name: "null-origin-wf",
+          lanes: [
+            {
+              key: "impl",
+              name: "Impl",
+              entry: "auto",
+              pipeline: [
+                {
+                  key: "code",
+                  type: "agent",
+                  agent: { instance: "claude_main", model: "sonnet" },
+                  instruction: "do it",
+                  on: {
+                    failure: {
+                      park: "issue",
+                      label: "Broke",
+                      actions: [{ label: "Retry", to: "impl" }],
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        } as never,
+      );
+      const engine = yield* WorkflowEngine;
+      const sql = yield* SqlClient.SqlClient;
+
+      const ticketId = yield* engine.createTicket({
+        boardId: "b-null-origin" as never,
+        title: "Fails",
+        initialLane: "impl" as never,
+      });
+      yield* awaitParked(ticketId as string);
+
+      const parked = yield* parkedEventFor(ticketId as string);
+      assert.ok(parked?.type === "TicketParked");
+
+      // Simulate a legacy/corrupted row: parked but with no recorded origin, so
+      // invokeParkAction can never resolve which actions are valid.
+      yield* sql`
+        UPDATE projection_ticket SET park_origin = NULL WHERE ticket_id = ${ticketId}
+      `;
+
+      const error = yield* engine.invokeParkAction(ticketId, 0, parked.eventId).pipe(Effect.flip);
+      assert.include(error.message, "board definition changed");
+      assert.notInclude(error.message, "index out of range");
     }),
   );
 });

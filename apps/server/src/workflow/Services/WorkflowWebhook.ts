@@ -13,7 +13,13 @@ export interface WorkflowWebhookConfigResult {
   readonly token?: string;
 }
 
-export type WorkflowWebhookOutcome = "moved" | "queued" | "noop" | "duplicate";
+export type WorkflowWebhookOutcome =
+  | "moved"
+  | "queued"
+  | "noop"
+  | "parked"
+  | "skipped_parked"
+  | "duplicate";
 
 export interface WorkflowExternalEventInput {
   readonly boardId: BoardId;

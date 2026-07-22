@@ -514,7 +514,7 @@ eventParkLayer("onEvent park", (it) => {
         ticketId,
         payload: null,
       });
-      assert.equal(result.outcome, "noop");
+      assert.equal(result.outcome, "parked");
 
       const detail = yield* awaitParked(ticketId as string);
       assert.equal(detail?.ticket.status, "parked");
@@ -589,7 +589,7 @@ skipLayer("external event while parked", (it) => {
         ticketId,
         payload: null,
       });
-      assert.equal(result.outcome, "noop");
+      assert.equal(result.outcome, "skipped_parked");
 
       const read = yield* WorkflowReadModel;
       const detail = yield* read.getTicketDetail(ticketId);
@@ -1055,7 +1055,7 @@ it.layer(baseLayer(gatedCompletingExecutorLayer))(
           ticketId,
           payload: null,
         });
-        assert.equal(result.outcome, "noop");
+        assert.equal(result.outcome, "parked");
 
         const parked = yield* awaitParked(ticketId as string);
         assert.equal(parked?.ticket.status, "parked");

@@ -138,13 +138,21 @@ export interface WorkflowEngineShape {
   readonly runLane: (ticketId: TicketId) => Effect.Effect<void, WorkflowEventStoreError>;
   // Webhook-correlated event: evaluates the ticket's current lane onEvent
   // matchers and moves/queues the ticket like a manual move when one fires.
+  // "parked" is distinct from "noop": the event matched and durably parked the
+  // ticket (a real, recorded outcome), whereas "noop" means no matcher fired
+  // at all. "skipped_parked" means the ticket was already parked and the event
+  // was recorded as history-only (never evaluated) — see the parked-ticket
+  // short-circuit in ingestExternalEvent.
   readonly ingestExternalEvent: (input: {
     readonly boardId: BoardId;
     readonly name: string;
     readonly ticketId: TicketId;
     readonly payload: unknown;
   }) => Effect.Effect<
-    { readonly outcome: "moved" | "queued" | "noop"; readonly toLane?: string },
+    {
+      readonly outcome: "moved" | "queued" | "noop" | "parked" | "skipped_parked";
+      readonly toLane?: string;
+    },
     WorkflowEventStoreError
   >;
   readonly resolveApproval: (

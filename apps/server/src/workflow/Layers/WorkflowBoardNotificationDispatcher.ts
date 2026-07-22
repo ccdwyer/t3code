@@ -234,6 +234,8 @@ const makeWorkflowBoardNotificationDispatcher = (
     // doesn't wait for a restart: the very next sweep, at most sweepIntervalMs
     // later, un-sticks it. A select/UPDATE failure here is logged and
     // swallowed — it must not block the rest of the sweep.
+    // Safe under the single serially-scheduled dispatcher fiber; concurrent
+    // dispatcher processes would double-deliver in-flight rows.
     const reclaimStalePublishing = sql`
       UPDATE workflow_notification_outbox
       SET delivery_state = 'pending'

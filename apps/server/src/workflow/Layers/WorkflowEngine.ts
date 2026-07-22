@@ -2326,10 +2326,19 @@ const make = Effect.gen(function* () {
       const definition = yield* registry.getDefinition(boardId);
       const actions =
         definition === null ? null : resolveParkActions(definition, laneKey, originJson);
-      const action = actions === null ? undefined : actions[actionIndex];
-      if (action === undefined) {
+      if (actions === null) {
         return yield* new WorkflowEventStoreError({
           message: "park actions unavailable — board definition changed",
+        });
+      }
+      // The actions DID resolve from the current definition here, so an
+      // out-of-range actionIndex is a stale/bogus client request, not a
+      // board-definition drift — report it as such (distinct from the
+      // "definition changed" copy above).
+      const action = actions[actionIndex];
+      if (action === undefined) {
+        return yield* new WorkflowEventStoreError({
+          message: "park action index out of range",
         });
       }
       // The action's target lane must exist in the CURRENT definition.
@@ -2773,7 +2782,7 @@ const make = Effect.gen(function* () {
           ticketId: input.ticketId,
           payload: { eventName: input.name, reason: "parked" },
         });
-        return { outcome: "noop" as const };
+        return { outcome: "skipped_parked" as const };
       }
       const fromLaneKey = detail.ticket.currentLaneKey as LaneKey;
       // Read once; revalidate reuses this snapshot — do not re-read.
@@ -2841,7 +2850,7 @@ const make = Effect.gen(function* () {
           undefined,
           supersedeRunningWorkFor(input.ticketId),
         );
-        return { outcome: "noop" as const };
+        return { outcome: "parked" as const };
       }
 
       const routeEvent = {

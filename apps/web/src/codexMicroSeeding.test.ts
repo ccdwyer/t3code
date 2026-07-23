@@ -128,26 +128,72 @@ interface FakeRunner {
   readonly upserts: Array<{ environmentId: string; input: ServerUpsertKeybindingInput }>;
   readonly appended: string[];
   seededEnvironments: string[];
+  existingRules: ResolvedKeybindingsConfig;
+  serverConfigLoaded: boolean;
+  settingsHydrated: boolean;
+  /** When true, EVERY upsert rejects (simulates an AsyncResult Failure). */
+  failAllUpserts: boolean;
+  /** When set, an upsert whose key matches rejects (partial-failure coverage). */
+  failUpsertOnKey: string | null;
+  /** How many times `getExistingRules` has been called (TOCTOU sequencing). */
+  getRulesCallCount: number;
+  /** True once the in-progress guard was released (endRun) at least once. */
+  runEnded: boolean;
+  session: Set<string>;
+  inProgress: Set<string>;
 }
 
 function makeFakeRunner(options: {
   environmentId: string | null;
   existingRules?: ResolvedKeybindingsConfig;
   seededEnvironments?: string[];
+  serverConfigLoaded?: boolean;
+  settingsHydrated?: boolean;
+  maxKeybindings?: number;
+  failAllUpserts?: boolean;
+  failUpsertOnKey?: string;
+  /** After the plan is computed, subsequent `getExistingRules` calls include
+   * this extra bound rule — simulating a key/command being taken mid-loop. */
+  takeAfterPlan?: { key: string; command: KeybindingCommand };
 }): FakeRunner {
   const upserts: Array<{ environmentId: string; input: ServerUpsertKeybindingInput }> = [];
   const appended: string[] = [];
-  const session = new Set<string>();
   const state: FakeRunner = {
     upserts,
     appended,
     seededEnvironments: options.seededEnvironments ? [...options.seededEnvironments] : [],
+    existingRules: options.existingRules ?? EMPTY_CONFIG,
+    serverConfigLoaded: options.serverConfigLoaded ?? true,
+    settingsHydrated: options.settingsHydrated ?? true,
+    failAllUpserts: options.failAllUpserts ?? false,
+    failUpsertOnKey: options.failUpsertOnKey ?? null,
+    getRulesCallCount: 0,
+    runEnded: false,
+    session: new Set<string>(),
+    inProgress: new Set<string>(),
     deps: {
       getEnvironmentId: () => options.environmentId,
-      getExistingRules: () => options.existingRules ?? EMPTY_CONFIG,
+      getExistingRules: () => {
+        state.getRulesCallCount += 1;
+        // The FIRST call feeds the planner; later calls (capacity + per-upsert
+        // TOCTOU re-check) see the mutated view when `takeAfterPlan` is set.
+        if (options.takeAfterPlan && state.getRulesCallCount > 1) {
+          return [
+            ...state.existingRules,
+            resolvedRule(options.takeAfterPlan.key, options.takeAfterPlan.command),
+          ];
+        }
+        return state.existingRules;
+      },
       getSeededEnvironments: () => state.seededEnvironments,
+      isServerConfigLoaded: () => state.serverConfigLoaded,
+      isSettingsHydrated: () => state.settingsHydrated,
+      maxKeybindings: options.maxKeybindings ?? 256,
       upsertKeybinding: async (environmentId, input) => {
         upserts.push({ environmentId, input });
+        if (state.failAllUpserts || state.failUpsertOnKey === input.key) {
+          throw new Error(`simulated upsert failure for ${input.key}`);
+        }
       },
       appendSeededEnvironment: (environmentId) => {
         appended.push(environmentId);
@@ -155,9 +201,18 @@ function makeFakeRunner(options: {
           state.seededEnvironments = [...state.seededEnvironments, environmentId];
         }
       },
-      hasSeededThisSession: (environmentId) => session.has(environmentId),
+      hasSeededThisSession: (environmentId) => state.session.has(environmentId),
       markSeededThisSession: (environmentId) => {
-        session.add(environmentId);
+        state.session.add(environmentId);
+      },
+      beginRun: (environmentId) => {
+        if (state.inProgress.has(environmentId)) return false;
+        state.inProgress.add(environmentId);
+        return true;
+      },
+      endRun: (environmentId) => {
+        state.runEnded = true;
+        state.inProgress.delete(environmentId);
       },
     },
   };
@@ -173,6 +228,8 @@ describe("runCodexMicroSeed", () => {
     expect(fake.upserts).toHaveLength(8);
     expect(fake.upserts.every((entry) => entry.environmentId === "env-a")).toBe(true);
     expect(fake.appended).toEqual(["env-a"]);
+    // In-progress guard released after a successful run.
+    expect(fake.inProgress.size).toBe(0);
   });
 
   it("does nothing when no environment is active", async () => {
@@ -232,5 +289,114 @@ describe("runCodexMicroSeed", () => {
     expect(fake.upserts).toHaveLength(8);
     expect(fake.upserts.every((entry) => entry.environmentId === "env-b")).toBe(true);
     expect(fake.appended).toEqual(["env-b"]);
+  });
+
+  // ── A1 readiness gates ──────────────────────────────────────────────
+
+  it("does not seed or mark while the server config is unloaded", async () => {
+    const fake = makeFakeRunner({ environmentId: "env-a", serverConfigLoaded: false });
+
+    await runCodexMicroSeed(fake.deps);
+
+    expect(fake.upserts).toEqual([]);
+    expect(fake.appended).toEqual([]);
+    expect(fake.session.has("env-a")).toBe(false);
+    // No run lock acquired → a later readiness flip can still seed.
+    expect(fake.inProgress.size).toBe(0);
+  });
+
+  it("does not seed or mark while client settings are unhydrated", async () => {
+    const fake = makeFakeRunner({ environmentId: "env-a", settingsHydrated: false });
+
+    await runCodexMicroSeed(fake.deps);
+
+    expect(fake.upserts).toEqual([]);
+    expect(fake.appended).toEqual([]);
+    expect(fake.session.has("env-a")).toBe(false);
+  });
+
+  it("seeds once readiness flips from unloaded to loaded", async () => {
+    const fake = makeFakeRunner({ environmentId: "env-a", serverConfigLoaded: false });
+
+    await runCodexMicroSeed(fake.deps);
+    expect(fake.upserts).toEqual([]);
+
+    fake.serverConfigLoaded = true;
+    await runCodexMicroSeed(fake.deps);
+    expect(fake.upserts).toHaveLength(8);
+    expect(fake.appended).toEqual(["env-a"]);
+  });
+
+  // ── A2 / A3 failure handling ────────────────────────────────────────
+
+  it("does NOT mark seeded when an upsert fails, and releases the guard", async () => {
+    const fake = makeFakeRunner({ environmentId: "env-a", failAllUpserts: true });
+
+    await runCodexMicroSeed(fake.deps);
+
+    // First upsert attempted, then rejected → aborts before appending/marking.
+    expect(fake.upserts.length).toBeGreaterThanOrEqual(1);
+    expect(fake.appended).toEqual([]);
+    expect(fake.session.has("env-a")).toBe(false);
+    // In-progress guard released so a retry is possible.
+    expect(fake.inProgress.size).toBe(0);
+    expect(fake.runEnded).toBe(true);
+  });
+
+  it("aborts on a partial mid-loop failure without appending, then retries clean", async () => {
+    // Fail specifically on f17 → the first few upserts are attempted, then it
+    // rejects; nothing is marked so a later `connected` event can retry.
+    const fake = makeFakeRunner({ environmentId: "env-a", failUpsertOnKey: "f17" });
+
+    await runCodexMicroSeed(fake.deps);
+    expect(fake.appended).toEqual([]);
+    expect(fake.session.has("env-a")).toBe(false);
+    const attemptedBeforeRetry = fake.upserts.length;
+    expect(attemptedBeforeRetry).toBeGreaterThanOrEqual(1);
+
+    // Clear the fault and retry (the session guard must NOT block this).
+    fake.failUpsertOnKey = null;
+    fake.upserts.length = 0;
+    await runCodexMicroSeed(fake.deps);
+    expect(fake.upserts).toHaveLength(8);
+    expect(fake.appended).toEqual(["env-a"]);
+  });
+
+  // ── A5 capacity ─────────────────────────────────────────────────────
+
+  it("seeds nothing but marks the environment when capacity would overflow", async () => {
+    // 250 existing rules + 8 seed rules = 258 > cap → seed nothing, mark done.
+    const existingRules: ResolvedKeybindingsConfig = Array.from({ length: 250 }, () =>
+      resolvedRule("ctrl+alt+p", "sidebar.toggle"),
+    );
+    const fake = makeFakeRunner({
+      environmentId: "env-a",
+      existingRules,
+      maxKeybindings: 256,
+    });
+
+    await runCodexMicroSeed(fake.deps);
+
+    expect(fake.upserts).toEqual([]);
+    expect(fake.appended).toEqual(["env-a"]);
+    expect(fake.session.has("env-a")).toBe(true);
+  });
+
+  // ── A4 TOCTOU ───────────────────────────────────────────────────────
+
+  it("skips a rule whose key was taken between planning and upsert", async () => {
+    // The plan is computed against an empty config (all 8 free), but f13 is
+    // taken immediately after — the per-upsert re-check must skip it.
+    const fake = makeFakeRunner({
+      environmentId: "env-a",
+      takeAfterPlan: { key: "f13", command: "sidebar.toggle" },
+    });
+
+    await runCodexMicroSeed(fake.deps);
+
+    // f13 skipped → 7 upserts, but still marked seeded (a successful run).
+    expect(fake.upserts).toHaveLength(7);
+    expect(fake.upserts.some((entry) => entry.input.key === "f13")).toBe(false);
+    expect(fake.appended).toEqual(["env-a"]);
   });
 });

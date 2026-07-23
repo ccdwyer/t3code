@@ -12,6 +12,7 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
 import { CodexMicroLedSyncHost } from "../CodexMicroLedSyncHost";
+import { useCodexMicroPrefsSync } from "../codexMicroPrefsSync";
 import { useCodexMicroKeybindingSeeding } from "../codexMicroSeeding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
@@ -281,12 +282,14 @@ function AuthenticatedTracingBootstrap() {
 
 /**
  * Codex Micro integrations, mounted once for the authenticated app session:
- * first-connect keybinding seeding plus the LED sync host (which also owns
- * the agent-key slot ranking feed). Both are inert when the desktop bridge
- * is absent (plain web) or their gates are off.
+ * first-connect keybinding seeding, on-connect device-preference push
+ * (brightness / auto-dim), plus the LED sync host (which also owns the
+ * agent-key slot ranking feed). All are inert when the desktop bridge is
+ * absent (plain web) or their gates are off.
  */
 function CodexMicroHost() {
   useCodexMicroKeybindingSeeding();
+  useCodexMicroPrefsSync();
   return <CodexMicroLedSyncHost />;
 }
 

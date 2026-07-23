@@ -39,13 +39,22 @@ import {
   type EnvironmentId,
   type KeybindingCommand,
   type KeybindingShortcut,
+  MAX_KEYBINDINGS_COUNT,
   type ResolvedKeybindingsConfig,
   type ServerUpsertKeybindingInput,
 } from "@t3tools/contracts";
 import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
 
-import { useClientSettings, useUpdateClientSettings } from "./hooks/useSettings";
-import { primaryServerKeybindingsAtom, serverEnvironment } from "./state/server";
+import {
+  useClientSettings,
+  useClientSettingsHydrated,
+  useUpdateClientSettings,
+} from "./hooks/useSettings";
+import {
+  primaryServerConfigAtom,
+  primaryServerKeybindingsAtom,
+  serverEnvironment,
+} from "./state/server";
 import { usePrimaryEnvironment } from "./state/environments";
 import { useAtomCommand } from "./state/use-atom-command";
 
@@ -114,33 +123,56 @@ function shortcutSignature(shortcut: KeybindingShortcut): string {
 }
 
 /**
+ * Precompute the set of bound shortcut signatures + commands for a resolved
+ * config so free-ness checks are O(1) per binding.
+ */
+function boundSignatures(existingRules: ResolvedKeybindingsConfig): {
+  readonly shortcuts: ReadonlySet<string>;
+  readonly commands: ReadonlySet<string>;
+} {
+  const shortcuts = new Set<string>();
+  const commands = new Set<string>();
+  for (const rule of existingRules) {
+    shortcuts.add(shortcutSignature(rule.shortcut));
+    commands.add(rule.command);
+  }
+  return { shortcuts, commands };
+}
+
+/**
+ * Shared free-ness predicate (guard 3), reused by BOTH the planner and the
+ * runner's per-upsert TOCTOU re-check (A4) so the two can never diverge. A
+ * binding is free when its normalized shortcut is unbound AND its command is
+ * unbound in `existingRules`. A malformed layout key is treated as NOT free
+ * (it can never seed) so it is skipped rather than emitted as an unparseable
+ * upsert.
+ */
+export function isBindingFree(
+  existingRules: ResolvedKeybindingsConfig,
+  binding: CodexMicroSeedBinding,
+): boolean {
+  const shortcut = parseKeybindingShortcut(binding.key);
+  if (!shortcut) return false;
+  const { shortcuts, commands } = boundSignatures(existingRules);
+  return !shortcuts.has(shortcutSignature(shortcut)) && !commands.has(binding.command);
+}
+
+/**
  * Decide the seed plan for one environment. Pure — no I/O, no React.
  *
  * Guard 2: an already-seeded environment yields `{ shouldSeed: false }`.
  * Guard 3: a layout entry is skipped when its key is already bound (to any
  * command) OR its command is already bound (to any key) — we never override or
- * shadow a user's existing rule.
+ * shadow a user's existing rule (via the shared `isBindingFree` predicate).
  */
 export function computeCodexMicroSeedPlan(input: CodexMicroSeedPlanInput): CodexMicroSeedPlan {
   if (input.seededEnvironments.includes(input.environmentId)) {
     return { shouldSeed: false, rulesToUpsert: [] };
   }
 
-  const boundShortcutSignatures = new Set<string>();
-  const boundCommands = new Set<string>();
-  for (const rule of input.existingRules) {
-    boundShortcutSignatures.add(shortcutSignature(rule.shortcut));
-    boundCommands.add(rule.command);
-  }
-
   const rulesToUpsert: ServerUpsertKeybindingInput[] = [];
   for (const binding of input.layout) {
-    const shortcut = parseKeybindingShortcut(binding.key);
-    // Defensive: a malformed layout key can never seed. (The shipped layout is
-    // all valid.) Skip it rather than emit an unparseable upsert.
-    if (!shortcut) continue;
-    if (boundShortcutSignatures.has(shortcutSignature(shortcut))) continue;
-    if (boundCommands.has(binding.command)) continue;
+    if (!isBindingFree(input.existingRules, binding)) continue;
     rulesToUpsert.push({ key: binding.key, command: binding.command });
   }
 
@@ -157,10 +189,31 @@ export interface CodexMicroSeedRunnerDeps {
   /** Persisted seeded-environment list. */
   readonly getSeededEnvironments: () => readonly string[];
   /**
+   * A1a readiness: the primary server config has ACTUALLY loaded. Until it has,
+   * `getExistingRules` silently returns the DEFAULT resolved keybindings (the
+   * atom's null-config fallback), which makes an existing user rule look free —
+   * so seeding must not run against it.
+   */
+  readonly isServerConfigLoaded: () => boolean;
+  /**
+   * A1b readiness: client settings have hydrated from persistence. Until they
+   * have, `getSeededEnvironments` returns the pre-hydration default (empty), so
+   * a relaunch would re-seed bindings the user deleted. Seeding must wait for
+   * the real stored guard value.
+   */
+  readonly isSettingsHydrated: () => boolean;
+  /**
+   * A5 capacity: the server truncates each environment's keybindings to this
+   * limit by evicting OLDEST rules. If seeding would overflow it we seed
+   * nothing (never evict a user rule) and just mark the environment seeded.
+   */
+  readonly maxKeybindings: number;
+  /**
    * Perform a single upsert against the environment's server. Never sets
    * `replace` — combined with guard 3 (planner skips already-bound keys /
    * commands) this makes each upsert a pure append that cannot shadow a user
-   * rule.
+   * rule. MUST reject (throw) when the upsert fails (A2) so the runner does not
+   * mark a failed seed as done.
    */
   readonly upsertKeybinding: (
     environmentId: string,
@@ -168,42 +221,101 @@ export interface CodexMicroSeedRunnerDeps {
   ) => Promise<void>;
   /** Append the environment id to the persisted seeded list (idempotent). */
   readonly appendSeededEnvironment: (environmentId: string) => void;
-  /** Guard 4: has this environment already been seeded this session? */
+  /** Has this environment been SUCCESSFULLY seeded this session? */
   readonly hasSeededThisSession: (environmentId: string) => boolean;
-  /** Guard 4: mark this environment as seeded for the rest of this session. */
+  /** Mark this environment successfully seeded for the rest of this session. */
   readonly markSeededThisSession: (environmentId: string) => void;
+  /**
+   * A3 in-progress guard: atomically acquire the run lock for this environment,
+   * returning `false` if a run is already in flight (so concurrent
+   * `connected`/activation events cannot both proceed). Set synchronously,
+   * before any await.
+   */
+  readonly beginRun: (environmentId: string) => boolean;
+  /**
+   * A3: release the in-progress guard. On failure this lets a later `connected`
+   * event retry; on success the session marker already blocks re-runs.
+   */
+  readonly endRun: (environmentId: string) => void;
 }
 
 /**
  * Run the seed once for the currently-active environment. Safe to call on every
  * `connected` emission and whenever the environment becomes active — it is
- * idempotent via the per-session flag and the persisted seeded list.
+ * idempotent via the per-session success marker + in-progress guard and the
+ * persisted seeded list.
+ *
+ * Marking (`markSeededThisSession` + `appendSeededEnvironment`) happens ONLY
+ * after the full plan applied successfully — or against a confirmed-empty plan
+ * on loaded config (A3). On any upsert failure the in-progress guard is
+ * released and nothing is marked, so a later event retries.
  */
 export async function runCodexMicroSeed(deps: CodexMicroSeedRunnerDeps): Promise<void> {
   const environmentId = deps.getEnvironmentId();
   if (!environmentId) return;
 
-  // Guard 4: within-session idempotence. Checked (and set, below) BEFORE any
-  // await so two near-simultaneous `connected` emissions cannot both proceed.
+  // A1 readiness gates — BOTH must hold or the guards above are unreliable.
+  // Return without marking or acquiring the run lock so a later readiness flip
+  // (which re-fires the attempt) can seed honestly.
+  if (!deps.isServerConfigLoaded()) return;
+  if (!deps.isSettingsHydrated()) return;
+
+  // Already seeded this session → nothing to do (checked before the lock so a
+  // post-success re-fire is a cheap no-op).
   if (deps.hasSeededThisSession(environmentId)) return;
 
-  const plan = computeCodexMicroSeedPlan({
-    layout: CODEX_MICRO_SEED_LAYOUT,
-    existingRules: deps.getExistingRules(),
-    seededEnvironments: deps.getSeededEnvironments(),
-    environmentId,
-  });
-  if (!plan.shouldSeed) return;
+  // A3 in-progress guard: acquire synchronously, before any await, so two
+  // near-simultaneous emissions cannot both proceed.
+  if (!deps.beginRun(environmentId)) return;
 
-  deps.markSeededThisSession(environmentId);
+  try {
+    const plan = computeCodexMicroSeedPlan({
+      layout: CODEX_MICRO_SEED_LAYOUT,
+      existingRules: deps.getExistingRules(),
+      seededEnvironments: deps.getSeededEnvironments(),
+      environmentId,
+    });
+    // Already in the persisted seeded list → nothing to do (no marking needed).
+    if (!plan.shouldSeed) {
+      return;
+    }
 
-  for (const rule of plan.rulesToUpsert) {
-    await deps.upsertKeybinding(environmentId, rule);
+    // A5 capacity: if applying the plan would exceed the server's keybinding
+    // cap (which evicts OLDEST — i.e. user — rules to make room), seed NOTHING
+    // and mark the environment seeded. Policy: a user at the cap seeds manually;
+    // we never evict their rules.
+    const existingCount = deps.getExistingRules().length;
+    if (existingCount + plan.rulesToUpsert.length > deps.maxKeybindings) {
+      deps.markSeededThisSession(environmentId);
+      deps.appendSeededEnvironment(environmentId);
+      return;
+    }
+
+    for (const rule of plan.rulesToUpsert) {
+      // A4 TOCTOU re-check: re-read the LATEST resolved rules and skip this
+      // binding if its key or command was taken since the plan was computed
+      // (reuses the planner's `isBindingFree` predicate). Residual race: this
+      // is a client-side narrowing only — a fully atomic server-side seed op
+      // was adjudicated OUT of v1 scope, so a rule bound in the sub-millisecond
+      // window between this check and the server applying the upsert can still
+      // be shadowed. Accepted for v1.
+      if (!isBindingFree(deps.getExistingRules(), rule)) {
+        continue;
+      }
+      // Throws on failure (A2) → caught below: no marking, guard released.
+      await deps.upsertKeybinding(environmentId, rule);
+    }
+
+    // Success (full plan applied, or a confirmed-empty plan) → mark so it never
+    // re-runs for this environment this session or on a future launch.
+    deps.markSeededThisSession(environmentId);
+    deps.appendSeededEnvironment(environmentId);
+  } catch {
+    // A2/A3: an upsert failed. Do NOT mark seeded; the in-progress guard is
+    // released in `finally` so a later `connected` event retries.
+  } finally {
+    deps.endRun(environmentId);
   }
-
-  // Append AFTER attempting (even for an empty plan) so it never re-runs for
-  // this environment on a future launch.
-  deps.appendSeededEnvironment(environmentId);
 }
 
 // ── React hook (thin) ────────────────────────────────────────────────
@@ -218,6 +330,13 @@ export function useCodexMicroKeybindingSeeding(): void {
   const primaryEnvironment = usePrimaryEnvironment();
   const environmentId = primaryEnvironment?.environmentId ?? null;
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  // A1a: the primary server config is non-null only once it has actually
+  // loaded. `primaryServerKeybindingsAtom` falls back to the DEFAULT resolved
+  // keybindings while this is null, so the seed must gate on it.
+  const serverConfigLoaded = useAtomValue(primaryServerConfigAtom) !== null;
+  // A1b: the persisted client settings (incl. the seeded-environments guard)
+  // have hydrated from storage — not the pre-hydration default.
+  const settingsHydrated = useClientSettingsHydrated();
   const seededEnvironments = useClientSettings(
     (settings) => settings.codexMicroKeybindingsSeededEnvironments,
   );
@@ -232,6 +351,8 @@ export function useCodexMicroKeybindingSeeding(): void {
   const latestRef = useRef({
     environmentId,
     keybindings,
+    serverConfigLoaded,
+    settingsHydrated,
     seededEnvironments,
     updateClientSettings,
     upsertKeybinding,
@@ -239,17 +360,23 @@ export function useCodexMicroKeybindingSeeding(): void {
   latestRef.current = {
     environmentId,
     keybindings,
+    serverConfigLoaded,
+    settingsHydrated,
     seededEnvironments,
     updateClientSettings,
     upsertKeybinding,
   };
 
   const deviceConnectedRef = useRef(false);
+  // Environments SUCCESSFULLY seeded this session.
   const sessionSeededRef = useRef<Set<string>>(new Set());
+  // A3 in-progress guard: environments with a seed run currently in flight.
+  const inProgressRef = useRef<Set<string>>(new Set());
 
   // Stable attempt: gated on the device currently being connected. Idempotent
-  // via the runner's per-session flag + the persisted seeded list, so it is
-  // safe to fire from both the state subscription and the environment effect.
+  // via the runner's per-session success marker + in-progress guard + the
+  // persisted seeded list, so it is safe to fire from both the state
+  // subscription and the environment/readiness effect.
   const attemptRef = useRef<() => void>(() => {});
   attemptRef.current = () => {
     if (!deviceConnectedRef.current) return;
@@ -257,14 +384,23 @@ export function useCodexMicroKeybindingSeeding(): void {
       getEnvironmentId: () => latestRef.current.environmentId,
       getExistingRules: () => latestRef.current.keybindings,
       getSeededEnvironments: () => latestRef.current.seededEnvironments,
+      isServerConfigLoaded: () => latestRef.current.serverConfigLoaded,
+      isSettingsHydrated: () => latestRef.current.settingsHydrated,
+      maxKeybindings: MAX_KEYBINDINGS_COUNT,
       upsertKeybinding: async (envId, input) => {
         // `envId` originates from the branded primary environment id (below), so
         // this cast back to the branded type is sound — the runner keeps a plain
         // `string` seam so it stays framework-agnostic and easily testable.
-        await latestRef.current.upsertKeybinding({
+        const result = await latestRef.current.upsertKeybinding({
           environmentId: envId as EnvironmentId,
           input,
         });
+        // A2: `useAtomCommand` RESOLVES with an AsyncResult; a `Failure` here is
+        // a rejected/failed upsert. Surface it as a throw so the runner does not
+        // mark a failed seed as done (and can retry on a later `connected`).
+        if (result._tag === "Failure") {
+          throw new Error("codex-micro keybinding upsert failed");
+        }
       },
       appendSeededEnvironment: (envId) => {
         const current = latestRef.current.seededEnvironments;
@@ -276,6 +412,14 @@ export function useCodexMicroKeybindingSeeding(): void {
       hasSeededThisSession: (envId) => sessionSeededRef.current.has(envId),
       markSeededThisSession: (envId) => {
         sessionSeededRef.current.add(envId);
+      },
+      beginRun: (envId) => {
+        if (inProgressRef.current.has(envId)) return false;
+        inProgressRef.current.add(envId);
+        return true;
+      },
+      endRun: (envId) => {
+        inProgressRef.current.delete(envId);
       },
     });
   };
@@ -295,10 +439,11 @@ export function useCodexMicroKeybindingSeeding(): void {
     return unsubscribe;
   }, []);
 
-  // Covers the ordering where the pad is already connected but the primary
-  // environment becomes active only later — re-attempt when the environment id
-  // appears/changes (no-op unless the device is currently connected).
+  // Covers the orderings where the pad is already connected but the primary
+  // environment becomes active — or the readiness signals (server config
+  // loaded / settings hydrated) flip — only later. Re-attempt whenever any of
+  // those change (no-op unless the device is currently connected and ready).
   useEffect(() => {
     attemptRef.current();
-  }, [environmentId]);
+  }, [environmentId, serverConfigLoaded, settingsHydrated]);
 }

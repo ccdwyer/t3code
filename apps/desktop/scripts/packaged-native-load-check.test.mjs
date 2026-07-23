@@ -4,8 +4,10 @@ import * as NodePath from "node:path";
 import { assert, describe, it } from "vite-plus/test";
 
 import {
+  archForArtifactPath,
   checkPackagedNodeHidLoad,
   findAppAsarUnpackedDirs,
+  resolveHostArch,
   resolvePackagedNodeHidEntryUrl,
   resolveReleaseSearchRoots,
   runPackagedNodeHidLoadCheck,
@@ -184,7 +186,10 @@ describe("checkPackagedNodeHidLoad", () => {
       NodeFS.mkdirSync(unpackedDir, { recursive: true });
       writeFakeNodeHid(unpackedDir, { devicesAsyncBody: "  return [];" });
 
-      const result = checkPackagedNodeHidLoad({ env: { T3CODE_DESKTOP_RELEASE_DIR: root } });
+      const result = checkPackagedNodeHidLoad({
+        env: { T3CODE_DESKTOP_RELEASE_DIR: root },
+        hostArch: "arm64",
+      });
       assert.isTrue(result.ran);
       assert.isTrue(result.ok);
       assert.include(result.message, "passed");
@@ -200,7 +205,10 @@ describe("checkPackagedNodeHidLoad", () => {
       NodeFS.mkdirSync(unpackedDir, { recursive: true });
       // No node_modules/node-hid written — simulates an asarUnpack regression.
 
-      const result = checkPackagedNodeHidLoad({ env: { T3CODE_DESKTOP_RELEASE_DIR: root } });
+      const result = checkPackagedNodeHidLoad({
+        env: { T3CODE_DESKTOP_RELEASE_DIR: root },
+        hostArch: "x64",
+      });
       assert.isTrue(result.ran);
       assert.isFalse(result.ok);
       assert.include(result.message, "FAILED");
@@ -208,5 +216,101 @@ describe("checkPackagedNodeHidLoad", () => {
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // E1: strict (fail-closed) mode.
+  it("fails (non-zero) in strict mode when no artifact exists", () => {
+    const root = makeTempDir();
+    try {
+      const result = checkPackagedNodeHidLoad({
+        env: { T3CODE_DESKTOP_RELEASE_DIR: NodePath.join(root, "release") },
+        requireArtifact: true,
+      });
+      assert.isFalse(result.ran);
+      assert.isFalse(result.ok);
+      assert.include(result.message, "strict mode");
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("honors T3_REQUIRE_PACKAGED_NATIVE_CHECK=1 as strict mode", () => {
+    const root = makeTempDir();
+    try {
+      const result = checkPackagedNodeHidLoad({
+        env: {
+          T3CODE_DESKTOP_RELEASE_DIR: NodePath.join(root, "release"),
+          T3_REQUIRE_PACKAGED_NATIVE_CHECK: "1",
+        },
+      });
+      assert.isFalse(result.ok);
+      assert.include(result.message, "strict mode");
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // E2: foreign-arch trees are skipped with an explicit message.
+  it("skips a foreign-arch tree with an explicit message", () => {
+    const root = makeTempDir();
+    try {
+      const foreignDir = NodePath.join(root, "mac-x64", "app.asar.unpacked");
+      NodeFS.mkdirSync(foreignDir, { recursive: true });
+      writeFakeNodeHid(foreignDir, { devicesAsyncBody: "  return [];" });
+
+      // Host is arm64 → the x64 tree is foreign and must be skipped, so nothing
+      // actually runs (soft skip, not a failure, in non-strict mode).
+      const result = checkPackagedNodeHidLoad({
+        env: { T3CODE_DESKTOP_RELEASE_DIR: root },
+        hostArch: "arm64",
+      });
+      assert.isFalse(result.ran);
+      assert.isTrue(result.ok);
+      assert.include(result.message, "Skipped foreign-arch artifacts");
+      assert.include(result.message, "built for x64, host is arm64");
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails in strict mode when only a foreign-arch tree is present", () => {
+    const root = makeTempDir();
+    try {
+      const foreignDir = NodePath.join(root, "mac-arm64", "app.asar.unpacked");
+      NodeFS.mkdirSync(foreignDir, { recursive: true });
+      writeFakeNodeHid(foreignDir, { devicesAsyncBody: "  return [];" });
+
+      const result = checkPackagedNodeHidLoad({
+        env: { T3CODE_DESKTOP_RELEASE_DIR: root },
+        hostArch: "x64",
+        requireArtifact: true,
+      });
+      assert.isFalse(result.ran);
+      assert.isFalse(result.ok);
+      assert.include(result.message, "strict mode");
+      assert.include(result.message, "Skipped foreign-arch artifacts");
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("archForArtifactPath / resolveHostArch", () => {
+  it("classifies arm64 and x64 output dir names", () => {
+    assert.equal(archForArtifactPath("/x/release/mac-arm64/app.asar.unpacked"), "arm64");
+    assert.equal(archForArtifactPath("/x/release/mac-x64/app.asar.unpacked"), "x64");
+    assert.equal(archForArtifactPath("/x/release/linux-arm64-unpacked/app.asar.unpacked"), "arm64");
+    assert.equal(archForArtifactPath("/x/release/win-arm64-unpacked/app.asar.unpacked"), "arm64");
+  });
+
+  it("returns null for electron-builder default (host-arch) dir names", () => {
+    assert.isNull(archForArtifactPath("/x/release/mac/app.asar.unpacked"));
+    assert.isNull(archForArtifactPath("/x/release/linux-unpacked/app.asar.unpacked"));
+    assert.isNull(archForArtifactPath("/x/release/win-unpacked/app.asar.unpacked"));
+  });
+
+  it("normalizes process.arch values", () => {
+    assert.equal(resolveHostArch("arm64"), "arm64");
+    assert.equal(resolveHostArch("x64"), "x64");
   });
 });

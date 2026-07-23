@@ -12,7 +12,14 @@
  * - Capability-gated controls render ONLY when the D1 matrix proves the
  *   capability `"supported"`. No fake sliders/toggles pre-verification.
  */
-import type { CodexMicroDeviceState } from "@t3tools/contracts";
+import type {
+  CodexMicroDeviceState,
+  KeybindingCommand,
+  KeybindingShortcut,
+  ResolvedKeybindingsConfig,
+} from "@t3tools/contracts";
+
+import { CODEX_MICRO_SEED_LAYOUT } from "../../codexMicroSeeding";
 
 // ── Copy (single source so the component and tests agree) ─────────────
 
@@ -33,30 +40,78 @@ export const CODEX_MICRO_FOCUS_NOTICE = "Keys work while T3 Code is focused.";
 /** The Work Louder / VIA configurator — the remap escape hatch (spec §5). */
 export const CODEX_MICRO_VIA_URL = "https://usevia.app/";
 
-// ── Seeded layout (read-only display table) ──────────────────────────
+// ── Seeded layout (live, read-only display table) ─────────────────────
 
-export interface CodexMicroKeyBinding {
-  /** Human key label, e.g. "F13" or "Shift+F19". */
-  readonly keyLabel: string;
+/** Shown for a seeded command that has no binding in the resolved config. */
+export const CODEX_MICRO_NOT_BOUND_LABEL = "Not bound";
+
+/**
+ * Human action labels for each seeded command. The KEY/COMMAND pairs live in
+ * the seeding module (`CODEX_MICRO_SEED_LAYOUT`, the single source of truth);
+ * this map only adds the human-facing action copy the panel renders.
+ */
+const CODEX_MICRO_COMMAND_ACTION_LABELS: Partial<Record<KeybindingCommand, string>> = {
+  "agentKey.open.1": "Open recent chat 1",
+  "agentKey.open.2": "Open recent chat 2",
+  "agentKey.open.3": "Open recent chat 3",
+  "agentKey.open.4": "Open recent chat 4",
+  "agentKey.open.5": "Open recent chat 5",
+  "agentKey.open.6": "Open recent chat 6",
+  "approval.accept": "Approve once",
+  "approval.decline": "Decline",
+};
+
+export interface CodexMicroLayoutRow {
   /** Human action label, e.g. "Open recent chat 1". */
   readonly actionLabel: string;
+  /**
+   * The key CURRENTLY bound to the command (which may differ from the seeded
+   * default if the user remapped it), or `CODEX_MICRO_NOT_BOUND_LABEL` when the
+   * command has no binding.
+   */
+  readonly keyLabel: string;
 }
 
-// TODO(codex-micro integration): unify with the seeding module's constant
-// (apps/web/src/codexMicroSeeding.ts, owned by T7) once it exists — this local
-// table mirrors the seeded defaults (f13–f18 → agentKey.open.1..6, f19 →
-// approval.accept, shift+f19 → approval.decline) so the panel can build without
-// a cross-task import dependency.
-export const CODEX_MICRO_SEEDED_LAYOUT: readonly CodexMicroKeyBinding[] = [
-  { keyLabel: "F13", actionLabel: "Open recent chat 1" },
-  { keyLabel: "F14", actionLabel: "Open recent chat 2" },
-  { keyLabel: "F15", actionLabel: "Open recent chat 3" },
-  { keyLabel: "F16", actionLabel: "Open recent chat 4" },
-  { keyLabel: "F17", actionLabel: "Open recent chat 5" },
-  { keyLabel: "F18", actionLabel: "Open recent chat 6" },
-  { keyLabel: "F19", actionLabel: "Approve once" },
-  { keyLabel: "Shift+F19", actionLabel: "Decline" },
-];
+/**
+ * Format a resolved shortcut into a human key label, e.g. `shift+f19` →
+ * `Shift+F19`, `f13` → `F13`. Function keys are upper-cased; every other token
+ * is title-cased so modifiers read naturally.
+ */
+export function formatCodexMicroShortcutLabel(shortcut: KeybindingShortcut): string {
+  const tokens: string[] = [];
+  if (shortcut.modKey) tokens.push("Mod");
+  if (shortcut.metaKey) tokens.push("Meta");
+  if (shortcut.ctrlKey) tokens.push("Ctrl");
+  if (shortcut.altKey) tokens.push("Alt");
+  if (shortcut.shiftKey) tokens.push("Shift");
+  const key = shortcut.key;
+  const keyLabel = /^f\d{1,2}$/i.test(key)
+    ? key.toUpperCase()
+    : key.length === 1
+      ? key.toUpperCase()
+      : key.slice(0, 1).toUpperCase() + key.slice(1);
+  tokens.push(keyLabel);
+  return tokens.join("+");
+}
+
+/**
+ * Build the read-only layout table from the seeded command list + the CURRENT
+ * resolved keybindings (C2). For each seeded command we surface the key it is
+ * actually bound to now — not the static seed default — or "Not bound".
+ */
+export function resolveCodexMicroLayoutRows(
+  resolvedKeybindings: ResolvedKeybindingsConfig,
+): readonly CodexMicroLayoutRow[] {
+  return CODEX_MICRO_SEED_LAYOUT.map((binding) => {
+    const boundRule = resolvedKeybindings.find((rule) => rule.command === binding.command);
+    return {
+      actionLabel: CODEX_MICRO_COMMAND_ACTION_LABELS[binding.command] ?? binding.command,
+      keyLabel: boundRule
+        ? formatCodexMicroShortcutLabel(boundRule.shortcut)
+        : CODEX_MICRO_NOT_BOUND_LABEL,
+    };
+  });
+}
 
 // ── View model ───────────────────────────────────────────────────────
 

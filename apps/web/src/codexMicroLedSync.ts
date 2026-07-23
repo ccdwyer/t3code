@@ -119,6 +119,79 @@ export function ledFramesEqual(left: CodexMicroLedFrame, right: CodexMicroLedFra
   return true;
 }
 
+// ── Host gating (pure) ──────────────────────────────────────────────────
+//
+// The headless `CodexMicroLedSyncHost` owns the React wiring, but the two
+// decisions that matter — "is sync active right now" and "what should the
+// pusher do this render" — are pure, so they live here and are unit-tested
+// without mounting React.
+
+/**
+ * LED sync is active only when the user setting is on, the desktop bridge
+ * exposes the device, AND the device's `ledWrite` capability is proven
+ * `"supported"` (B1). The host refuses to stream frames the hardware can't
+ * take, even though the setting itself stays user-controlled.
+ */
+export function isLedSyncActive(input: {
+  readonly enabled: boolean;
+  readonly bridgePresent: boolean;
+  readonly ledWriteSupported: boolean;
+}): boolean {
+  return input.enabled && input.bridgePresent && input.ledWriteSupported;
+}
+
+export interface LedHostGateInput {
+  /** Result of `isLedSyncActive` for this render. */
+  readonly active: boolean;
+  /** Whether the desktop bridge exposes the codexMicro sub-bridge at all. */
+  readonly bridgePresent: boolean;
+  /** Whether at least one device-state emission has been observed. */
+  readonly deviceStateSeen: boolean;
+  /** Whether the host has driven a live frame at any point (persisted ref). */
+  readonly wasActive: boolean;
+  /** Whether the one-shot cold-disabled all-off has already been pushed. */
+  readonly coldOffDone: boolean;
+}
+
+export interface LedHostGateResult {
+  /** What the pusher should do: send the live frame, force all-off, or nothing. */
+  readonly action: "submit" | "forceOff" | "none";
+  readonly wasActive: boolean;
+  readonly coldOffDone: boolean;
+}
+
+/**
+ * Decide the pusher action for one host render (pure).
+ *
+ *  - Active → submit the live frame; re-arm the cold-off latch.
+ *  - Inactive, bridge present:
+ *    - If we were ever active (setting/capability just turned off), push ONE
+ *      all-off frame so the LEDs never stick.
+ *    - B2 cold-disabled: if we were NEVER active but a device is present and its
+ *      state is known, push ONE all-off frame anyway (a previous app run may
+ *      have left LEDs lit; the device service no-ops when ledWrite is
+ *      unverified, so this is always safe). Latched so it never spams.
+ *    - Before the first device-state emission we don't yet know we're inactive,
+ *      so we wait (avoids a cold-off flash before the capability replay lands on
+ *      a supported device).
+ *  - Inactive, no bridge → nothing to turn off.
+ */
+export function resolveLedHostGate(input: LedHostGateInput): LedHostGateResult {
+  if (input.active) {
+    return { action: "submit", wasActive: true, coldOffDone: false };
+  }
+  if (!input.bridgePresent) {
+    return { action: "none", wasActive: input.wasActive, coldOffDone: input.coldOffDone };
+  }
+  if (!input.deviceStateSeen && !input.wasActive) {
+    return { action: "none", wasActive: input.wasActive, coldOffDone: input.coldOffDone };
+  }
+  if (input.wasActive || !input.coldOffDone) {
+    return { action: "forceOff", wasActive: false, coldOffDone: true };
+  }
+  return { action: "none", wasActive: input.wasActive, coldOffDone: input.coldOffDone };
+}
+
 // ── Coalescing pusher ───────────────────────────────────────────────────
 
 /** Opaque timer handle — whatever the injected `setTimer` returns. */

@@ -14,6 +14,7 @@ import { DEFAULT_RUNTIME_MODE } from "./types";
 import type { AgentKeySlots } from "./agentKeySlots";
 import {
   createLedFramePusher,
+  isLedSyncActive,
   LED_COLOR_AMBER,
   LED_COLOR_BLACK,
   LED_COLOR_EMERALD,
@@ -24,6 +25,7 @@ import {
   LED_SLOT_OFF,
   ledFrameForSlots,
   ledFramesEqual,
+  resolveLedHostGate,
   type CodexMicroLedStatusInput,
 } from "./codexMicroLedSync";
 
@@ -320,5 +322,113 @@ describe("createLedFramePusher — coalescing", () => {
     // Firing a stale timer must do nothing (it was cleared).
     timer.fire();
     expect(pushed).toHaveLength(1);
+  });
+});
+
+// ── Host gating (pure) ──────────────────────────────────────────────────
+
+describe("isLedSyncActive — capability-gated active computation (B1)", () => {
+  it("is active only when the setting, bridge, AND ledWrite support all hold", () => {
+    expect(isLedSyncActive({ enabled: true, bridgePresent: true, ledWriteSupported: true })).toBe(
+      true,
+    );
+  });
+
+  it("is inactive when ledWrite is not supported, even if enabled + bridged", () => {
+    expect(isLedSyncActive({ enabled: true, bridgePresent: true, ledWriteSupported: false })).toBe(
+      false,
+    );
+  });
+
+  it("is inactive when the setting is off", () => {
+    expect(isLedSyncActive({ enabled: false, bridgePresent: true, ledWriteSupported: true })).toBe(
+      false,
+    );
+  });
+
+  it("is inactive when the bridge is absent", () => {
+    expect(isLedSyncActive({ enabled: true, bridgePresent: false, ledWriteSupported: true })).toBe(
+      false,
+    );
+  });
+});
+
+describe("resolveLedHostGate — pusher action per render (B2)", () => {
+  it("active → submit the live frame and mark wasActive", () => {
+    const gate = resolveLedHostGate({
+      active: true,
+      bridgePresent: true,
+      deviceStateSeen: true,
+      wasActive: false,
+      coldOffDone: false,
+    });
+    expect(gate).toEqual({ action: "submit", wasActive: true, coldOffDone: false });
+  });
+
+  it("active re-arms the cold-off latch", () => {
+    const gate = resolveLedHostGate({
+      active: true,
+      bridgePresent: true,
+      deviceStateSeen: true,
+      wasActive: false,
+      coldOffDone: true,
+    });
+    expect(gate.coldOffDone).toBe(false);
+  });
+
+  it("inactive with no bridge → nothing to turn off", () => {
+    const gate = resolveLedHostGate({
+      active: false,
+      bridgePresent: false,
+      deviceStateSeen: true,
+      wasActive: false,
+      coldOffDone: false,
+    });
+    expect(gate.action).toBe("none");
+  });
+
+  it("waits before the first device-state emission (avoids a cold-off flash)", () => {
+    const gate = resolveLedHostGate({
+      active: false,
+      bridgePresent: true,
+      deviceStateSeen: false,
+      wasActive: false,
+      coldOffDone: false,
+    });
+    expect(gate.action).toBe("none");
+    expect(gate.coldOffDone).toBe(false);
+  });
+
+  it("cold-disabled: bridge present, never active, state known → ONE all-off", () => {
+    const gate = resolveLedHostGate({
+      active: false,
+      bridgePresent: true,
+      deviceStateSeen: true,
+      wasActive: false,
+      coldOffDone: false,
+    });
+    expect(gate).toEqual({ action: "forceOff", wasActive: false, coldOffDone: true });
+  });
+
+  it("cold-disabled does not spam once the all-off latch is set", () => {
+    const gate = resolveLedHostGate({
+      active: false,
+      bridgePresent: true,
+      deviceStateSeen: true,
+      wasActive: false,
+      coldOffDone: true,
+    });
+    expect(gate.action).toBe("none");
+  });
+
+  it("turning off after being active → one all-off, even before a fresh emission", () => {
+    const gate = resolveLedHostGate({
+      active: false,
+      bridgePresent: true,
+      deviceStateSeen: false,
+      wasActive: true,
+      coldOffDone: false,
+    });
+    expect(gate).toEqual({ action: "forceOff", wasActive: false, coldOffDone: true });
   });
 });

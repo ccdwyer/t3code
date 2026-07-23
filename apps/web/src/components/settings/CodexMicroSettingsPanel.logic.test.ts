@@ -2,12 +2,18 @@ import type {
   CodexMicroCapabilities,
   CodexMicroCapabilityStatus,
   CodexMicroDeviceState,
+  KeybindingCommand,
+  ResolvedKeybindingRule,
+  ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   CODEX_MICRO_LED_SYNC_UNVERIFIED_NOTE,
-  CODEX_MICRO_SEEDED_LAYOUT,
+  CODEX_MICRO_NOT_BOUND_LABEL,
+  formatCodexMicroShortcutLabel,
+  resolveCodexMicroLayoutRows,
   resolveCodexMicroPanelView,
 } from "./CodexMicroSettingsPanel.logic";
 
@@ -247,20 +253,60 @@ describe("resolveCodexMicroPanelView — unverified note (single, active-only)",
   });
 });
 
-describe("CODEX_MICRO_SEEDED_LAYOUT", () => {
-  it("mirrors the seeded default layout (6 agent keys + accept/decline)", () => {
-    expect(CODEX_MICRO_SEEDED_LAYOUT).toHaveLength(8);
-    expect(CODEX_MICRO_SEEDED_LAYOUT[0]).toEqual({
-      keyLabel: "F13",
-      actionLabel: "Open recent chat 1",
-    });
-    expect(CODEX_MICRO_SEEDED_LAYOUT[6]).toEqual({
-      keyLabel: "F19",
-      actionLabel: "Approve once",
-    });
-    expect(CODEX_MICRO_SEEDED_LAYOUT[7]).toEqual({
-      keyLabel: "Shift+F19",
-      actionLabel: "Decline",
-    });
+function resolvedRule(key: string, command: KeybindingCommand): ResolvedKeybindingRule {
+  const shortcut = parseKeybindingShortcut(key);
+  if (!shortcut) throw new Error(`invalid test key: ${key}`);
+  return { command, shortcut };
+}
+
+describe("formatCodexMicroShortcutLabel", () => {
+  it("upper-cases function keys", () => {
+    expect(formatCodexMicroShortcutLabel(parseKeybindingShortcut("f13")!)).toBe("F13");
+  });
+
+  it("title-cases modifiers and keeps the function key upper-cased", () => {
+    expect(formatCodexMicroShortcutLabel(parseKeybindingShortcut("shift+f19")!)).toBe("Shift+F19");
+  });
+
+  it("upper-cases a single-character key", () => {
+    expect(formatCodexMicroShortcutLabel(parseKeybindingShortcut("ctrl+a")!)).toBe("Ctrl+A");
+  });
+});
+
+describe("resolveCodexMicroLayoutRows", () => {
+  it("shows the seeded default keys when the config still holds them", () => {
+    const config: ResolvedKeybindingsConfig = [
+      resolvedRule("f13", "agentKey.open.1"),
+      resolvedRule("f14", "agentKey.open.2"),
+      resolvedRule("f15", "agentKey.open.3"),
+      resolvedRule("f16", "agentKey.open.4"),
+      resolvedRule("f17", "agentKey.open.5"),
+      resolvedRule("f18", "agentKey.open.6"),
+      resolvedRule("f19", "approval.accept"),
+      resolvedRule("shift+f19", "approval.decline"),
+    ];
+    const rows = resolveCodexMicroLayoutRows(config);
+    expect(rows).toHaveLength(8);
+    expect(rows[0]).toEqual({ keyLabel: "F13", actionLabel: "Open recent chat 1" });
+    expect(rows[6]).toEqual({ keyLabel: "F19", actionLabel: "Approve once" });
+    expect(rows[7]).toEqual({ keyLabel: "Shift+F19", actionLabel: "Decline" });
+  });
+
+  it("reflects a REMAPPED key (bound to a non-default shortcut)", () => {
+    // The user rebound "open recent chat 1" to Ctrl+1.
+    const config: ResolvedKeybindingsConfig = [resolvedRule("ctrl+1", "agentKey.open.1")];
+    const rows = resolveCodexMicroLayoutRows(config);
+    expect(rows[0]).toEqual({ keyLabel: "Ctrl+1", actionLabel: "Open recent chat 1" });
+  });
+
+  it("shows 'Not bound' for a command with no binding in the config", () => {
+    const rows = resolveCodexMicroLayoutRows([]);
+    expect(rows).toHaveLength(8);
+    for (const row of rows) {
+      expect(row.keyLabel).toBe(CODEX_MICRO_NOT_BOUND_LABEL);
+    }
+    // Human action labels are still present even when unbound.
+    expect(rows[0]!.actionLabel).toBe("Open recent chat 1");
+    expect(rows[7]!.actionLabel).toBe("Decline");
   });
 });

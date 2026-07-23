@@ -148,6 +148,20 @@ export const make = Effect.gen(function* () {
     new Set<CodexMicroWriteKind>(),
   );
   const writeSemaphore = yield* Semaphore.make(1);
+  // D1: serializes connection PUBLICATION (the post-open re-check + onConnected)
+  // with every teardown path (connectionLost, suspend, shutdown). Without it,
+  // eager-resume and the poll loop can both observe connectionRef === null, both
+  // open, both pass the post-open re-check, and overwrite each other — leaking a
+  // handle; a suspend can also land between the re-check and onConnected.
+  //
+  // NOTE: the blocking `transport.open` is deliberately OUTSIDE this mutex. The
+  // mutex guards only the fast critical section that mutates connectionRef, so a
+  // suspend/teardown never has to wait on in-flight I/O to run (holding the lock
+  // across `open` would let a slow open block teardown and strand the device
+  // connected-while-suspended). Two concurrent opens still can't leak: both open
+  // handles, then serialize here — the first publishes, the second sees an
+  // existing connection and closes its own handle.
+  const lifecycleSemaphore = yield* Semaphore.make(1);
   const wake = yield* Queue.unbounded<void>();
   const events = yield* Queue.unbounded<CodexMicroInternalEvent>();
 
@@ -352,20 +366,25 @@ export const make = Effect.gen(function* () {
         }
         return transport.open(match).pipe(
           Effect.flatMap((connection) =>
-            Effect.gen(function* () {
-              // `open` is async: re-check the world once it resolves. If we were
-              // closed/suspended, or another connection won the race meanwhile,
-              // close this just-opened handle instead of leaking it.
-              const closed = yield* Ref.get(closedRef);
-              const suspended = yield* Ref.get(suspendedRef);
-              const existing = yield* Ref.get(connectionRef);
-              if (closed || suspended || existing !== null) {
-                yield* connection.close;
-                return false;
-              }
-              yield* onConnected(connection);
-              return true;
-            }),
+            // Publication critical section — atomic vs teardown/suspend (D1).
+            lifecycleSemaphore.withPermits(1)(
+              Effect.gen(function* () {
+                // `open` is async: re-check the world once it resolves, now under
+                // the mutex so a suspend/teardown queued while `open` was in
+                // flight is observed here. If we were closed/suspended, or
+                // another connection won the race meanwhile, close this
+                // just-opened handle instead of leaking it.
+                const closed = yield* Ref.get(closedRef);
+                const suspended = yield* Ref.get(suspendedRef);
+                const existing = yield* Ref.get(connectionRef);
+                if (closed || suspended || existing !== null) {
+                  yield* connection.close;
+                  return false;
+                }
+                yield* onConnected(connection);
+                return true;
+              }),
+            ),
           ),
           Effect.catchTags({
             CodexMicroTransportError: (error) =>
@@ -443,28 +462,44 @@ export const make = Effect.gen(function* () {
   const handleEvent = (event: CodexMicroInternalEvent): Effect.Effect<void> => {
     switch (event._tag) {
       case "connectionLost":
-        return Effect.gen(function* () {
-          const current = yield* Ref.get(connectionRef);
-          if (current !== event.connection) {
-            // A delayed/duplicate loss for a handle that is no longer current.
-            // Ignore it — the current handle is a different, live connection.
-            yield* Effect.logDebug("codex-micro ignoring stale connectionLost");
-            return;
-          }
-          yield* handleConnectionLoss;
-        });
+        // Teardown path — serialized vs publication (D1). The identity check and
+        // the teardown are atomic so a concurrent open can't publish between
+        // them.
+        return lifecycleSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(connectionRef);
+            if (current !== event.connection) {
+              // A delayed/duplicate loss for a handle that is no longer current.
+              // Ignore it — the current handle is a different, live connection.
+              yield* Effect.logDebug("codex-micro ignoring stale connectionLost");
+              return;
+            }
+            yield* handleConnectionLoss;
+          }),
+        );
       case "suspend":
-        return Effect.gen(function* () {
-          yield* Ref.set(suspendedRef, true);
-          yield* teardownConnection;
-          if (!(yield* Ref.get(closedRef))) {
-            yield* setState(toDisconnected);
-          }
-        });
+        // Teardown path — serialized vs publication (D1).
+        return lifecycleSemaphore.withPermits(1)(
+          Effect.gen(function* () {
+            yield* Ref.set(suspendedRef, true);
+            yield* teardownConnection;
+            if (!(yield* Ref.get(closedRef))) {
+              yield* setState(toDisconnected);
+            }
+          }),
+        );
       case "resume":
         return Effect.gen(function* () {
-          yield* Ref.set(suspendedRef, false);
-          yield* Ref.set(backoffRef, config.discoveryIntervalMillis);
+          // D1 DEADLOCK NOTE: update the lifecycle refs UNDER the mutex, then
+          // release BEFORE calling attemptDiscovery (which acquires the mutex
+          // itself). Calling it while holding the (non-reentrant) mutex would
+          // deadlock.
+          yield* lifecycleSemaphore.withPermits(1)(
+            Effect.gen(function* () {
+              yield* Ref.set(suspendedRef, false);
+              yield* Ref.set(backoffRef, config.discoveryIntervalMillis);
+            }),
+          );
           if (yield* Ref.get(closedRef)) {
             return;
           }
@@ -495,7 +530,9 @@ export const make = Effect.gen(function* () {
     if (alreadyClosed) {
       return;
     }
-    yield* teardownConnection;
+    // Teardown path — serialized vs publication (D1) so shutdown can't race a
+    // concurrent open into a leaked handle.
+    yield* lifecycleSemaphore.withPermits(1)(teardownConnection);
     yield* setState(toClosed);
     // Unblock the loops so their `closedRef` checks let them exit. The event
     // payload is irrelevant — the loop returns before handling it.

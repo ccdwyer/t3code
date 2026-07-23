@@ -150,30 +150,116 @@ export function runPackagedNodeHidLoadCheck(
 }
 
 /**
- * Full packaging gate: locate packaged `app.asar.unpacked` directories and
- * run the native-load check against each one found.
- *
- * Returns `{ ran, ok, message }`. `ran: false` means no packaged artifact
- * exists in this environment — not a failure, since packaging is a separate
- * (often CI-only or human-run) build step. `ran: true, ok: false` means an
- * artifact was found and node-hid failed to load from it — a real failure.
+ * Classify a packaged artifact path by CPU arch from electron-builder's output
+ * dir naming (e.g. `mac-arm64`, `mac-x64`, `linux-arm64-unpacked`,
+ * `win-arm64-unpacked`). Returns `"arm64"` | `"x64"`, or `null` when the path
+ * carries no arch marker — electron-builder's DEFAULT (host-arch) output dirs
+ * (`mac`, `linux-unpacked`, `win-unpacked`) have none, so an unmarked tree is
+ * treated as host-arch and always attempted.
  */
-export function checkPackagedNodeHidLoad({ env = process.env, spawnSync } = {}) {
-  const roots = resolveReleaseSearchRoots(env);
-  const unpackedDirs = findAppAsarUnpackedDirs(roots);
+export function archForArtifactPath(artifactPath) {
+  const lower = artifactPath.toLowerCase();
+  if (lower.includes("arm64") || lower.includes("aarch64")) {
+    return "arm64";
+  }
+  if (lower.includes("x64") || lower.includes("x86_64") || lower.includes("amd64")) {
+    return "x64";
+  }
+  return null;
+}
 
-  if (unpackedDirs.length === 0) {
+/** Normalize `process.arch` to the `arm64`/`x64` vocabulary used in dir names. */
+export function resolveHostArch(arch = process.arch) {
+  if (arch === "arm64") {
+    return "arm64";
+  }
+  if (arch === "x64") {
+    return "x64";
+  }
+  return arch;
+}
+
+/**
+ * Strict (fail-closed) mode: when on, "no loadable artifact for this host" is a
+ * FAILURE rather than a soft skip. Enabled by `T3_REQUIRE_PACKAGED_NATIVE_CHECK`
+ * (1/true/yes) — wired into the release workflow, where every matrix runner
+ * MUST have produced a host-arch artifact by this point.
+ */
+export function isStrictModeFromEnv(env = process.env) {
+  const raw = (env.T3_REQUIRE_PACKAGED_NATIVE_CHECK ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+/**
+ * Full packaging gate: locate packaged `app.asar.unpacked` directories, filter
+ * out foreign-arch trees (E2 — host Node can't load a cross-arch prebuild), and
+ * run the native-load check against each host-arch one found.
+ *
+ * Returns `{ ran, ok, message }`.
+ *  - `ran: false, ok: true`  — no host-arch artifact exists (soft skip; the
+ *    default outside a release build).
+ *  - `ran: false, ok: false` — STRICT mode and no host-arch artifact (E1).
+ *  - `ran: true,  ok: false` — an artifact was found and node-hid failed to load.
+ *  - `ran: true,  ok: true`  — node-hid loaded from every host-arch artifact.
+ *
+ * `hostArch` and `requireArtifact` are injectable for tests; they default to
+ * `process.arch` and the `T3_REQUIRE_PACKAGED_NATIVE_CHECK` env var.
+ */
+export function checkPackagedNodeHidLoad({
+  env = process.env,
+  spawnSync,
+  hostArch,
+  requireArtifact,
+} = {}) {
+  const roots = resolveReleaseSearchRoots(env);
+  const allUnpackedDirs = findAppAsarUnpackedDirs(roots);
+  const resolvedHostArch = hostArch ?? resolveHostArch();
+  const strict = requireArtifact ?? isStrictModeFromEnv(env);
+
+  // E2: keep only host-arch (or arch-agnostic) trees; skip foreign-arch ones.
+  const runnableDirs = [];
+  const skippedNotes = [];
+  for (const unpackedDir of allUnpackedDirs) {
+    const arch = archForArtifactPath(unpackedDir);
+    if (arch !== null && arch !== resolvedHostArch) {
+      skippedNotes.push(
+        `${unpackedDir}: built for ${arch}, host is ${resolvedHostArch} — skipped (host-Node cannot load a cross-arch native prebuild; verify it on a ${arch} runner).`,
+      );
+      continue;
+    }
+    runnableDirs.push(unpackedDir);
+  }
+
+  const skippedSection =
+    skippedNotes.length > 0
+      ? ["Skipped foreign-arch artifacts:", ...skippedNotes.map((line) => ` - ${line}`)]
+      : [];
+
+  if (runnableDirs.length === 0) {
+    if (strict) {
+      return {
+        ran: false,
+        ok: false,
+        message: [
+          `Packaged node-hid native-load check REQUIRED (strict mode) but no loadable ${resolvedHostArch} artifact was found under ${roots.join(", ")}. Build the desktop artifact for this host first.`,
+          ...skippedSection,
+        ].join("\n"),
+      };
+    }
     return {
       ran: false,
       ok: true,
-      message: `No packaged desktop artifact found under ${roots.join(", ")} — skipping the packaged node-hid native-load check. Build one first (e.g. \`vp exec --filter scripts -- tsx scripts/build-desktop-artifact.ts\`), then re-run this check to actually exercise it.`,
+      message: [
+        `No packaged desktop artifact found under ${roots.join(", ")} — skipping the packaged node-hid native-load check. Build one first (e.g. \`vp exec --filter scripts -- tsx scripts/build-desktop-artifact.ts\`), then re-run this check to actually exercise it.`,
+        ...skippedSection,
+      ].join("\n"),
     };
   }
 
   const failures = [];
   const successes = [];
 
-  for (const unpackedDir of unpackedDirs) {
+  for (const unpackedDir of runnableDirs) {
     const entryUrl = resolvePackagedNodeHidEntryUrl(unpackedDir);
     if (!entryUrl) {
       failures.push(
@@ -199,6 +285,7 @@ export function checkPackagedNodeHidLoad({ env = process.env, spawnSync } = {}) 
         "Packaged node-hid native-load check FAILED:",
         ...failures.map((line) => ` - ${line}`),
         ...(successes.length > 0 ? ["Passed:", ...successes.map((line) => ` - ${line}`)] : []),
+        ...skippedSection,
       ].join("\n"),
     };
   }
@@ -209,6 +296,7 @@ export function checkPackagedNodeHidLoad({ env = process.env, spawnSync } = {}) 
     message: [
       "Packaged node-hid native-load check passed:",
       ...successes.map((line) => ` - ${line}`),
+      ...skippedSection,
     ].join("\n"),
   };
 }
@@ -222,7 +310,10 @@ const isMainModule = (() => {
 })();
 
 if (isMainModule) {
-  const result = checkPackagedNodeHidLoad();
+  // Strict mode via env (T3_REQUIRE_PACKAGED_NATIVE_CHECK) OR the
+  // `--require-artifact` flag; either makes a missing host-arch artifact fail.
+  const requireArtifact = process.argv.includes("--require-artifact") || isStrictModeFromEnv();
+  const result = checkPackagedNodeHidLoad({ requireArtifact });
   console.log(result.message);
   process.exit(result.ok ? 0 : 1);
 }

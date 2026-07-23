@@ -861,4 +861,52 @@ describe("CodexMicroDevice", () => {
       ),
     );
   });
+
+  // D1/D2: two discovery attempts that both open concurrently must not leak a
+  // handle. The publication mutex lets exactly one win; the loser closes its own
+  // just-opened handle. Asserted as openCount === closeCount + 1 (one net-live).
+  it.effect("concurrent discovery attempts: exactly one open wins, no leaked handles", () => {
+    const transport = makeFakeTransport([matchingDevice]);
+    const power = makeFakePowerMonitor();
+    return Effect.scoped(
+      Effect.gen(function* () {
+        // Gate every open BEFORE start so both attempts stack up in flight.
+        const openGate = yield* Deferred.make<void>();
+        transport.state.openGate = openGate;
+
+        const device = yield* makeCodexMicroDevice;
+        const seen = yield* trackStates(device.changes);
+        // Fork start: its eager attempt opens and blocks on the gated open
+        // (outside the lifecycle mutex), so the mutex stays free.
+        yield* Effect.forkScoped(device.start);
+        yield* waitUntil(() => transport.state.openStarted === 1, "first open in flight");
+
+        // A resume fires a SECOND concurrent attempt while the first open is
+        // still blocked — connectionRef is still null so it passes the pre-open
+        // guard and opens its own handle.
+        power.triggerResume();
+        yield* waitUntil(() => transport.state.openStarted === 2, "second open in flight");
+
+        // Release both opens; the publication mutex serializes their re-checks.
+        yield* Deferred.succeed(openGate, undefined);
+        yield* waitUntil(() => transport.state.openCount === 2, "both opens resolved");
+        yield* waitUntil(
+          () => transport.state.closeCount === 1,
+          "loser closed its own handle (none leaked)",
+        );
+        yield* Effect.yieldNow;
+        yield* Effect.yieldNow;
+
+        // Exactly one net-live connection, and the winner is connected.
+        assert.strictEqual(transport.state.openCount, transport.state.closeCount + 1);
+        const state = yield* device.getState;
+        assert.strictEqual(state.state, "connected");
+        assert.isFalse(seen.some((observed) => observed.state === "closed"));
+      }),
+    ).pipe(
+      Effect.provide(
+        harnessLayer({ transport: transport.layer, power: power.layer, config: makeConfig() }),
+      ),
+    );
+  });
 });

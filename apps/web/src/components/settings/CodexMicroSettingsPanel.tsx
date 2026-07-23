@@ -1,21 +1,23 @@
 import { ExternalLinkIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { useAtomValue } from "@effect/atom-react";
 
 import type { CodexMicroDeviceState, DesktopCodexMicroBridge } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 
 import { ensureLocalApi } from "../../localApi";
 import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import {
   CODEX_MICRO_FEATURE_UNAVAILABLE_MESSAGE,
   CODEX_MICRO_FOCUS_NOTICE,
-  CODEX_MICRO_SEEDED_LAYOUT,
   CODEX_MICRO_UNVERIFIED_NOTE,
   CODEX_MICRO_VIA_URL,
+  resolveCodexMicroLayoutRows,
   resolveCodexMicroPanelView,
 } from "./CodexMicroSettingsPanel.logic";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
@@ -66,6 +68,14 @@ export function CodexMicroSettingsPanel() {
   const agentKeysSource = useClientSettings((settings) => settings.codexMicroAgentKeysSource);
   const updateSettings = useUpdateClientSettings();
 
+  // C2: the layout table shows the CURRENT key bound to each seeded command
+  // (which may differ from the seed default, or be unbound), not a static table.
+  const resolvedKeybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const layoutRows = useMemo(
+    () => resolveCodexMicroLayoutRows(resolvedKeybindings),
+    [resolvedKeybindings],
+  );
+
   const view = useMemo(
     () => resolveCodexMicroPanelView({ bridgePresent: bridge !== undefined, deviceState }),
     [bridge, deviceState],
@@ -94,8 +104,15 @@ export function CodexMicroSettingsPanel() {
     [updateSettings],
   );
 
+  // C3: pointerup and the following blur both fire a commit with the same value.
+  // Dedupe so we only push the brightness IPC once per distinct value.
+  const lastCommittedBrightnessRef = useRef<number | null>(null);
   const commitBrightness = useCallback(
     (next: number) => {
+      if (lastCommittedBrightnessRef.current === next) {
+        return;
+      }
+      lastCommittedBrightnessRef.current = next;
       void bridge
         ?.setBrightness(next)
         .catch((error: unknown) => logBridgeError("setBrightness", error));
@@ -225,15 +242,15 @@ export function CodexMicroSettingsPanel() {
         >
           <div className="pt-1 pb-3.5">
             <ul className="space-y-1.5">
-              {CODEX_MICRO_SEEDED_LAYOUT.map((binding) => (
+              {layoutRows.map((row) => (
                 <li
-                  key={binding.keyLabel}
+                  key={row.actionLabel}
                   className="flex items-center gap-2 text-xs text-muted-foreground"
                 >
                   <kbd className="min-w-14 rounded-sm border bg-surface-raised px-1.5 py-0.5 text-center font-mono text-[11px] text-foreground">
-                    {binding.keyLabel}
+                    {row.keyLabel}
                   </kbd>
-                  <span>{binding.actionLabel}</span>
+                  <span>{row.actionLabel}</span>
                 </li>
               ))}
             </ul>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useShallow } from "zustand/react/shallow";
 
@@ -9,7 +9,9 @@ import {
 } from "./agentKeySlots";
 import {
   createLedFramePusher,
+  isLedSyncActive,
   ledFrameForSlots,
+  resolveLedHostGate,
   type CodexMicroLedStatusInput,
   type LedFramePusher,
 } from "./codexMicroLedSync";
@@ -29,9 +31,10 @@ import { useUiStateStore } from "./uiStateStore";
 //     → coalesced push to DesktopBridge.codexMicro.setAgentKeyColors
 //
 // Renders nothing. Mount ONCE, high in the authenticated app tree (see the
-// mount note at the bottom of this file). Gated by both the desktop bridge's
-// presence AND the `codexMicroLedSyncEnabled` client setting; when either is
-// off it pushes a single all-off frame and stops.
+// mount note at the bottom of this file). Gated by the desktop bridge's
+// presence, the `codexMicroLedSyncEnabled` client setting, AND the device's
+// `ledWrite === "supported"` capability (B1); when it is inactive it pushes a
+// single all-off frame (incl. the cold-disabled case, B2) and stops.
 
 function codexMicroBridge() {
   if (typeof window === "undefined") return undefined;
@@ -106,11 +109,40 @@ export function CodexMicroLedSyncHost(): null {
 
   const frame = useMemo(() => ledFrameForSlots(slots, statusInputByKey), [slots, statusInputByKey]);
 
-  // One stable pusher for the component's lifetime. The push sink resolves the
-  // bridge lazily each time (absent bridge ⇒ silent no-op).
+  // B1: subscribe to the device state so `active` can also require a proven
+  // `ledWrite` capability. Replay-on-subscribe delivers the current state as
+  // the first emission, so `deviceStateSeen` flips almost immediately.
+  const [ledWriteSupported, setLedWriteSupported] = useState(false);
+  const [deviceStateSeen, setDeviceStateSeen] = useState(false);
+  useEffect(() => {
+    const bridge = codexMicroBridge();
+    if (!bridge) {
+      // No device: treat the state as "known" so the cold-off path can settle,
+      // but keep the capability false (nothing to stream to).
+      setLedWriteSupported(false);
+      return;
+    }
+    const unsubscribe = bridge.onStateChange((state) => {
+      setLedWriteSupported(state.capabilities.ledWrite === "supported");
+      setDeviceStateSeen(true);
+    });
+    return unsubscribe;
+  }, []);
+
+  const bridgePresent = codexMicroBridge() !== undefined;
+  const active = isLedSyncActive({ enabled, bridgePresent, ledWriteSupported });
+
+  // Persisted host latches, read/written by the pure gate (`resolveLedHostGate`).
+  const wasActiveRef = useRef(false);
+  const coldOffDoneRef = useRef(false);
+
+  // B3: the pusher is created and OWNED inside this effect (no render-time side
+  // effects), so a StrictMode remount recreates a fresh pusher instead of
+  // reusing a permanently-nulled ref. The push sink resolves the bridge lazily
+  // each time (absent bridge ⇒ silent no-op).
   const pusherRef = useRef<LedFramePusher | null>(null);
-  if (pusherRef.current === null) {
-    pusherRef.current = createLedFramePusher({
+  useEffect(() => {
+    const pusher = createLedFramePusher({
       push: (nextFrame) => {
         void codexMicroBridge()
           ?.setAgentKeyColors(nextFrame)
@@ -120,49 +152,44 @@ export function CodexMicroLedSyncHost(): null {
           });
       },
     });
-  }
-  useEffect(() => {
+    pusherRef.current = pusher;
     return () => {
-      pusherRef.current?.dispose();
+      // Unmount is gate-off too (sign-out, auth drop): the hardware must not
+      // keep the last lit frame. forceOff pushes one all-off frame (bypassing
+      // the coalescing window), then dispose cancels any pending timer.
+      if (wasActiveRef.current) {
+        pusher.forceOff();
+      }
+      pusher.dispose();
       pusherRef.current = null;
+      wasActiveRef.current = false;
+      coldOffDoneRef.current = false;
     };
   }, []);
-
-  // Active only when the desktop bridge exposes the device AND the setting is on.
-  const active = enabled && codexMicroBridge() !== undefined;
-  const wasActiveRef = useRef(false);
 
   useEffect(() => {
     const pusher = pusherRef.current;
     if (pusher === null) return;
-    if (active) {
-      wasActiveRef.current = true;
+    const gate = resolveLedHostGate({
+      active,
+      bridgePresent,
+      deviceStateSeen,
+      wasActive: wasActiveRef.current,
+      coldOffDone: coldOffDoneRef.current,
+    });
+    wasActiveRef.current = gate.wasActive;
+    coldOffDoneRef.current = gate.coldOffDone;
+    if (gate.action === "submit") {
       pusher.submit(frame);
-      return;
-    }
-    // Gating just turned off (or was never on): push one all-off frame so the
-    // LEDs never stick, then stop.
-    if (wasActiveRef.current) {
-      wasActiveRef.current = false;
+    } else if (gate.action === "forceOff") {
       pusher.forceOff();
     }
-  }, [active, frame]);
+  }, [active, frame, bridgePresent, deviceStateSeen]);
 
   return null;
 }
 
-// ── MOUNT INSTRUCTION (integration step — a later task owns this edit) ───
-//
-// Add ONE line beside the other authenticated headless hosts in
-// apps/web/src/routes/__root.tsx (next to `<EventRouter />`, ~line 136):
-//
-//     {primaryEnvironmentAuthenticated ? <CodexMicroLedSyncHost /> : null}
-//
-// Providers/data it needs (all already in scope at that mount point):
-//   - the @effect/atom registry (RegistryProvider) — for `useThreadShells()`;
-//   - the global zustand stores (uiStateStore, agentKeySlots) — no provider;
-//   - client settings (useClientSettings / useSettings hook) — no provider;
-//   - `window.desktopBridge` — set by the desktop preload; absent on web ⇒ inert.
-// No new props or wiring are required. If a future task (T7) also mounts a
-// ranking feed via `setAgentKeyRankedThreads`, keep exactly ONE owner of that
-// call to avoid redundant recomputes (this host is a fine owner).
+// Mounted once via `CodexMicroHost` in apps/web/src/routes/__root.tsx (gated on
+// primaryEnvironmentAuthenticated), which also runs the keybinding seeding
+// hook. This host is the single owner of the `setAgentKeyRankedThreads`
+// ranking feed — keep exactly one owner to avoid redundant recomputes.

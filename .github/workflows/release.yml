@@ -533,6 +533,12 @@ jobs:
           AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          # Codex Micro packaging gate: the build script runs the packaged
+          # node-hid native-load check against its STAGING dist dir (the only
+          # place the unpacked app tree exists) and fails the build if the
+          # host-arch artifact is missing or node-hid cannot load. Each matrix
+          # runner covers its own arch; together they cover arm64 + x64.
+          T3_REQUIRE_PACKAGED_NATIVE_CHECK: "1"
         run: |
           args=(
             --platform "${{ matrix.platform }}"
@@ -596,18 +602,6 @@ jobs:
           fi
 
           vp run dist:desktop:artifact "${args[@]}"
-
-      # Codex Micro packaging gate: verify node-hid's native binding actually
-      # loads from the freshly-built, unpacked artifact. Strict (fail-closed):
-      # this runner MUST have produced a host-arch artifact by now, so a missing
-      # or unloadable one fails the build. The check filters to the host arch, so
-      # each matrix runner verifies its own (arm64 / x64) prebuild — together
-      # they cover the spec's arm64 + x64 gate.
-      - name: Verify packaged node-hid native load (Codex Micro)
-        shell: bash
-        env:
-          T3_REQUIRE_PACKAGED_NATIVE_CHECK: "1"
-        run: node apps/desktop/scripts/packaged-native-load-check.mjs --require-artifact
 
       - name: Collect release assets
         shell: bash

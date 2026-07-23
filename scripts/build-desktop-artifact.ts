@@ -2078,6 +2078,33 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     });
   }
 
+  // Codex Micro packaging gate: electron-builder's unpacked app tree
+  // (`app.asar.unpacked`, containing the node-hid prebuilds) exists only in
+  // the STAGING dist dir — the output dir above receives flat artifact FILES
+  // only, and staging is deleted afterward. So the packaged native-load check
+  // must run here, against staging, before cleanup. Opt-in via the env var
+  // the release workflow sets; a missing host-arch tree or an unloadable
+  // node-hid fails the build.
+  const nativeCheckStrict = (process.env["T3_REQUIRE_PACKAGED_NATIVE_CHECK"] ?? "")
+    .trim()
+    .toLowerCase();
+  if (nativeCheckStrict === "1" || nativeCheckStrict === "true" || nativeCheckStrict === "yes") {
+    yield* runCommand(
+      ChildProcess.make(
+        "node",
+        [
+          path.join(repoRoot, "apps", "desktop", "scripts", "packaged-native-load-check.mjs"),
+          "--require-artifact",
+        ],
+        {
+          cwd: repoRoot,
+          env: { ...process.env, T3CODE_DESKTOP_RELEASE_DIR: stageDistDir },
+        },
+      ),
+      { label: "packaged node-hid native-load check (staging)", verbose: options.verbose },
+    );
+  }
+
   yield* Effect.log("[desktop-artifact] Done. Artifacts:").pipe(
     Effect.annotateLogs({ artifacts: copiedArtifacts }),
   );

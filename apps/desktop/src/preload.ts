@@ -255,7 +255,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       // once any push has been delivered a later-resolving snapshot must be
       // dropped rather than clobber the newer push.
       let pushDelivered = false;
+      // Disposed latch: once unsubscribed, NOTHING may invoke the listener —
+      // in particular a still-outstanding snapshot promise resolving after
+      // teardown (which could otherwise re-trigger subscribers, e.g. the
+      // keybinding seeding path, after their host unmounted).
+      let disposed = false;
       const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
+        if (disposed) return;
         if (typeof state !== "object" || state === null) return;
         pushDelivered = true;
         listener(state as CodexMicroDeviceState);
@@ -268,7 +274,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       void ipcRenderer
         .invoke(IpcChannels.CODEX_MICRO_GET_STATE_CHANNEL)
         .then((state) => {
-          if (pushDelivered) return;
+          if (disposed || pushDelivered) return;
           if (typeof state !== "object" || state === null) return;
           pushDelivered = true;
           listener(state as CodexMicroDeviceState);
@@ -277,6 +283,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
           // Snapshot request failed; future pushes still reach the listener.
         });
       return () => {
+        disposed = true;
         ipcRenderer.removeListener(IpcChannels.CODEX_MICRO_STATE_CHANNEL, wrappedListener);
       };
     },

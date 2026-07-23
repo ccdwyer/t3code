@@ -689,6 +689,123 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("getThreadShellById returns none for hidden threads; detail stays readable", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-hidden-shell-test',
+          'Hidden Shell Test',
+          '/tmp/hidden-shell-test',
+          '{"provider":"codex","model":"gpt-5-codex"}',
+          '[]',
+          '2026-04-07T01:00:00.000Z',
+          '2026-04-07T01:00:01.000Z',
+          NULL
+        )
+      `;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          branch,
+          worktree_path,
+          latest_turn_id,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          archived_at,
+          deleted_at,
+          hidden
+        )
+        VALUES
+          (
+            'thread-shell-visible',
+            'project-hidden-shell-test',
+            'Visible Thread',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-04-07T01:00:02.000Z',
+            '2026-04-07T01:00:03.000Z',
+            NULL,
+            NULL,
+            0
+          ),
+          (
+            'thread-shell-hidden',
+            'project-hidden-shell-test',
+            'Workflow dispatch',
+            '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-04-07T01:00:04.000Z',
+            '2026-04-07T01:00:05.000Z',
+            NULL,
+            NULL,
+            1
+          )
+      `;
+
+      // The live shell stream refetches through getThreadShellById; a hidden
+      // (workflow-dispatch) thread must read as absent so the stream emits
+      // thread-removed instead of leaking an upsert to sidebar/agent-key
+      // consumers. Detail lookup stays unfiltered for the ticket drawer.
+      const visibleShell = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-shell-visible"),
+      );
+      assert.equal(visibleShell._tag, "Some");
+
+      const hiddenShell = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-shell-hidden"),
+      );
+      assert.equal(hiddenShell._tag, "None", "hidden thread must not resolve to a shell");
+
+      const hiddenDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-shell-hidden"),
+      );
+      assert.equal(hiddenDetail._tag, "Some", "hidden thread detail must stay readable");
+    }),
+  );
+
   it.effect("keeps settled threads in the shell snapshot with non-null settlement fields", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

@@ -2054,7 +2054,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
-      const [threadRow, latestTurnRow, sessionRow] = yield* Effect.all([
+      const [threadRow, threadHidden, latestTurnRow, sessionRow] = yield* Effect.all([
         getActiveThreadRowById({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -2063,6 +2063,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
+        isThreadHidden(threadId),
         getLatestTurnRowByThread({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
@@ -2081,7 +2082,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ]);
 
-      if (Option.isNone(threadRow)) {
+      // Hidden (workflow-dispatch) threads must never surface as shells: the
+      // full snapshot already excludes them, and returning `none` here makes
+      // the live stream's refetch emit `thread-removed` instead of leaking a
+      // `thread-upserted` for a thread the sidebar/agent-key ranking should
+      // never see. Thread DETAIL stays unfiltered (the ticket drawer reads it).
+      if (Option.isNone(threadRow) || threadHidden) {
         return Option.none<OrchestrationThreadShell>();
       }
 

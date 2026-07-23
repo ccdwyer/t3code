@@ -36,7 +36,7 @@ export function TicketArtifacts({
   };
 
   return (
-    <section className="rounded-md border border-border/70 bg-card/35 p-3">
+    <section className="shrink-0 rounded-md border border-border/70 bg-card/35 p-3">
       <details
         onToggle={(event) => {
           if ((event.currentTarget as HTMLDetailsElement).open) {

@@ -48,15 +48,25 @@ function upsertById<T extends { readonly id: unknown }>(
  * Read-only view of the hidden orchestration thread behind an agent step —
  * the full conversation (instruction, assistant replies) plus the activity
  * log. Total transparency into what the agent actually did.
+ *
+ * Used both as a per-step control in the step list and as the ticket-header
+ * "Open conversation" entry when a board card is selected.
  */
 export function AgentSessionDialog({
   api,
   threadId,
   stepKey,
+  label = "View agent session",
+  title = "View the agent's full session for this step",
+  testId,
 }: {
   readonly api: EnvironmentApi | null | undefined;
   readonly threadId: ThreadId;
   readonly stepKey: string;
+  /** Trigger button label. Header uses "Open conversation". */
+  readonly label?: string | undefined;
+  readonly title?: string | undefined;
+  readonly testId?: string | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const [session, setSession] = useState<SessionState | null>(null);
@@ -124,14 +134,15 @@ export function AgentSessionDialog({
         size="xs"
         variant="outline"
         disabled={!api}
-        title="View the agent's full session for this step"
+        title={title}
+        data-testid={testId}
         onClick={(event) => {
           event.stopPropagation();
           setOpen(true);
         }}
       >
         <MessagesSquareIcon className="size-3.5" />
-        View agent session
+        {label}
       </Button>
       <DialogPopup className="max-h-[calc(100dvh-2rem)] max-w-3xl overflow-hidden">
         <div className="flex min-h-0 flex-col">

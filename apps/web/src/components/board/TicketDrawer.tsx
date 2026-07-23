@@ -41,6 +41,7 @@ import { readFileAsDataUrl } from "../ChatView.logic";
 import ChatMarkdown from "../ChatMarkdown";
 import { AgentSessionDialog } from "./AgentSessionDialog";
 import { MarkdownComposerField } from "./MarkdownComposerField";
+import { pickAgentConversationStep } from "./pickAgentConversationStep";
 import { TicketArtifacts } from "./TicketArtifacts";
 import { StepActivityFeed } from "./StepActivityFeed";
 import { dispatchParkAction, splitParkActions } from "./TicketCard";
@@ -237,6 +238,11 @@ export function TicketDrawer({
     readonly message: string;
   } | null>(null);
   const waitingStepCount = detail.steps.filter((step) => step.status === "awaiting_user").length;
+  // Board cards select a ticket into this drawer; when that ticket has an agent
+  // dispatch thread, surface "Open conversation" in the header so the user
+  // doesn't have to dig into the step list (those threads are hidden from the
+  // main threads sidebar).
+  const conversationStep = pickAgentConversationStep(detail.steps);
   const currentLane = lanes.find((lane) => lane.key === detail.ticket.currentLaneKey) ?? null;
   const laneActions = currentLane?.actions ?? [];
   // A parked ticket is non-admitted (no lane entry token), so the server's
@@ -416,6 +422,16 @@ export function TicketDrawer({
               </Badge>
             ) : null}
             <div className="flex items-center gap-1.5">
+              {conversationStep !== null ? (
+                <AgentSessionDialog
+                  api={api}
+                  threadId={ThreadId.make(conversationStep.threadId)}
+                  stepKey={conversationStep.stepKey}
+                  label="Open conversation"
+                  title={`Open conversation for step ${conversationStep.stepKey}`}
+                  testId="ticket-open-conversation"
+                />
+              ) : null}
               {!sourceOwned && !fullscreen ? (
                 <Button
                   size="xs"
@@ -470,6 +486,7 @@ export function TicketDrawer({
         <TicketFullscreen
           api={api}
           detail={detail}
+          conversationStep={conversationStep}
           lanes={lanes}
           laneDisplayName={laneDisplayName}
           laneActions={laneActions}
@@ -1547,6 +1564,7 @@ interface TicketFullscreenApprovalState {
 export function TicketFullscreen({
   api,
   detail,
+  conversationStep = null,
   lanes,
   laneDisplayName,
   laneActions,
@@ -1574,6 +1592,7 @@ export function TicketFullscreen({
 }: {
   readonly api?: EnvironmentApi | undefined;
   readonly detail: TicketDrawerDetail;
+  readonly conversationStep?: { readonly stepKey: string; readonly threadId: string } | null;
   readonly lanes: ReadonlyArray<TicketDrawerLane>;
   readonly laneDisplayName: (key: string) => string;
   readonly laneActions: ReadonlyArray<TicketDrawerLaneAction>;
@@ -1645,6 +1664,16 @@ export function TicketFullscreen({
               waiting on you
             </Badge>
           ) : null}
+          {conversationStep !== null ? (
+            <AgentSessionDialog
+              api={api}
+              threadId={ThreadId.make(conversationStep.threadId)}
+              stepKey={conversationStep.stepKey}
+              label="Open conversation"
+              title={`Open conversation for step ${conversationStep.stepKey}`}
+              testId="ticket-open-conversation"
+            />
+          ) : null}
           {!sourceOwned && onStartEdit ? (
             <Button size="xs" variant="outline" disabled={!onEditTicket} onClick={onStartEdit}>
               <PencilIcon className="size-3.5" />
@@ -1678,8 +1707,10 @@ export function TicketFullscreen({
         />
       ) : null}
 
-      {/* Body — two-column on wide screens */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto lg:flex-row">
+      {/* Body — two-column on wide screens. Columns own their scroll; the
+          outer shell stays overflow-hidden so a tall right-column diff cannot
+          push lane controls into an overlapping paint stack. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         {/* Left column: description, route, discussion, reply */}
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto border-b border-border/60 p-6 lg:border-b-0 lg:border-r">
           {editState ? (
@@ -1784,89 +1815,104 @@ export function TicketFullscreen({
           ) : null}
         </div>
 
-        {/* Right column: steps, artifacts, diff, move controls */}
-        <div className="flex min-h-0 w-full flex-col gap-4 overflow-auto p-6 lg:w-[480px] xl:w-[560px]">
-          {/* Steps */}
-          <section className="rounded-md border border-border/70 bg-card/35 p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="text-sm font-medium text-foreground">Steps</h2>
-              <span className="text-xs text-muted-foreground">{detail.steps.length}</span>
-            </div>
-            <ol className="space-y-2">
-              {detail.steps.map((step) => (
-                <TicketStepRow
-                  key={step.stepRunId}
-                  step={step}
-                  api={api}
-                  projectId={projectId}
-                  approvalSubmittingStepRunId={approvalState.approvalSubmittingStepRunId}
-                  approvalError={approvalState.approvalError}
-                  stepOutputTestId="step-captured-output"
-                  onRunLane={onRunLane}
-                  submitApproval={approvalState.submitApproval}
-                  liClassName="p-3"
-                />
-              ))}
-            </ol>
-          </section>
-
-          {api ? <TicketArtifacts api={api} ticketId={detail.ticket.ticketId} /> : null}
-          {api ? <TicketDiff api={api} ticketId={TicketId.make(detail.ticket.ticketId)} /> : null}
-
-          {/* Lane actions + move controls */}
-          <section className="rounded-md border border-border/70 bg-card/35 p-4">
-            <h2 className="mb-3 text-sm font-medium text-foreground">Lane controls</h2>
-            <div className="space-y-3">
-              {onMove && laneActions.length > 0 ? (
-                <div className="flex flex-wrap gap-2" data-testid="ticket-lane-actions">
-                  {laneActions.map((action) => {
-                    const targetLane = lanes.find((lane) => lane.key === action.to);
-                    const hint = [action.hint, targetLane ? `Moves to ${targetLane.name}.` : null]
-                      .filter(Boolean)
-                      .join(" ");
-                    return (
-                      <Button
-                        key={`${action.label}:${action.to}`}
-                        size="sm"
-                        variant="outline"
-                        title={hint}
-                        onClick={() => onMove(action.to)}
-                      >
-                        {action.label}
-                        {targetLane ? (
-                          <span className="text-[11px] font-normal text-muted-foreground">
-                            → {targetLane.name}
-                          </span>
-                        ) : null}
-                      </Button>
-                    );
-                  })}
-                </div>
-              ) : null}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" disabled={!canRunLane} title={runLaneTitle} onClick={onRunLane}>
-                  <PlayIcon className="size-4" />
-                  Run lane
-                </Button>
-                {onMove && lanes.length > 0 ? (
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    Move
-                    <select
-                      className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                      value={detail.ticket.currentLaneKey}
-                      onChange={(event) => onMove(event.currentTarget.value)}
-                    >
-                      {lanes.map((lane) => (
-                        <option key={lane.key} value={lane.key}>
-                          {lane.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
+        {/* Right column: scrollable steps/artifacts/diff + pinned lane controls.
+            Mirrors the drawer (scroll body + shrink-0 footer) so a tall
+            accumulated diff cannot paint over Run lane / Move. Children of the
+            scroll region are shrink-0 so flex shrink never clips a card mid-
+            title — the column scrolls instead. */}
+        <div className="flex min-h-0 w-full flex-col lg:w-[480px] xl:w-[560px]">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden p-6">
+            {/* Steps */}
+            <section className="shrink-0 rounded-md border border-border/70 bg-card/35 p-4">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h2 className="text-sm font-medium text-foreground">Steps</h2>
+                <span className="text-xs text-muted-foreground">{detail.steps.length}</span>
               </div>
+              <ol className="space-y-2">
+                {detail.steps.map((step) => (
+                  <TicketStepRow
+                    key={step.stepRunId}
+                    step={step}
+                    api={api}
+                    projectId={projectId}
+                    approvalSubmittingStepRunId={approvalState.approvalSubmittingStepRunId}
+                    approvalError={approvalState.approvalError}
+                    stepOutputTestId="step-captured-output"
+                    onRunLane={onRunLane}
+                    submitApproval={approvalState.submitApproval}
+                    liClassName="p-3"
+                  />
+                ))}
+              </ol>
+            </section>
+
+            {api ? (
+              <div className="shrink-0">
+                <TicketArtifacts api={api} ticketId={detail.ticket.ticketId} />
+              </div>
+            ) : null}
+            {api ? (
+              <div className="shrink-0">
+                <TicketDiff api={api} ticketId={TicketId.make(detail.ticket.ticketId)} />
+              </div>
+            ) : null}
+          </div>
+
+          {/* Lane actions + move controls — pinned below the scroll region */}
+          <footer
+            className="shrink-0 space-y-3 border-t border-border bg-background px-6 py-4"
+            data-testid="ticket-fullscreen-lane-controls"
+          >
+            <h2 className="text-sm font-medium text-foreground">Lane controls</h2>
+            {onMove && laneActions.length > 0 ? (
+              <div className="flex flex-wrap gap-2" data-testid="ticket-lane-actions">
+                {laneActions.map((action) => {
+                  const targetLane = lanes.find((lane) => lane.key === action.to);
+                  const hint = [action.hint, targetLane ? `Moves to ${targetLane.name}.` : null]
+                    .filter(Boolean)
+                    .join(" ");
+                  return (
+                    <Button
+                      key={`${action.label}:${action.to}`}
+                      size="sm"
+                      variant="outline"
+                      title={hint}
+                      onClick={() => onMove(action.to)}
+                    >
+                      {action.label}
+                      {targetLane ? (
+                        <span className="text-[11px] font-normal text-muted-foreground">
+                          → {targetLane.name}
+                        </span>
+                      ) : null}
+                    </Button>
+                  );
+                })}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" disabled={!canRunLane} title={runLaneTitle} onClick={onRunLane}>
+                <PlayIcon className="size-4" />
+                Run lane
+              </Button>
+              {onMove && lanes.length > 0 ? (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  Move
+                  <select
+                    className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                    value={detail.ticket.currentLaneKey}
+                    onChange={(event) => onMove(event.currentTarget.value)}
+                  >
+                    {lanes.map((lane) => (
+                      <option key={lane.key} value={lane.key}>
+                        {lane.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
             </div>
-          </section>
+          </footer>
         </div>
       </div>
     </WorkflowEditorFullscreen>

@@ -1,14 +1,10 @@
 import { FileDiff } from "@pierre/diffs/react";
+import type { FileDiffMetadata } from "@pierre/diffs/types";
 import type { EnvironmentApi, TicketDiff as TicketDiffData, TicketId } from "@t3tools/contracts";
 import { useEffect, useMemo, useState } from "react";
 
 import { DiffStatLabel } from "~/components/chat/DiffStatLabel";
-import {
-  buildFileDiffRenderKey,
-  getRenderablePatch,
-  resolveDiffThemeName,
-  resolveFileDiffPath,
-} from "~/lib/diffRendering";
+import { getRenderablePatch, resolveDiffThemeName, resolveFileDiffPath } from "~/lib/diffRendering";
 import { useTheme } from "~/hooks/useTheme";
 import { getTicketDiff } from "~/workflow/boardRpc";
 
@@ -51,7 +47,7 @@ export function TicketDiff({
 
   if (loadState.status === "loading") {
     return (
-      <section className="rounded-md border border-border/70 bg-card/35 p-3 text-sm text-muted-foreground">
+      <section className="shrink-0 rounded-md border border-border/70 bg-card/35 p-3 text-sm text-muted-foreground">
         Loading diff...
       </section>
     );
@@ -59,7 +55,7 @@ export function TicketDiff({
 
   if (loadState.status === "error") {
     return (
-      <section className="rounded-md border border-destructive/35 bg-destructive/6 p-3 text-sm text-destructive-foreground">
+      <section className="shrink-0 rounded-md border border-destructive/35 bg-destructive/6 p-3 text-sm text-destructive-foreground">
         {loadState.message}
       </section>
     );
@@ -80,55 +76,105 @@ export function TicketDiffContent({
     [diff.patch, diff.ticketId, resolvedTheme],
   );
 
+  const fileDiffByPath = useMemo(() => {
+    const map = new Map<string, FileDiffMetadata>();
+    if (renderablePatch === null || renderablePatch.kind !== "files") {
+      return map;
+    }
+    for (const fileDiff of renderablePatch.files) {
+      map.set(resolveFileDiffPath(fileDiff), fileDiff);
+    }
+    return map;
+  }, [renderablePatch]);
+
+  const fileCountLabel =
+    diff.files.length === 0
+      ? "no files"
+      : `${diff.files.length} file${diff.files.length === 1 ? "" : "s"}`;
+
   return (
-    <section className="flex min-h-0 flex-col gap-3 rounded-md border border-border/70 bg-card/35 p-3">
+    // `shrink-0` so a parent flex column scrolls this card rather than crushing
+    // it under pinned lane controls. Each changed file is a `<details>` row —
+    // collapsed by default — so the board stays calm until the user expands one.
+    <section
+      className="flex shrink-0 flex-col gap-2 rounded-md border border-border/70 bg-card/35 p-3"
+      data-testid="ticket-accumulated-diff"
+    >
       <header className="space-y-1">
-        <h3 className="text-sm font-medium text-foreground">Accumulated diff</h3>
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="text-sm font-medium text-foreground">Accumulated diff</h3>
+          <span className="text-xs text-muted-foreground" data-testid="ticket-diff-file-count">
+            {fileCountLabel}
+          </span>
+        </div>
         <p className="truncate font-mono text-[11px] text-muted-foreground">Base {diff.baseRef}</p>
       </header>
-      {diff.files.length > 0 ? (
-        <ul className="space-y-1">
-          {diff.files.map((file) => (
-            <li
-              key={file.path}
-              className="flex items-center gap-2 rounded-md bg-background/70 px-2 py-1 text-xs"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-foreground/85">
-                {file.path}
-              </span>
-              <span className="shrink-0 font-mono tabular-nums">
-                <DiffStatLabel additions={file.additions} deletions={file.deletions} />
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-xs text-muted-foreground">No changed files.</p>
-      )}
       {diff.truncated ? <p className="text-xs text-warning-foreground">Patch truncated.</p> : null}
-      {!renderablePatch ? (
-        <p className="text-xs text-muted-foreground">No patch available.</p>
-      ) : renderablePatch.kind === "raw" ? (
-        <pre className="max-h-80 overflow-auto rounded-md border border-border/70 bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-foreground/85">
-          {renderablePatch.text}
-        </pre>
+      {diff.files.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No changed files.</p>
       ) : (
-        <div className="diff-render-surface max-h-[42rem] overflow-auto rounded-md border border-border/70 bg-background/70 p-2">
-          {renderablePatch.files.map((fileDiff) => (
-            <div key={buildFileDiffRenderKey(fileDiff)} className="mb-2 last:mb-0">
-              <FileDiff
-                fileDiff={fileDiff}
-                options={{
-                  collapsed: false,
-                  diffStyle: "unified",
-                  theme: resolveDiffThemeName(resolvedTheme),
-                }}
-              />
-              <span className="sr-only">{resolveFileDiffPath(fileDiff)}</span>
-            </div>
-          ))}
-        </div>
+        <ul className="space-y-1" data-testid="ticket-diff-file-list">
+          {diff.files.map((file) => {
+            const fileDiff = fileDiffByPath.get(file.path);
+            return (
+              <li key={file.path}>
+                {/* No `open` attr → collapsed by default. */}
+                <details
+                  className="rounded-md border border-border/60 bg-background/70"
+                  data-testid={`ticket-diff-file-${file.path}`}
+                >
+                  <summary className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-xs select-none">
+                    <span className="min-w-0 flex-1 truncate font-mono text-foreground/85">
+                      {file.path}
+                    </span>
+                    <span className="shrink-0 font-mono tabular-nums">
+                      <DiffStatLabel additions={file.additions} deletions={file.deletions} />
+                    </span>
+                  </summary>
+                  <div className="border-t border-border/60 p-2">
+                    {fileDiff !== undefined ? (
+                      <div className="diff-render-surface max-h-80 overflow-auto rounded-md border border-border/70 bg-background/70 p-2">
+                        <FileDiff
+                          fileDiff={fileDiff}
+                          options={{
+                            // The row is the expand control; show hunks when open.
+                            collapsed: false,
+                            diffStyle: "unified",
+                            theme: resolveDiffThemeName(resolvedTheme),
+                          }}
+                        />
+                        <span className="sr-only">{resolveFileDiffPath(fileDiff)}</span>
+                      </div>
+                    ) : renderablePatch?.kind === "raw" ? (
+                      <p className="text-xs text-muted-foreground">
+                        Per-file hunks unavailable — expand &quot;Full patch&quot; below.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No patch hunks for this file.</p>
+                    )}
+                  </div>
+                </details>
+              </li>
+            );
+          })}
+        </ul>
       )}
+      {renderablePatch?.kind === "raw" ? (
+        <details
+          className="rounded-md border border-border/60 bg-background/70"
+          data-testid="ticket-diff-raw-patch"
+        >
+          <summary className="cursor-pointer px-2 py-1.5 text-xs font-medium text-foreground select-none">
+            Full patch
+          </summary>
+          <pre className="max-h-80 overflow-auto border-t border-border/60 p-2 font-mono text-[11px] leading-relaxed text-foreground/85">
+            {renderablePatch.text}
+          </pre>
+        </details>
+      ) : null}
+      {renderablePatch === null && diff.files.length > 0 ? (
+        <p className="text-xs text-muted-foreground">No patch available.</p>
+      ) : null}
     </section>
   );
 }

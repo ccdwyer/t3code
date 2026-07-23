@@ -802,6 +802,13 @@ const makeWsRpcLayer = (
       // projection commits in the same transaction before the event publishes,
       // so a `none` reliably means the thread is deleted or archived, not
       // not-yet-persisted.
+      //
+      // Hidden (workflow-internal) threads are also treated as absent: shell
+      // snapshots already filter `hidden = 0`, but `getThreadShellById`
+      // intentionally resolves hidden rows so board "View agent session" can
+      // open them by id. Without this gate, live `thread.created` / turn
+      // events for workflow dispatches would still upsert into Sidebar v2's
+      // threads list.
       const threadUpsertOrRemove = (
         threadId: ThreadId,
         sequence: number,
@@ -809,7 +816,13 @@ const makeWsRpcLayer = (
         retryShellProjectionRead(
           "thread",
           threadId,
-          projectionSnapshotQuery.getThreadShellById(threadId),
+          Effect.gen(function* () {
+            const hidden = yield* projectionSnapshotQuery.isThreadHidden(threadId);
+            if (hidden) {
+              return Option.none();
+            }
+            return yield* projectionSnapshotQuery.getThreadShellById(threadId);
+          }),
         ).pipe(
           Effect.map(
             Option.flatMap((thread) =>

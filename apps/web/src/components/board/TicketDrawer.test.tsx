@@ -114,6 +114,41 @@ describe("TicketDrawer", () => {
     expect(markup).toContain("Run lane");
   });
 
+  it("surfaces Open conversation in the header when an agent step has a provider thread", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...ticketDetail,
+          steps: [
+            {
+              stepRunId: "step-1",
+              stepKey: "agent-review",
+              stepType: "agent",
+              status: "awaiting_user",
+              waitingReason: "Approve the proposed fix",
+              providerResponseKind: "user-input",
+              providerThreadId: "thread-agent-review",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("ticket-open-conversation");
+    expect(markup).toContain("Open conversation");
+  });
+
+  it("hides Open conversation when no agent step has a provider thread", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer detail={ticketDetail} onApprove={async () => undefined} onRunLane={() => {}} />,
+    );
+
+    expect(markup).not.toContain("ticket-open-conversation");
+    expect(markup).not.toContain("Open conversation");
+  });
+
   it("renders an edited indicator for messages with editedAt and omits it otherwise", () => {
     const markup = renderToStaticMarkup(
       <TicketDrawer
@@ -648,6 +683,29 @@ describe("TicketFullscreen parked banner", () => {
 
     expect(markup).not.toContain('data-testid="ticket-parked-banner"');
   });
+
+  it("pins lane controls in a footer below the scrollable steps/diff column", () => {
+    const markup = renderToStaticMarkup(
+      <TicketFullscreen
+        {...baseFullscreenProps}
+        detail={ticketDetail}
+        canRunLane
+        runLaneTitle="Run review"
+        onMove={() => {}}
+        lanes={[
+          { key: "review", name: "Review", entry: "manual", pipelineStepCount: 1 },
+          { key: "land", name: "Land", entry: "auto", pipelineStepCount: 0 },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="ticket-fullscreen-lane-controls"');
+    expect(markup).toContain("Lane controls");
+    expect(markup).toContain("Run lane");
+    // Footer is a sibling of the scroll region, not nested inside Accumulated diff.
+    expect(markup).toContain("shrink-0");
+    expect(markup).toContain("border-t border-border");
+  });
 });
 
 describe("TicketDrawer synced-source badge", () => {
@@ -708,5 +766,48 @@ describe("TicketDiffContent", () => {
     expect(markup).toContain("+4");
     expect(markup).toContain("-1");
     expect(markup).toContain("file-diff");
+    expect(markup).toContain("1 file");
+  });
+
+  it("renders each changed file as a collapsed details row by default", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDiffContent
+        diff={{
+          ticketId: TicketId.make("ticket-1"),
+          baseRef: "refs/workflow/tickets/ticket-1/base",
+          truncated: false,
+          files: [
+            { path: "src/a.ts", additions: 2, deletions: 0 },
+            { path: "src/b.ts", additions: 0, deletions: 3 },
+          ],
+          patch:
+            "diff --git a/src/a.ts b/src/a.ts\n" +
+            "index 1111111..2222222 100644\n" +
+            "--- a/src/a.ts\n" +
+            "+++ b/src/a.ts\n" +
+            "@@ -1 +1 @@\n" +
+            "-old-a\n" +
+            "+new-a\n" +
+            "diff --git a/src/b.ts b/src/b.ts\n" +
+            "index 3333333..4444444 100644\n" +
+            "--- a/src/b.ts\n" +
+            "+++ b/src/b.ts\n" +
+            "@@ -1 +1 @@\n" +
+            "-old-b\n" +
+            "+new-b\n",
+        }}
+        resolvedTheme="light"
+      />,
+    );
+
+    expect(markup).toContain('data-testid="ticket-diff-file-list"');
+    expect(markup).toContain('data-testid="ticket-diff-file-src/a.ts"');
+    expect(markup).toContain('data-testid="ticket-diff-file-src/b.ts"');
+    expect(markup).toContain("2 files");
+    // Collapsed by default: native <details> without an open attribute.
+    expect(markup).toMatch(/<details[^>]*data-testid="ticket-diff-file-src\/a\.ts"/);
+    expect(markup).not.toMatch(
+      /<details[^>]*open[^>]*data-testid="ticket-diff-file-src\/a\.ts"|data-testid="ticket-diff-file-src\/a\.ts"[^>]*open/,
+    );
   });
 });

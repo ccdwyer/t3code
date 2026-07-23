@@ -1,0 +1,58 @@
+I'll start by loading memory context and reading the full approved spec, then inspect the neighbor files the build orders call out.Reading the key reference files and patterns next so implementation matches existing conventions.Implementing contracts and core pure modules first, then wiring UI.Fixing the subscribe options and building the UI components.Wiring CommandPalette, SidebarV2, and AppSidebarLayout.Updating SidebarV2 with the mode switch, list swap, and add-workflow button.Moving add-workflow logic out of the test file into a proper module.Typechecks are clean. Running the scoped tests next.## Built: Sidebar v2 — Workflows mode
+
+Implements the approved v2 spec on `feat/sidebar-v2-workflows`. No commit, no push.
+
+### Files created
+| File | Role |
+|------|------|
+| `apps/web/src/workflow/workflowSidebarStatus.ts` | Pure attention grouping + pill mapper |
+| `apps/web/src/workflow/workflowSidebarStatus.test.ts` | Precedence, grouping, tones |
+| `apps/web/src/workflow/useWorkflowSidebarEntries.ts` | Aggregate atom hook + pure builder |
+| `apps/web/src/workflow/useWorkflowSidebarEntries.test.ts` | Partial success / empty / sort / errors |
+| `apps/web/src/components/SidebarV2WorkflowRow.tsx` | Board + project-error rows |
+| `apps/web/src/components/SidebarV2WorkflowRow.test.tsx` | Row states + active highlight |
+| `apps/web/src/components/WorkflowSidebarList.tsx` | Mode-only list + mode-enter refresh |
+| `apps/web/src/components/WorkflowSidebarList.empty.test.tsx` | Empty-state copy |
+| `apps/web/src/components/WorkflowCreateCoordinator.tsx` | Dialog owner outside sidebars |
+| `apps/web/src/components/WorkflowCreateCoordinator.test.ts` | Intent acceptance rules |
+| `apps/web/src/components/SidebarV2.mode.ts` | Hydration + empty-payload rules |
+| `apps/web/src/components/SidebarV2.mode.test.ts` | Switch pure tests |
+| `apps/web/src/components/SidebarV2.addWorkflow.ts` | Add-workflow branch logic |
+| `apps/web/src/components/SidebarV2.addWorkflow.test.ts` | 0/1/>1 + scoped direct |
+
+### Files modified
+- `packages/contracts/src/settings.ts` — `sidebarV2Mode` full schema + patch
+- `packages/contracts/src/settings.test.ts` — default + round-trip
+- `apps/desktop/src/settings/DesktopClientSettings.test.ts` — fixture parity
+- `apps/web/src/commandPaletteBus.ts` — `new-workflow-in` open + `requestCreateWorkflow` intent
+- `apps/web/src/components/CommandPalette.tsx` — submenu + open intent
+- `apps/web/src/components/SidebarV2.tsx` — switch, mode, button swap, list
+- `apps/web/src/components/AppSidebarLayout.tsx` — mount coordinator
+
+### Aggregate-atom subscription
+`useWorkflowSidebarEntries` builds one memoized `Atom.make((get) => …)` that `get()`s each eligible project's `workflowEnvironment.listBoards` atom and the primary env's `listNeedsAttentionTickets`. It then:
+
+```ts
+registry.mount(aggregateAtom)
+registry.subscribe(aggregateAtom, setSnapshot, { immediate: true })
+```
+
+on mount (same mount+subscribe lifecycle as `subscribeBoardRaw` / `useBoardApi`). No `useEnvironmentQuery` inside `.map()`. `registry.refresh` invalidates on mode-enter and `onCreated`.
+
+### Coordinator ← palette intent
+1. Add-workflow / palette item → `requestCreateWorkflow({ projectId, environmentId })` on the bus (`t3code:request-create-workflow`)
+2. Or multi-project → `openCommandPalette({ open: "new-workflow-in" })` → palette submenu → on pick, same `requestCreateWorkflow`
+3. `WorkflowCreateCoordinator` (in `AppSidebarLayout`, outside both sidebars) listens with `onRequestCreateWorkflow` and opens `CreateWorkflowDialog`
+
+### Typecheck + tests
+
+| Check | Result |
+|-------|--------|
+| `npx tsgo --noEmit` packages/contracts | **pass** |
+| `npx tsgo --noEmit` apps/web | **pass** |
+| `npx tsc --noEmit` apps/desktop | **pass** |
+| `vitest run src/settings.test.ts` (contracts) | **20 passed** |
+| DesktopClientSettings.test.ts | **7 passed** |
+| Web feature tests (7 files) | **38 passed** |
+
+v1 `Sidebar.tsx`, board engine, and park-in-place code were not touched.

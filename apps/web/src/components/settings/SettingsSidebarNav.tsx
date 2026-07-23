@@ -19,6 +19,7 @@ import {
   SearchIcon,
   SendIcon,
   Settings2Icon,
+  UsbIcon,
   WorkflowIcon,
   XIcon,
 } from "lucide-react";
@@ -60,6 +61,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
 
 export type SettingsSectionPath =
   | SettingsPath
+  | "/settings/devices"
   | "/settings/work-sources"
   | "/settings/outbound";
 
@@ -73,6 +75,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
     label: SETTINGS_SECTION_LABELS[to],
     icon: SETTINGS_SECTION_ICONS[to],
   })),
+  { label: "Devices", to: "/settings/devices", icon: UsbIcon },
   { label: "Work Sources", to: "/settings/work-sources", icon: WorkflowIcon },
   { label: "Outbound", to: "/settings/outbound", icon: SendIcon },
 ];

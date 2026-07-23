@@ -11,6 +11,8 @@ import {
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
+import { CodexMicroLedSyncHost } from "../CodexMicroLedSyncHost";
+import { useCodexMicroKeybindingSeeding } from "../codexMicroSeeding";
 import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
@@ -136,6 +138,7 @@ function RootRouteView() {
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        {primaryEnvironmentAuthenticated ? <CodexMicroHost /> : null}
         {appShell}
       </AnchoredToastProvider>
     </ToastProvider>
@@ -274,6 +277,17 @@ function AuthenticatedTracingBootstrap() {
   }, []);
 
   return null;
+}
+
+/**
+ * Codex Micro integrations, mounted once for the authenticated app session:
+ * first-connect keybinding seeding plus the LED sync host (which also owns
+ * the agent-key slot ranking feed). Both are inert when the desktop bridge
+ * is absent (plain web) or their gates are off.
+ */
+function CodexMicroHost() {
+  useCodexMicroKeybindingSeeding();
+  return <CodexMicroLedSyncHost />;
 }
 
 function EventRouter() {

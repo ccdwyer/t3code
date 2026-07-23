@@ -100,6 +100,23 @@ describe("ClientSettings sidebar v2", () => {
     expect(patch.sidebarV2ConfiguredByUser).toBe(true);
   });
 
+  it("defaults sidebar v2 mode to threads", () => {
+    expect(decodeClientSettings({}).sidebarV2Mode).toBe("threads");
+  });
+
+  it("round-trips sidebarV2Mode through full schema and patch", () => {
+    expect(decodeClientSettings({ sidebarV2Mode: "workflows" }).sidebarV2Mode).toBe("workflows");
+    expect(decodeClientSettingsPatch({ sidebarV2Mode: "workflows" }).sidebarV2Mode).toBe(
+      "workflows",
+    );
+    expect(decodeClientSettingsPatch({}).sidebarV2Mode).toBeUndefined();
+  });
+
+  it("rejects an unknown sidebarV2Mode", () => {
+    expect(() => decodeClientSettings({ sidebarV2Mode: "boards" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ sidebarV2Mode: "boards" })).toThrow();
+  });
+
   it("allows auto-settle by inactivity to be disabled", () => {
     expect(
       decodeClientSettings({ sidebarAutoSettleAfterDays: null }).sidebarAutoSettleAfterDays,

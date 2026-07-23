@@ -31,6 +31,7 @@ import {
   PlusIcon,
   SearchIcon,
   ServerIcon,
+  SquareKanbanIcon,
   SquarePenIcon,
   TerminalIcon,
   Trash2Icon,
@@ -85,9 +86,13 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { openCommandPalette } from "../commandPaletteBus";
+import { openCommandPalette, requestCreateWorkflow } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
+import {
+  useClientSettings,
+  useClientSettingsHydrated,
+  useUpdateClientSettings,
+} from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
@@ -144,6 +149,7 @@ import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../pr
 import { primaryServerProvidersAtom } from "../state/server";
 import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { CommandDialogTrigger } from "./ui/command";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -155,13 +161,19 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Input } from "./ui/input";
+import { Kbd } from "./ui/kbd";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
+import { Toggle, ToggleGroup } from "./ui/toggle-group";
 import { useComposerDraftStore } from "../composerDraftStore";
+import { resolveAddWorkflowAction } from "./SidebarV2.addWorkflow";
+import { resolveNextSidebarV2Mode, shouldClearThreadSelectionOnModeChange } from "./SidebarV2.mode";
+import { WorkflowSidebarList } from "./WorkflowSidebarList";
+import { filterEligibleWorkflowProjects } from "../workflow/useWorkflowSidebarEntries";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -1184,6 +1196,8 @@ export default function SidebarV2() {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const sidebarV2Mode = useClientSettings((s) => s.sidebarV2Mode);
+  const clientSettingsHydrated = useClientSettingsHydrated();
   const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
     useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
@@ -1882,6 +1896,29 @@ export default function SidebarV2() {
     setRenamingTitle(title);
   }, []);
   const cancelThreadRename = useCallback(() => setRenamingThreadKey(null), []);
+  const setSidebarMode = useCallback(
+    (payload: ReadonlyArray<string>) => {
+      const nextMode = resolveNextSidebarV2Mode({
+        current: sidebarV2Mode,
+        payload,
+        hydrated: clientSettingsHydrated,
+      });
+      if (nextMode === null) return;
+      // Threads -> Workflows: hidden thread rows must not stay actionable.
+      if (shouldClearThreadSelectionOnModeChange({ from: sidebarV2Mode, to: nextMode })) {
+        clearSelection();
+        cancelThreadRename();
+      }
+      updateSettings({ sidebarV2Mode: nextMode });
+    },
+    [
+      cancelThreadRename,
+      clearSelection,
+      clientSettingsHydrated,
+      sidebarV2Mode,
+      updateSettings,
+    ],
+  );
   const commitThreadRename = useCallback(
     (threadRef: ScopedThreadRef, title: string, originalTitle: string) => {
       void (async () => {
@@ -2580,11 +2617,78 @@ export default function SidebarV2() {
     openCommandPalette({ open: "new-thread-in" });
   }, [isMobile, newThreadContext, projectGroups.length, setOpenMobile]);
 
+  // Scope for workflows: when a logical project group is selected, map its
+  // member project refs into the eligibility filter. Workflow creation only
+  // targets the primary environment member when present.
+  const scopedWorkflowProject = useMemo(() => {
+    if (scopedProjectGroup === null) return null;
+    const primaryMember =
+      primaryEnvironmentId === null
+        ? null
+        : scopedProjectGroup.memberProjectRefs.find(
+            (ref) => ref.environmentId === primaryEnvironmentId,
+          );
+    const member = primaryMember ?? scopedProjectGroup.memberProjectRefs[0] ?? null;
+    if (member === null) return null;
+    return { id: member.projectId, environmentId: member.environmentId };
+  }, [primaryEnvironmentId, scopedProjectGroup]);
+
+  const eligibleWorkflowProjects = useMemo(
+    () =>
+      filterEligibleWorkflowProjects({
+        projects: projects.map((project) => ({
+          id: project.id,
+          environmentId: project.environmentId,
+          title: project.title,
+        })),
+        primaryEnvironmentId,
+        scopedProject: scopedWorkflowProject,
+      }),
+    [primaryEnvironmentId, projects, scopedWorkflowProject],
+  );
+
+  // Add-workflow branches on eligible (primary-env ∩ scope) count.
+  const handleAddWorkflowClick = useCallback(() => {
+    const action = resolveAddWorkflowAction({
+      eligibleProjects: eligibleWorkflowProjects,
+      scopedProject: scopedWorkflowProject,
+      primaryEnvironmentId,
+    });
+    if (action.kind === "disabled") return;
+    if (isMobile) setOpenMobile(false);
+    if (action.kind === "direct") {
+      requestCreateWorkflow({
+        projectId: action.projectId,
+        environmentId: action.environmentId,
+      });
+      return;
+    }
+    openCommandPalette({ open: "new-workflow-in" });
+  }, [
+    eligibleWorkflowProjects,
+    isMobile,
+    primaryEnvironmentId,
+    scopedWorkflowProject,
+    setOpenMobile,
+  ]);
+
+  const addWorkflowDisabled =
+    resolveAddWorkflowAction({
+      eligibleProjects: eligibleWorkflowProjects,
+      scopedProject: scopedWorkflowProject,
+      primaryEnvironmentId,
+    }).kind === "disabled";
+  const addWorkflowTooltip = addWorkflowDisabled
+    ? "No primary-environment project in scope"
+    : "Add workflow";
+
   // Same resolution as v1: prefer the local-thread binding, fall back to
   // chat.new, no platform gating — web users have working shortcuts too.
+  const commandPaletteShortcutLabel = shortcutLabelForCommand(keybindings, "commandPalette.toggle");
   const newThreadShortcutLabel =
     shortcutLabelForCommand(keybindings, "chat.newLocal") ??
     shortcutLabelForCommand(keybindings, "chat.new");
+  const isWorkflowsMode = sidebarV2Mode === "workflows";
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />
@@ -2640,6 +2744,49 @@ export default function SidebarV2() {
                 ) : null}
               </div>
               <div className="shrink-0">
+                <CommandDialogTrigger
+                  render={
+                    <SidebarMenuButton
+                      size="icon"
+                      type="button"
+                      aria-label="Search threads and commands"
+                      title={
+                        commandPaletteShortcutLabel
+                          ? `Search threads and commands (${commandPaletteShortcutLabel})`
+                          : "Search threads and commands"
+                      }
+                      data-testid="command-palette-trigger"
+                    />
+                  }
+                >
+                  <SearchIcon />
+                </CommandDialogTrigger>
+              </div>
+              <div className="shrink-0">
+                {isWorkflowsMode ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <SidebarMenuButton
+                          size="icon"
+                          type="button"
+                          className="relative focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+                          onClick={handleAddWorkflowClick}
+                          disabled={addWorkflowDisabled}
+                          aria-label="Add workflow"
+                          data-testid="sidebar-v2-add-workflow"
+                        />
+                      }
+                    >
+                      <SquareKanbanIcon />
+                      <span
+                        className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                        aria-hidden="true"
+                      />
+                    </TooltipTrigger>
+                    <TooltipPopup side="right">{addWorkflowTooltip}</TooltipPopup>
+                  </Tooltip>
+                ) : (
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -2665,8 +2812,34 @@ export default function SidebarV2() {
                       : "New thread"}
                   </TooltipPopup>
                 </Tooltip>
+                )}
               </div>
             </div>
+            <ToggleGroup
+              className="w-full"
+              variant="outline"
+              size="sm"
+              value={[sidebarV2Mode]}
+              onValueChange={setSidebarMode}
+              data-testid="sidebar-v2-mode-switch"
+            >
+              <Toggle
+                aria-label="Threads"
+                value="threads"
+                className="min-w-0 flex-1"
+                data-testid="sidebar-v2-mode-threads"
+              >
+                Threads
+              </Toggle>
+              <Toggle
+                aria-label="Workflows"
+                value="workflows"
+                className="min-w-0 flex-1"
+                data-testid="sidebar-v2-mode-workflows"
+              >
+                Workflows
+              </Toggle>
+            </ToggleGroup>
             {projectGroups.length > 0 ? (
               <div className="flex items-center gap-1">
                 <Menu open={projectScopeMenuOpen} onOpenChange={setProjectScopeMenuOpen}>
@@ -2765,7 +2938,19 @@ export default function SidebarV2() {
           </SidebarGroup>
         }
       >
-        <SidebarGroup className="ps-[calc(var(--sidebar-content-inset)+1px)] pe-[var(--sidebar-content-inset)] pb-1 pt-0">
+        <SidebarGroup className="min-h-0 flex-1 overflow-y-auto px-2 py-1 [scrollbar-gutter:stable]">
+          {isWorkflowsMode ? (
+            <WorkflowSidebarList
+              projects={projects.map((project) => ({
+                id: project.id,
+                environmentId: project.environmentId,
+                title: project.title,
+              }))}
+              scopedProject={scopedWorkflowProject}
+              {...(addWorkflowDisabled ? {} : { onRequestAddWorkflow: handleAddWorkflowClick })}
+            />
+          ) : (
+            <SidebarGroup className="px-[var(--sidebar-content-inset)] pb-1 pt-0">
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider
@@ -3025,6 +3210,8 @@ export default function SidebarV2() {
               )}
             </div>
           ) : null}
+            </SidebarGroup>
+          )}
         </SidebarGroup>
       </SidebarContent>
       <Dialog

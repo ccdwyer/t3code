@@ -36,6 +36,7 @@ import {
   LinkIcon,
   MessageSquareIcon,
   SettingsIcon,
+  SquareKanbanIcon,
   SquarePenIcon,
   TextSearchIcon,
 } from "lucide-react";
@@ -80,7 +81,7 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
-import { onOpenCommandPalette } from "../commandPaletteBus";
+import { onOpenCommandPalette, requestCreateWorkflow } from "../commandPaletteBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
@@ -102,7 +103,6 @@ import {
   buildThreadActionItems,
   enumerateCommandPaletteItems,
   type CommandPaletteActionItem,
-  type CommandPaletteOpenIntent,
   type CommandPaletteSubmenuItem,
   type CommandPaletteView,
   filterCommandPaletteGroups,
@@ -110,7 +110,6 @@ import {
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
-  reduceCommandPaletteUiState,
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
@@ -360,6 +359,50 @@ function overlayModeForCommand(command: string | null): SearchOverlayMode | null
     : null;
 }
 
+interface CommandPaletteOpenIntent {
+  readonly kind: "add-project" | "new-thread-in" | "new-workflow-in";
+}
+
+interface CommandPaletteUiState {
+  readonly open: boolean;
+  readonly mode: SearchOverlayMode;
+  readonly openIntent: CommandPaletteOpenIntent | null;
+}
+
+type CommandPaletteUiAction =
+  | { readonly _tag: "SetOpen"; readonly open: boolean }
+  | { readonly _tag: "ToggleMode"; readonly mode: SearchOverlayMode }
+  | { readonly _tag: "OpenAddProject" }
+  | { readonly _tag: "OpenNewThreadIn" }
+  | { readonly _tag: "OpenNewWorkflowIn" }
+  | { readonly _tag: "ClearOpenIntent" };
+
+function reduceCommandPaletteUiState(
+  state: CommandPaletteUiState,
+  action: CommandPaletteUiAction,
+): CommandPaletteUiState {
+  switch (action._tag) {
+    case "SetOpen":
+      return {
+        open: action.open,
+        mode: "command",
+        openIntent: action.open ? state.openIntent : null,
+      };
+    case "ToggleMode":
+      return state.open && state.mode === action.mode
+        ? { open: false, mode: "command", openIntent: null }
+        : { open: true, mode: action.mode, openIntent: null };
+    case "OpenAddProject":
+      return { open: true, mode: "command", openIntent: { kind: "add-project" } };
+    case "OpenNewThreadIn":
+      return { open: true, mode: "command", openIntent: { kind: "new-thread-in" } };
+    case "OpenNewWorkflowIn":
+      return { open: true, mode: "command", openIntent: { kind: "new-workflow-in" } };
+    case "ClearOpenIntent":
+      return state.openIntent ? { ...state, openIntent: null } : state;
+  }
+}
+
 export function CommandPalette({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reduceCommandPaletteUiState, {
     open: false,
@@ -373,6 +416,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   );
   const openAddProject = useCallback(() => dispatch({ _tag: "OpenAddProject" }), []);
   const openNewThreadIn = useCallback(() => dispatch({ _tag: "OpenNewThreadIn" }), []);
+  const openNewWorkflowIn = useCallback(() => dispatch({ _tag: "OpenNewWorkflowIn" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
@@ -434,13 +478,15 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       onOpenCommandPalette((detail) => {
         if (detail.open === "new-thread-in") {
           openNewThreadIn();
+        } else if (detail.open === "new-workflow-in") {
+          openNewWorkflowIn();
         } else if (detail.open === "add-project") {
           openAddProject();
         } else {
           setOpen(true);
         }
       }),
-    [openAddProject, openNewThreadIn, setOpen],
+    [openAddProject, openNewThreadIn, openNewWorkflowIn, setOpen],
   );
 
   return (
@@ -975,6 +1021,41 @@ function OpenCommandPaletteDialog(props: {
     [contextualProjectRef, handleNewThread, pickerProjects, projectGroupByTargetKey],
   );
 
+  // Workflow boards are primary-environment only (providers + create dialog).
+  const primaryProjects = useMemo(
+    () =>
+      primaryEnvironmentId === null
+        ? []
+        : projects.filter((project) => project.environmentId === primaryEnvironmentId),
+    [primaryEnvironmentId, projects],
+  );
+
+  const projectWorkflowItems = useMemo(
+    () =>
+      enumerateCommandPaletteItems(
+        buildProjectActionItems({
+          projects: primaryProjects,
+          valuePrefix: "new-workflow-in",
+          icon: (project) => (
+            <ProjectFavicon
+              environmentId={project.environmentId}
+              cwd={project.workspaceRoot}
+              className={ITEM_ICON_CLASS}
+            />
+          ),
+          runProject: async (project) => {
+            // Palette closes before running; the coordinator (outside the
+            // sidebar) opens CreateWorkflowDialog for this project.
+            requestCreateWorkflow({
+              projectId: project.id,
+              environmentId: project.environmentId,
+            });
+          },
+        }),
+      ),
+    [primaryProjects],
+  );
+
   const allThreadItems = useMemo(
     () =>
       buildThreadActionItems({
@@ -1352,6 +1433,42 @@ function OpenCommandPaletteDialog(props: {
     pushPaletteView,
   ]);
 
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "new-workflow-in" || projectWorkflowItems.length === 0) {
+      return;
+    }
+    clearOpenIntent();
+    setAddProjectCloneFlow(null);
+    setViewStack([]);
+    setQuery("");
+    const currentPrefix =
+      currentProjectEnvironmentId && currentProjectId
+        ? `new-workflow-in:${currentProjectEnvironmentId}:${currentProjectId}`
+        : null;
+    const prioritized = currentPrefix
+      ? [
+          ...projectWorkflowItems.filter((item) => item.value === currentPrefix),
+          ...projectWorkflowItems.filter((item) => item.value !== currentPrefix),
+        ]
+      : projectWorkflowItems;
+    pushPaletteView({
+      addonIcon: <SquareKanbanIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "projects",
+          label: "Projects",
+          items: enumerateCommandPaletteItems(prioritized),
+        },
+      ],
+    });
+  }, [
+    clearOpenIntent,
+    currentProjectEnvironmentId,
+    currentProjectId,
+    openIntent,
+    projectWorkflowItems,
+  ]);
+
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
   if (projects.length > 0) {
@@ -1391,6 +1508,18 @@ function OpenCommandPaletteDialog(props: {
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
     });
+
+    if (projectWorkflowItems.length > 0) {
+      actionItems.push({
+        kind: "submenu",
+        value: "action:new-workflow-in",
+        searchTerms: ["new workflow", "board", "project", "pick", "choose", "select", "kanban"],
+        title: "New workflow in...",
+        icon: <SquareKanbanIcon className={ITEM_ICON_CLASS} />,
+        addonIcon: <SquareKanbanIcon className={ADDON_ICON_CLASS} />,
+        groups: [{ value: "projects", label: "Projects", items: projectWorkflowItems }],
+      });
+    }
   }
 
   actionItems.push({

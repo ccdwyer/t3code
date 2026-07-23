@@ -18,6 +18,7 @@ import { useEnvironmentIdentificationMode, useSidebarV2Enabled } from "../hooks/
 import ThreadSidebar from "./Sidebar";
 import ThreadSidebarV2 from "./SidebarV2";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
+import { WorkflowCreateCoordinator } from "./WorkflowCreateCoordinator";
 import {
   resolveInitialThreadSidebarWidth,
   resolveThreadSidebarMaximumWidth,
@@ -203,6 +204,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         {useSidebarV2 ? <ThreadSidebarV2 /> : <ThreadSidebar />}
         <SidebarRail />
       </Sidebar>
+      {/* Outside both sidebar variants so create survives mode/variant swaps. */}
+      <WorkflowCreateCoordinator />
       {children}
       <SidebarControl />
     </SidebarProvider>

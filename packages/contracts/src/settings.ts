@@ -74,6 +74,10 @@ export const CodexMicroAgentKeysSource = Schema.Literals(["recentChats"]);
 export type CodexMicroAgentKeysSource = typeof CodexMicroAgentKeysSource.Type;
 export const DEFAULT_CODEX_MICRO_AGENT_KEYS_SOURCE: CodexMicroAgentKeysSource = "recentChats";
 
+export const SidebarV2Mode = Schema.Literals(["threads", "workflows"]);
+export type SidebarV2Mode = typeof SidebarV2Mode.Type;
+export const DEFAULT_SIDEBAR_V2_MODE: SidebarV2Mode = "threads";
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -158,6 +162,11 @@ export const ClientSettingsSchema = Schema.Struct({
   // there is no way to tell that apart from "left alone", and a channel-derived
   // default could never reach them. Mirrors `updateChannelConfiguredByUser`.
   sidebarV2ConfiguredByUser: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Sidebar v2 list mode (threads vs workflows). Only meaningful when
+  // sidebarV2Enabled is on; v1 keeps per-project board rows.
+  sidebarV2Mode: SidebarV2Mode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_V2_MODE)),
+  ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
@@ -748,6 +757,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   sidebarV2Enabled: Schema.optionalKey(Schema.Boolean),
   sidebarV2ConfiguredByUser: Schema.optionalKey(Schema.Boolean),
+  sidebarV2Mode: Schema.optionalKey(SidebarV2Mode),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });

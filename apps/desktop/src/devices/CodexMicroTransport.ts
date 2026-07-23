@@ -167,10 +167,14 @@ function makeNodeHidConnection(device: NodeHidAsyncDevice): CodexMicroConnection
       }).pipe(Effect.asVoid),
     close: Effect.tryPromise({
       try: () => device.close(),
-      // Closing a handle for an already-unplugged device routinely rejects;
-      // that is not an actionable error for callers, so swallow it.
-      catch: () => undefined,
-    }).pipe(Effect.ignore),
+      // Closing a handle for an already-unplugged device routinely rejects; that
+      // is not an actionable error for callers, so `close` stays non-failing.
+      catch: (cause) => new CodexMicroTransportError({ operation: "close", cause }),
+    }).pipe(
+      // Keep close non-failing for callers, but surface the cause for
+      // diagnostics instead of swallowing it silently.
+      Effect.catchCause((cause) => Effect.logWarning("codex-micro transport close failed", cause)),
+    ),
     onDisconnect: (listener) => {
       // node-hid signals hot-unplug / read failure through the "error" event.
       const handler = (_error: unknown): void => listener();

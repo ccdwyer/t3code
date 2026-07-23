@@ -11,6 +11,7 @@ import {
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { APP_BASE_NAME, APP_DISPLAY_NAME, APP_STAGE_LABEL } from "../branding";
+import { CodexMicroAgentKeyHandler } from "../CodexMicroAgentKeyHandler";
 import { CodexMicroLedSyncHost } from "../CodexMicroLedSyncHost";
 import { useCodexMicroPrefsSync } from "../codexMicroPrefsSync";
 import { useCodexMicroKeybindingSeeding } from "../codexMicroSeeding";
@@ -290,7 +291,12 @@ function AuthenticatedTracingBootstrap() {
 function CodexMicroHost() {
   useCodexMicroKeybindingSeeding();
   useCodexMicroPrefsSync();
-  return <CodexMicroLedSyncHost />;
+  return (
+    <>
+      <CodexMicroAgentKeyHandler />
+      <CodexMicroLedSyncHost />
+    </>
+  );
 }
 
 function EventRouter() {

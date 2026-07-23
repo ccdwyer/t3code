@@ -7,6 +7,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import {
+  agentKeySlotIndexFromCommand,
   formatShortcutLabel,
   isChatNewShortcut,
   isChatNewLocalShortcut,
@@ -827,5 +828,19 @@ describe("plus key parsing", () => {
         platform: "Linux",
       }),
     );
+  });
+});
+
+describe("agentKeySlotIndexFromCommand", () => {
+  it("maps agentKey.open.1..6 to 0-based slot indices", () => {
+    assert.strictEqual(agentKeySlotIndexFromCommand("agentKey.open.1"), 0);
+    assert.strictEqual(agentKeySlotIndexFromCommand("agentKey.open.6"), 5);
+  });
+
+  it("returns null for non-agent-key commands", () => {
+    assert.isNull(agentKeySlotIndexFromCommand("thread.jump.1"));
+    assert.isNull(agentKeySlotIndexFromCommand("agentKey.open.7"));
+    assert.isNull(agentKeySlotIndexFromCommand("agentKey.open.0"));
+    assert.isNull(agentKeySlotIndexFromCommand(""));
   });
 });

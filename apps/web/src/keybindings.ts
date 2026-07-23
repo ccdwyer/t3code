@@ -1,4 +1,5 @@
 import {
+  AGENT_KEY_KEYBINDING_COMMANDS,
   type KeybindingCommand,
   type KeybindingShortcut,
   type KeybindingWhenNode,
@@ -271,6 +272,19 @@ export function threadJumpCommandForIndex(index: number): ThreadJumpKeybindingCo
 
 export function threadJumpIndexFromCommand(command: string): number | null {
   const index = THREAD_JUMP_KEYBINDING_COMMANDS.indexOf(command as ThreadJumpKeybindingCommand);
+  return index === -1 ? null : index;
+}
+
+/**
+ * Map an `agentKey.open.N` command to its 0-based agent-key slot index, or
+ * null for any other command. The slot store (`agentKeySlots.ts`) is the
+ * source of truth the press opens — never `thread.jump.N`, whose
+ * sidebar-derived ordering can diverge from the LED mapping.
+ */
+export function agentKeySlotIndexFromCommand(command: string): number | null {
+  const index = AGENT_KEY_KEYBINDING_COMMANDS.indexOf(
+    command as (typeof AGENT_KEY_KEYBINDING_COMMANDS)[number],
+  );
   return index === -1 ? null : index;
 }
 

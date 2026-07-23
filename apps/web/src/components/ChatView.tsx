@@ -4503,7 +4503,14 @@ function ChatViewContent(props: ChatViewProps) {
           command,
           isRepeat: event.repeat,
           pendingApprovals: pendingApprovalsRef.current,
-          respondingRequestIds: respondingRequestIdsRef.current,
+          // Union of the async React-state mirror AND the synchronous send
+          // guard: two presses inside one frame must resolve to DIFFERENT
+          // requests (the second targets the next-oldest), not both to the
+          // oldest with the second silently dropped by the sync guard.
+          respondingRequestIds: [
+            ...respondingRequestIdsRef.current,
+            ...inFlightApprovalRequestIdsRef.current,
+          ],
         });
         if (outcome.kind === "ignore") {
           // Auto-repeat keydown for an approval command: swallow it so the

@@ -3011,17 +3011,19 @@ layer("WorkflowRecovery", (it) => {
     }),
   );
 
-  it.effect("fails a running step whose outbox rows were confirmed before the terminal event", () =>
-    Effect.gen(function* () {
-      completedRecoveredSteps.length = 0;
-      const sql = yield* SqlClient.SqlClient;
-      const recovery = yield* WorkflowRecovery;
+  it.effect(
+    "completes a confirmed-before-terminal crash from the persisted turn (capture-first)",
+    () =>
+      Effect.gen(function* () {
+        completedRecoveredSteps.length = 0;
+        const sql = yield* SqlClient.SqlClient;
+        const recovery = yield* WorkflowRecovery;
 
-      // Crash window: awaitTerminal confirmed the dispatch row (e.g. on its
-      // 30-minute timeout) but the process died before the engine committed
-      // the step's terminal event. No dispatch stage looks at confirmed rows
-      // and the projection still says 'running' with no terminal event.
-      yield* sql`
+        // Crash window: awaitTerminal confirmed the dispatch row (e.g. on its
+        // 30-minute timeout) but the process died before the engine committed
+        // the step's terminal event. When the confirmed row still has a turn,
+        // recovery completes via capture-first rather than STEP_RESTART_ERROR.
+        yield* sql`
         INSERT INTO projection_board (
           board_id,
           project_id,
@@ -3039,7 +3041,7 @@ layer("WorkflowRecovery", (it) => {
           1
         )
       `;
-      yield* sql`
+        yield* sql`
         INSERT INTO projection_ticket (
           ticket_id,
           board_id,
@@ -3059,7 +3061,7 @@ layer("WorkflowRecovery", (it) => {
           '2026-06-07T00:00:01.000Z'
         )
       `;
-      yield* sql`
+        yield* sql`
         INSERT INTO projection_step_run (
           step_run_id,
           pipeline_run_id,
@@ -3079,7 +3081,7 @@ layer("WorkflowRecovery", (it) => {
           '2026-06-07T00:00:00.000Z'
         )
       `;
-      yield* sql`
+        yield* sql`
         INSERT INTO workflow_dispatch_outbox (
           dispatch_id,
           ticket_id,
@@ -3112,18 +3114,95 @@ layer("WorkflowRecovery", (it) => {
         )
       `;
 
-      yield* recovery.recover();
+        yield* recovery.recover();
 
-      const calls = completedRecoveredSteps.filter(
-        (call) => call.stepRunId === "step-confirmed-crash",
-      );
-      assert.deepEqual(calls, [
-        {
-          stepRunId: "step-confirmed-crash",
-          result: { _tag: "failed", error: "step interrupted by server restart" },
-        },
-      ]);
-    }),
+        const calls = completedRecoveredSteps.filter(
+          (call) => call.stepRunId === "step-confirmed-crash",
+        );
+        // Capture-first: confirmed row still has thread/turn → complete from it
+        // rather than always emitting STEP_RESTART_ERROR.
+        assert.deepEqual(calls, [
+          {
+            stepRunId: "step-confirmed-crash",
+            result: { _tag: "completed" },
+            captureTurn: {
+              threadId: "thread-confirmed-crash",
+              turnId: "turn-confirmed-crash",
+            },
+          },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "confirmed-running step without a persisted turn falls back to STEP_RESTART_ERROR",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const recovery = yield* WorkflowRecovery;
+        completedRecoveredSteps.length = 0;
+
+        yield* sql`
+          INSERT INTO projection_board (
+            board_id,
+            project_id,
+            name,
+            workflow_file_path,
+            workflow_version_hash,
+            max_concurrent_tickets
+          )
+          VALUES (
+            'board-confirmed-no-turn',
+            'project-confirmed-no-turn',
+            'No turn',
+            '.t3/boards/no-turn.json',
+            'hash-no-turn',
+            1
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_ticket (
+            ticket_id, board_id, title, current_lane_key, status, created_at, updated_at
+          )
+          VALUES (
+            'ticket-confirmed-no-turn', 'board-confirmed-no-turn', 'No turn',
+            'impl', 'running', '2026-06-07T00:00:00.000Z', '2026-06-07T00:00:01.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_step_run (
+            step_run_id, pipeline_run_id, ticket_id, step_key, step_type, status, started_at
+          )
+          VALUES (
+            'step-confirmed-no-turn', 'pipeline-confirmed-no-turn', 'ticket-confirmed-no-turn',
+            'implement', 'agent', 'running', '2026-06-07T00:00:00.000Z'
+          )
+        `;
+        yield* sql`
+          INSERT INTO workflow_dispatch_outbox (
+            dispatch_id, ticket_id, step_run_id, thread_id, provider_instance, model,
+            instruction, worktree_path, status, turn_id, created_at, started_at, confirmed_at
+          )
+          VALUES (
+            'dispatch-confirmed-no-turn', 'ticket-confirmed-no-turn', 'step-confirmed-no-turn',
+            'thread-confirmed-no-turn', 'codex', 'gpt-5.5', 'implement',
+            '/tmp/no-turn', 'confirmed', NULL,
+            '2026-06-07T00:00:00.000Z', '2026-06-07T00:00:00.000Z', '2026-06-07T00:00:01.000Z'
+          )
+        `;
+
+        yield* recovery.recover();
+
+        const calls = completedRecoveredSteps.filter(
+          (call) => call.stepRunId === "step-confirmed-no-turn",
+        );
+        assert.deepEqual(calls, [
+          {
+            stepRunId: "step-confirmed-no-turn",
+            result: { _tag: "failed", error: "step interrupted by server restart" },
+          },
+        ]);
+      }),
   );
 
   // Task 9 (A.5): resumeStrandedPipelines' SQL join requires

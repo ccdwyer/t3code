@@ -359,26 +359,67 @@ const make = Effect.gen(function* () {
           result.ok
             ? { _tag: "completed" }
             : { _tag: "failed", error: result.error ?? "turn failed" },
-          row.turnId === null
-            ? undefined
-            : { threadId: row.threadId as ThreadId, turnId: row.turnId as TurnId },
+          // Prefer the await result's terminal turn (steer may have moved it).
+          {
+            threadId: row.threadId as ThreadId,
+            turnId: result.turnId,
+          },
         );
 
+  /** Interrupt the latest concrete turn for the thread (not a stale row.turn_id). */
+  const interruptLatestConcreteTurn = (threadId: string) =>
+    Effect.gen(function* () {
+      const interruptedAt = yield* nowIso;
+      // Prefer the latest pending/running turn for this thread.
+      yield* wrapSql(sql`
+        UPDATE projection_turns
+        SET state = 'interrupted',
+            completed_at = ${interruptedAt}
+        WHERE thread_id = ${threadId}
+          AND state IN ('pending', 'running')
+          AND turn_id = (
+            SELECT turn_id
+            FROM projection_turns
+            WHERE thread_id = ${threadId}
+              AND turn_id IS NOT NULL
+              AND state IN ('pending', 'running')
+            ORDER BY created_at DESC, turn_id DESC
+            LIMIT 1
+          )
+      `);
+    });
+
   const interruptProjectedTurn = (row: DispatchRecoveryRow) =>
-    row.turnId === null
-      ? Effect.void
-      : nowIso.pipe(
-          Effect.flatMap((interruptedAt) =>
-            wrapSql(sql`
-              UPDATE projection_turns
-              SET state = 'interrupted',
-                  completed_at = ${interruptedAt}
-              WHERE thread_id = ${row.threadId}
-                AND turn_id = ${row.turnId}
-                AND state IN ('pending', 'running')
-            `),
-          ),
-        );
+    interruptLatestConcreteTurn(row.threadId).pipe(
+      Effect.catch(() =>
+        row.turnId === null
+          ? Effect.void
+          : nowIso.pipe(
+              Effect.flatMap((interruptedAt) =>
+                wrapSql(sql`
+                  UPDATE projection_turns
+                  SET state = 'interrupted',
+                      completed_at = ${interruptedAt}
+                  WHERE thread_id = ${row.threadId}
+                    AND turn_id = ${row.turnId}
+                    AND state IN ('pending', 'running')
+                `),
+              ),
+            ),
+      ),
+    );
+
+  const clearSteerColumnsOnReset = (dispatchId: string) =>
+    wrapSql(sql`
+      UPDATE workflow_dispatch_outbox
+      SET status = 'pending',
+          started_at = NULL,
+          turn_id = NULL,
+          steer_pending_message_id = NULL,
+          steer_tombstone_message_id = NULL
+      WHERE dispatch_id = ${dispatchId}
+        AND status = 'started'
+    `).pipe(Effect.asVoid);
 
   const deleteOrphanDispatches = wrapSql(sql`
     DELETE FROM workflow_dispatch_outbox
@@ -420,14 +461,8 @@ const make = Effect.gen(function* () {
       if (state._tag === "running") {
         if (row.status === "started") {
           yield* interruptProjectedTurn(row);
-          yield* wrapSql(sql`
-            UPDATE workflow_dispatch_outbox
-            SET status = 'pending',
-                started_at = NULL,
-                turn_id = NULL
-            WHERE dispatch_id = ${row.dispatchId}
-              AND status = 'started'
-          `);
+          // Reset for re-dispatch; drop unacked steer reservation cells.
+          yield* clearSteerColumnsOnReset(row.dispatchId);
         }
         continue;
       }
@@ -966,12 +1001,45 @@ const make = Effect.gen(function* () {
     for (const row of rows) {
       const events = yield* ticketEvents(row.ticketId);
       const terminal = latestTerminalStepEvent(events, row.stepRunId);
-      yield* engine.completeRecoveredStep(
-        row.stepRunId,
-        terminal !== null
-          ? recoveredResultFromTerminalEvent(terminal)
-          : { _tag: "failed", error: STEP_RESTART_ERROR },
-      );
+      if (terminal !== null) {
+        yield* engine.completeRecoveredStep(
+          row.stepRunId,
+          recoveredResultFromTerminalEvent(terminal),
+        );
+        continue;
+      }
+      // Capture-first: when the confirmed outbox row still has a thread/turn,
+      // try to complete from that persisted terminal turn rather than always
+      // emitting STEP_RESTART_ERROR (steered crash window).
+      const dispatchRows = yield* wrapSql(sql<{
+        readonly threadId: string | null;
+        readonly turnId: string | null;
+      }>`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId"
+        FROM workflow_dispatch_outbox
+        WHERE step_run_id = ${row.stepRunId}
+          AND status = 'confirmed'
+        ORDER BY confirmed_at DESC, created_at DESC
+        LIMIT 1
+      `);
+      const dispatch = dispatchRows[0];
+      if (dispatch?.threadId != null && dispatch.turnId != null) {
+        yield* engine.completeRecoveredStep(
+          row.stepRunId,
+          { _tag: "completed" },
+          {
+            threadId: dispatch.threadId as ThreadId,
+            turnId: dispatch.turnId as TurnId,
+          },
+        );
+        continue;
+      }
+      yield* engine.completeRecoveredStep(row.stepRunId, {
+        _tag: "failed",
+        error: STEP_RESTART_ERROR,
+      });
     }
   });
 

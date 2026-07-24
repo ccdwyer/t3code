@@ -585,8 +585,18 @@ export const ProviderTurnPortLive = Layer.effect(
         const existingTurn = existingTurns.findLast(
           (turn) => turn.turnId !== null && (turn.state === "pending" || turn.state === "running"),
         );
+        // Only reuse a projected running/pending turn when a live provider
+        // session still exists — a ghost projection with no session must not
+        // be adopted (recovery interrupt may leave projection state behind).
         if (existingTurn?.turnId !== undefined && existingTurn.turnId !== null) {
-          return { turnId: existingTurn.turnId };
+          const sessions = yield* providerSvc.listSessions().pipe(Effect.orElseSucceed(() => []));
+          const hasLiveSession = sessions.some(
+            (session) => (session.threadId as string) === (req.threadId as string),
+          );
+          if (hasLiveSession) {
+            return { turnId: existingTurn.turnId };
+          }
+          // Ghost projected turn: ignore it and start a fresh session/turn.
         }
 
         const providerInstanceId = ProviderInstanceId.make(req.providerInstance);

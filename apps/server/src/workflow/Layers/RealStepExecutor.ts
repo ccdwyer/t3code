@@ -721,7 +721,10 @@ const make = Effect.gen(function* () {
             turnIds.dispatchId as never,
             turnIds.threadId as never,
           );
-          return { terminal, turnId: started.turnId, threadId: turnIds.threadId };
+          // Prefer the terminal turn id (steers may open a new turn); fall
+          // back to the originally started turn for awaiting_user arms.
+          const terminalTurnId = "awaitingUser" in terminal ? started.turnId : terminal.turnId;
+          return { terminal, turnId: terminalTurnId, threadId: turnIds.threadId };
         });
 
       const panelSize = step.panel ?? 0;

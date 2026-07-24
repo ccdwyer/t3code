@@ -802,7 +802,10 @@ const make = Effect.gen(function* () {
         parked_at AS "parkedAt",
         parked_event_id AS "parkedEventId",
         park_origin AS "parkOrigin",
-        current_step_label AS "currentStepLabel"
+        current_step_label AS "currentStepLabel",
+        sla_breached_at AS "slaBreachedAt",
+        sla_breached_reason AS "slaBreachedReason",
+        sla_breached_entry_token AS "slaBreachedEntryToken"
       FROM projection_ticket
       LEFT JOIN workflow_pr_state AS pr
         ON pr.ticket_id = projection_ticket.ticket_id
@@ -812,6 +815,57 @@ const make = Effect.gen(function* () {
       Effect.tap(warnUnrecognizedPrStates),
       Effect.map((rows) => rows.map((row) => withDependencyFields(row))),
     );
+
+  const clearSlaBreachesForLanesWithoutSla: WorkflowReadModelShape["clearSlaBreachesForLanesWithoutSla"] =
+    (boardId, lanesWithSla) =>
+      // Do not bump updated_at — this is a maintenance clear, not an event, and
+      // aging clocks (Needs You "waiting for N hours") must stay event-driven.
+      Effect.gen(function* () {
+        if (lanesWithSla.length === 0) {
+          yield* wrap(sql`
+            UPDATE projection_ticket
+            SET sla_breached_entry_token = NULL,
+                sla_breached_at = NULL,
+                sla_breached_reason = NULL
+            WHERE board_id = ${boardId}
+              AND sla_breached_entry_token IS NOT NULL
+          `);
+          return;
+        }
+        const keep = new Set(lanesWithSla.map(String));
+        const breached = yield* wrap(sql<{
+          readonly ticketId: string;
+          readonly currentLaneKey: string;
+        }>`
+          SELECT ticket_id AS "ticketId", current_lane_key AS "currentLaneKey"
+          FROM projection_ticket
+          WHERE board_id = ${boardId}
+            AND sla_breached_entry_token IS NOT NULL
+        `);
+        const toClear = breached
+          .filter((row) => !keep.has(row.currentLaneKey))
+          .map((row) => row.ticketId);
+        if (toClear.length === 0) {
+          return;
+        }
+        // Board-scoped clear under one transaction so a partial failure cannot
+        // leave some rows cleared and others stuck.
+        yield* wrap(
+          sql.withTransaction(
+            Effect.forEach(
+              toClear,
+              (ticketId) => sql`
+                UPDATE projection_ticket
+                SET sla_breached_entry_token = NULL,
+                    sla_breached_at = NULL,
+                    sla_breached_reason = NULL
+                WHERE ticket_id = ${ticketId}
+              `,
+              { discard: true },
+            ),
+          ),
+        );
+      });
 
   const countAdmittedInLane: WorkflowReadModelShape["countAdmittedInLane"] = (boardId, laneKey) =>
     wrap(sql<{ readonly count: number }>`
@@ -943,6 +997,9 @@ const make = Effect.gen(function* () {
           parked_event_id AS "parkedEventId",
           park_origin AS "parkOrigin",
           current_step_label AS "currentStepLabel",
+          sla_breached_at AS "slaBreachedAt",
+          sla_breached_reason AS "slaBreachedReason",
+          sla_breached_entry_token AS "slaBreachedEntryToken",
           wsm.source_metadata_json AS "sourceMetadataJson"
         FROM projection_ticket
         LEFT JOIN workflow_pr_state AS pr
@@ -1778,6 +1835,7 @@ const make = Effect.gen(function* () {
     deleteTicketState,
     listBoardsForProject,
     listTickets,
+    clearSlaBreachesForLanesWithoutSla,
     countAdmittedInLane,
     oldestQueuedForLane,
     getTicketDetail,

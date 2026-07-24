@@ -5,6 +5,7 @@ import {
   type WorkflowEvent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -45,6 +46,26 @@ const make = Effect.gen(function* () {
     parked_event_id = NULL,
     park_origin = NULL
   `;
+
+  // Lane-identity changes clear SLA breach columns so a sticky badge cannot
+  // survive into the next lane entry (or a WIP queue).
+  const SLA_BREACH_CLEAR = sql`
+    sla_breached_entry_token = NULL,
+    sla_breached_at = NULL,
+    sla_breached_reason = NULL
+  `;
+
+  const formatSlaBudgetLabel = (budgetMs: number): string => {
+    if (budgetMs > 0 && budgetMs % 3_600_000 === 0) {
+      const hours = budgetMs / 3_600_000;
+      return hours === 1 ? "1 hour" : `${hours} hours`;
+    }
+    if (budgetMs > 0 && budgetMs % 60_000 === 0) {
+      const minutes = budgetMs / 60_000;
+      return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+    }
+    return Duration.format(Duration.millis(budgetMs));
+  };
 
   const getOptionalServices = Effect.context<never>().pipe(
     Effect.map((context) => ({
@@ -149,6 +170,7 @@ const make = Effect.gen(function* () {
                 queued_at = NULL,
                 terminal_at = ${terminalAt},
                 updated_at = ${event.occurredAt},
+                ${SLA_BREACH_CLEAR},
                 ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
@@ -260,6 +282,7 @@ const make = Effect.gen(function* () {
                 queued_at = ${event.occurredAt},
                 terminal_at = NULL,
                 updated_at = ${event.occurredAt},
+                ${SLA_BREACH_CLEAR},
                 ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
@@ -298,6 +321,7 @@ const make = Effect.gen(function* () {
                 queued_at = NULL,
                 terminal_at = ${terminalAt},
                 updated_at = ${event.occurredAt},
+                ${SLA_BREACH_CLEAR},
                 ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
@@ -639,9 +663,37 @@ const make = Effect.gen(function* () {
           break;
         }
         case "TicketSlaBreached": {
-          // Full projection writes (sla_breached_* columns) land in the
-          // Phase-A projection task; exhaustiveness needs the arm now that
-          // the event is on the wire union.
+          // Resolve a human lane label for the reason string. Fall back to the
+          // lane key when the registry is unavailable (early startup / tests).
+          const { registry } = yield* getOptionalServices;
+          let laneLabel: string = event.payload.laneKey as string;
+          if (Option.isSome(registry)) {
+            const boardRows = yield* sql<{ readonly boardId: string }>`
+              SELECT board_id AS "boardId"
+              FROM projection_ticket
+              WHERE ticket_id = ${event.ticketId}
+            `;
+            const boardId = boardRows[0]?.boardId;
+            if (boardId !== undefined) {
+              const lane = yield* registry.value.getLane(boardId as BoardId, event.payload.laneKey);
+              if (lane?.name) {
+                laneLabel = lane.name;
+              }
+            }
+          }
+          const reason = `SLA breached: over ${formatSlaBudgetLabel(event.payload.budgetMs)} in ${laneLabel}`;
+          // Guard on current entry token so a late/stale breach event cannot
+          // stamp breach columns onto a ticket that already left the lane.
+          yield* sql`
+            UPDATE projection_ticket
+            SET sla_breached_entry_token = ${event.payload.laneEntryToken},
+                sla_breached_at = ${event.occurredAt},
+                sla_breached_reason = ${reason},
+                updated_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+              AND current_lane_entry_token = ${event.payload.laneEntryToken}
+              AND current_lane_key = ${event.payload.laneKey}
+          `;
           break;
         }
         default: {

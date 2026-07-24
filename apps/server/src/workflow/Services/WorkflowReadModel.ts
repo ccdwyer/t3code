@@ -114,6 +114,11 @@ export interface TicketRow {
   readonly parkOrigin?: string | null;
   // Current step key label; null when no pipeline step is running.
   readonly currentStepLabel?: string | null;
+  // SLA breach fields — set while the current lane entry is over budget.
+  // Optional so SELECTs that omit the columns remain type-compatible.
+  readonly slaBreachedAt?: string | null;
+  readonly slaBreachedReason?: string | null;
+  readonly slaBreachedEntryToken?: string | null;
 }
 
 // A ticket awaiting human attention across the boards in this environment's DB,
@@ -290,6 +295,15 @@ export interface WorkflowReadModelShape {
   readonly listTickets: (
     boardId: BoardId,
   ) => Effect.Effect<ReadonlyArray<TicketRow>, WorkflowEventStoreError>;
+  /**
+   * Clear projected SLA breach columns for tickets whose current lane is not
+   * in `lanesWithSla`. Called after a board-definition save so a removed SLA
+   * cannot leave a permanent Needs You row.
+   */
+  readonly clearSlaBreachesForLanesWithoutSla: (
+    boardId: BoardId,
+    lanesWithSla: ReadonlyArray<LaneKey>,
+  ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly countAdmittedInLane: (
     boardId: BoardId,
     laneKey: LaneKey,

@@ -365,6 +365,8 @@ const toBoardTicketView = (
     ...(ticket.currentStepLabel == null ? {} : { currentStepLabel: ticket.currentStepLabel }),
     // Park-in-place details — present while status is "parked".
     ...(parked === undefined ? {} : { parked }),
+    // SLA breach badge — only while the breach belongs to the current entry.
+    ...(ticket.slaBreachedAt == null ? {} : { slaBreachedAt: ticket.slaBreachedAt }),
   };
 };
 
@@ -529,6 +531,8 @@ const boardSnapshot = (
           ...(lane.actions === undefined || lane.actions.length === 0
             ? {}
             : { actions: lane.actions }),
+          // Pass the decoded Duration; the RPC encoder re-stringifies budget.
+          ...(lane.sla === undefined ? {} : { sla: lane.sla }),
         })),
       },
       tickets: tickets.map((ticket) => toBoardTicketView(ticket, definition)),
@@ -2627,6 +2631,21 @@ const saveBoardDefinition = (
       if (persisted._tag === "lintErrors") {
         return { ok: false, lintErrors: persisted.lintErrors };
       }
+
+      // Drop projected breaches for lanes that no longer declare an SLA so a
+      // removed policy cannot leave a permanent Needs You row. Best-effort:
+      // the definition is already persisted; a clear failure must not flip the
+      // RPC to error after a successful write (retry would 409 conflict).
+      const lanesWithSla = definition.lanes
+        .filter((lane) => lane.sla !== undefined)
+        .map((lane) => lane.key);
+      yield* deps.readModel
+        .clearSlaBreachesForLanesWithoutSla(input.boardId, lanesWithSla)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Failed to clear SLA breach state after save", { error }),
+          ),
+        );
 
       const snapshot = yield* boardSnapshot(deps, input.boardId);
       return {

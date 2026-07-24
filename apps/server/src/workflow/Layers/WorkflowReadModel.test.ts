@@ -3627,6 +3627,83 @@ layer("WorkflowReadModel", (it) => {
         assert.isUndefined(rows.find((x) => x.externalId === "99"));
       }),
   );
+
+  it.effect("listTickets surfaces slaBreachedAt and clearSlaBreaches removes de-SLA'd rows", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const boardId = "b-sla-read" as never;
+      const ticketId = "t-sla-read" as never;
+
+      yield* read.registerBoard({
+        boardId,
+        projectId: "p-sla" as never,
+        name: "SLA board",
+        workflowFilePath: ".t3/boards/sla.json",
+        workflowVersionHash: "hash-sla",
+        maxConcurrentTickets: 3,
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketCreated",
+        eventId: "sla-read-a" as never,
+        ticketId,
+        streamVersion: 0,
+        occurredAt: "2026-07-24T00:00:00.000Z" as never,
+        payload: {
+          boardId,
+          title: "Slow review" as never,
+          laneKey: "review" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketMovedToLane",
+        eventId: "sla-read-b" as never,
+        ticketId,
+        streamVersion: 1,
+        occurredAt: "2026-07-24T00:00:01.000Z" as never,
+        payload: {
+          toLane: "review" as never,
+          laneEntryToken: "tok-sla-read" as never,
+          reason: "manual",
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketSlaBreached",
+        eventId: "sla-read-c" as never,
+        ticketId,
+        streamVersion: 2,
+        occurredAt: "2026-07-24T01:00:01.000Z" as never,
+        payload: {
+          laneKey: "review" as never,
+          laneEntryToken: "tok-sla-read" as never,
+          budgetMs: 3_600_000,
+          enteredLaneAt: "2026-07-24T00:00:01.000Z" as never,
+        },
+      });
+
+      const tickets = yield* read.listTickets(boardId);
+      assert.equal(tickets[0]?.slaBreachedAt, "2026-07-24T01:00:01.000Z");
+      assert.isTrue((tickets[0]?.slaBreachedReason ?? "").includes("1 hour"));
+
+      // Lane still has SLA — clear is a no-op.
+      yield* read.clearSlaBreachesForLanesWithoutSla(boardId, ["review" as never]);
+      const still = yield* read.listTickets(boardId);
+      assert.equal(still[0]?.slaBreachedAt, "2026-07-24T01:00:01.000Z");
+
+      // getTicketDetail agrees with listTickets on SLA fields.
+      const detail = yield* read.getTicketDetail(ticketId);
+      assert.equal(detail?.ticket.slaBreachedAt, "2026-07-24T01:00:01.000Z");
+      assert.isTrue((detail?.ticket.slaBreachedReason ?? "").includes("1 hour"));
+
+      // SLA removed from the lane — clear drops the projected breach.
+      yield* read.clearSlaBreachesForLanesWithoutSla(boardId, []);
+      const cleared = yield* read.listTickets(boardId);
+      assert.equal(cleared[0]?.slaBreachedAt, null);
+      assert.equal(cleared[0]?.slaBreachedReason, null);
+      const clearedDetail = yield* read.getTicketDetail(ticketId);
+      assert.equal(clearedDetail?.ticket.slaBreachedAt, null);
+    }),
+  );
 });
 
 describe("percentileNearestRank", () => {

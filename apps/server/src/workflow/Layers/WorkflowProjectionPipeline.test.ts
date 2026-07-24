@@ -2068,4 +2068,248 @@ layer("WorkflowProjectionPipeline", (it) => {
         assert.equal(rows[0]?.attentionKind, "parked_waiting");
       }),
   );
+
+  it.effect("projects TicketSlaBreached columns and clears them on lane identity change", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const ticketId = "t-sla-breach" as never;
+
+      yield* pipeline.projectEvent({
+        type: "TicketCreated",
+        eventId: "sla-a" as never,
+        ticketId,
+        streamVersion: 0,
+        occurredAt: "2026-07-24T00:00:00.000Z" as never,
+        payload: {
+          boardId: "b-sla" as never,
+          title: "Review me" as never,
+          laneKey: "review" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketMovedToLane",
+        eventId: "sla-b" as never,
+        ticketId,
+        streamVersion: 1,
+        occurredAt: "2026-07-24T00:00:01.000Z" as never,
+        payload: {
+          toLane: "review" as never,
+          laneEntryToken: "tok-review" as never,
+          reason: "manual",
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketSlaBreached",
+        eventId: "sla-c" as never,
+        ticketId,
+        streamVersion: 2,
+        occurredAt: "2026-07-24T04:00:01.000Z" as never,
+        payload: {
+          laneKey: "review" as never,
+          laneEntryToken: "tok-review" as never,
+          budgetMs: 14_400_000,
+          enteredLaneAt: "2026-07-24T00:00:01.000Z" as never,
+        },
+      });
+
+      const breached = yield* sql<{
+        readonly slaBreachedEntryToken: string | null;
+        readonly slaBreachedAt: string | null;
+        readonly slaBreachedReason: string | null;
+        readonly updatedAt: string;
+      }>`
+        SELECT
+          sla_breached_entry_token AS "slaBreachedEntryToken",
+          sla_breached_at AS "slaBreachedAt",
+          sla_breached_reason AS "slaBreachedReason",
+          updated_at AS "updatedAt"
+        FROM projection_ticket
+        WHERE ticket_id = 't-sla-breach'
+      `;
+      assert.equal(breached[0]?.slaBreachedEntryToken, "tok-review");
+      assert.equal(breached[0]?.slaBreachedAt, "2026-07-24T04:00:01.000Z");
+      assert.isTrue(
+        (breached[0]?.slaBreachedReason ?? "").includes("4 hours"),
+        `reason should mention budget: ${breached[0]?.slaBreachedReason}`,
+      );
+      assert.equal(breached[0]?.updatedAt, "2026-07-24T04:00:01.000Z");
+
+      // Notify-only breach persists while the ticket starts running (no clear).
+      yield* pipeline.projectEvent({
+        type: "PipelineStarted",
+        eventId: "sla-d" as never,
+        ticketId,
+        streamVersion: 3,
+        occurredAt: "2026-07-24T04:05:00.000Z" as never,
+        payload: {
+          pipelineRunId: "pr-sla" as never,
+          laneKey: "review" as never,
+          laneEntryToken: "tok-review" as never,
+        },
+      });
+      const stillBreached = yield* sql<{
+        readonly slaBreachedAt: string | null;
+      }>`
+        SELECT sla_breached_at AS "slaBreachedAt"
+        FROM projection_ticket
+        WHERE ticket_id = 't-sla-breach'
+      `;
+      assert.equal(stillBreached[0]?.slaBreachedAt, "2026-07-24T04:00:01.000Z");
+
+      // Lane identity change clears breach columns.
+      yield* pipeline.projectEvent({
+        type: "TicketMovedToLane",
+        eventId: "sla-e" as never,
+        ticketId,
+        streamVersion: 4,
+        occurredAt: "2026-07-24T04:10:00.000Z" as never,
+        payload: {
+          toLane: "escalation" as never,
+          laneEntryToken: "tok-esc" as never,
+          reason: "sla",
+        },
+      });
+      const cleared = yield* sql<{
+        readonly slaBreachedEntryToken: string | null;
+        readonly slaBreachedAt: string | null;
+        readonly slaBreachedReason: string | null;
+      }>`
+        SELECT
+          sla_breached_entry_token AS "slaBreachedEntryToken",
+          sla_breached_at AS "slaBreachedAt",
+          sla_breached_reason AS "slaBreachedReason"
+        FROM projection_ticket
+        WHERE ticket_id = 't-sla-breach'
+      `;
+      assert.equal(cleared[0]?.slaBreachedEntryToken, null);
+      assert.equal(cleared[0]?.slaBreachedAt, null);
+      assert.equal(cleared[0]?.slaBreachedReason, null);
+    }),
+  );
+
+  it.effect("TicketSlaBreached ignores stale tokens and Queued/Admitted clear breach columns", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const ticketId = "t-sla-stale" as never;
+
+      yield* pipeline.projectEvent({
+        type: "TicketCreated",
+        eventId: "sla-stale-a" as never,
+        ticketId,
+        streamVersion: 0,
+        occurredAt: "2026-07-24T00:00:00.000Z" as never,
+        payload: {
+          boardId: "b-sla-stale" as never,
+          title: "Stale" as never,
+          laneKey: "review" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketMovedToLane",
+        eventId: "sla-stale-b" as never,
+        ticketId,
+        streamVersion: 1,
+        occurredAt: "2026-07-24T00:00:01.000Z" as never,
+        payload: {
+          toLane: "review" as never,
+          laneEntryToken: "tok-new" as never,
+          reason: "manual",
+        },
+      });
+      // Stale breach for a previous entry token — must not stamp columns.
+      yield* pipeline.projectEvent({
+        type: "TicketSlaBreached",
+        eventId: "sla-stale-c" as never,
+        ticketId,
+        streamVersion: 2,
+        occurredAt: "2026-07-24T01:00:00.000Z" as never,
+        payload: {
+          laneKey: "review" as never,
+          laneEntryToken: "tok-old" as never,
+          budgetMs: 3_600_000,
+          enteredLaneAt: "2026-07-23T00:00:00.000Z" as never,
+        },
+      });
+      const stale = yield* sql<{ readonly slaBreachedAt: string | null }>`
+        SELECT sla_breached_at AS "slaBreachedAt"
+        FROM projection_ticket
+        WHERE ticket_id = 't-sla-stale'
+      `;
+      assert.equal(stale[0]?.slaBreachedAt, null);
+
+      // Real breach, then queue clears it.
+      yield* pipeline.projectEvent({
+        type: "TicketSlaBreached",
+        eventId: "sla-stale-d" as never,
+        ticketId,
+        streamVersion: 3,
+        occurredAt: "2026-07-24T01:00:01.000Z" as never,
+        payload: {
+          laneKey: "review" as never,
+          laneEntryToken: "tok-new" as never,
+          budgetMs: 3_600_000,
+          enteredLaneAt: "2026-07-24T00:00:01.000Z" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketQueued",
+        eventId: "sla-stale-e" as never,
+        ticketId,
+        streamVersion: 4,
+        occurredAt: "2026-07-24T01:05:00.000Z" as never,
+        payload: { lane: "implement" as never },
+      });
+      const afterQueue = yield* sql<{ readonly slaBreachedAt: string | null }>`
+        SELECT sla_breached_at AS "slaBreachedAt"
+        FROM projection_ticket
+        WHERE ticket_id = 't-sla-stale'
+      `;
+      assert.equal(afterQueue[0]?.slaBreachedAt, null);
+
+      // Admit, breach, re-admit (fresh entry) clears.
+      yield* pipeline.projectEvent({
+        type: "TicketAdmitted",
+        eventId: "sla-stale-f" as never,
+        ticketId,
+        streamVersion: 5,
+        occurredAt: "2026-07-24T01:06:00.000Z" as never,
+        payload: {
+          lane: "implement" as never,
+          laneEntryToken: "tok-admit-1" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketSlaBreached",
+        eventId: "sla-stale-g" as never,
+        ticketId,
+        streamVersion: 6,
+        occurredAt: "2026-07-24T02:06:00.000Z" as never,
+        payload: {
+          laneKey: "implement" as never,
+          laneEntryToken: "tok-admit-1" as never,
+          budgetMs: 3_600_000,
+          enteredLaneAt: "2026-07-24T01:06:00.000Z" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketAdmitted",
+        eventId: "sla-stale-h" as never,
+        ticketId,
+        streamVersion: 7,
+        occurredAt: "2026-07-24T02:10:00.000Z" as never,
+        payload: {
+          lane: "implement" as never,
+          laneEntryToken: "tok-admit-2" as never,
+        },
+      });
+      const afterAdmit = yield* sql<{ readonly slaBreachedAt: string | null }>`
+        SELECT sla_breached_at AS "slaBreachedAt"
+        FROM projection_ticket
+        WHERE ticket_id = 't-sla-stale'
+      `;
+      assert.equal(afterAdmit[0]?.slaBreachedAt, null);
+    }),
+  );
 });

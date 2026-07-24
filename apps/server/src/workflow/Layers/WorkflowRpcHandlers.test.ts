@@ -97,6 +97,7 @@ const noopReadModel = {
   deleteTicketState: () => Effect.void,
   listBoardsForProject: () => Effect.succeed([]),
   listTickets: () => Effect.succeed([]),
+  clearSlaBreachesForLanesWithoutSla: () => Effect.void,
   countAdmittedInLane: () => Effect.succeed(0),
   oldestQueuedForLane: () => Effect.succeed(null),
   getTicketDetail: () => Effect.succeed(null),

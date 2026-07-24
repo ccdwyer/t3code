@@ -585,6 +585,7 @@ const buildAppUnderTest = (options?: {
         deleteBoardTicketState: () => Effect.void,
         getBoard: () => Effect.succeed(null),
         listTickets: () => Effect.succeed([]),
+        clearSlaBreachesForLanesWithoutSla: () => Effect.void,
         getTicketDetail: () => Effect.succeed(null),
         listBoardsForProject: () => Effect.succeed([]),
       }),

@@ -261,6 +261,7 @@ it.effect(
         deleteTicketState: unsupportedEffect,
         listBoardsForProject: unsupportedEffect,
         listTickets: unsupportedEffect,
+        clearSlaBreachesForLanesWithoutSla: unsupportedEffect,
         countAdmittedInLane: unsupportedEffect,
         oldestQueuedForLane: unsupportedEffect,
         getTicketDetail: () => Effect.succeed(null),

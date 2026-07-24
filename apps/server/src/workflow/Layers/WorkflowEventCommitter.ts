@@ -541,6 +541,8 @@ const make = Effect.gen(function* () {
             : { currentStepLabel: ticket.currentStepLabel }),
           // Park-in-place details — present while status is "parked".
           ...(parked === undefined ? {} : { parked }),
+          // SLA breach badge — live stream must match snapshot/refetch.
+          ...(ticket.slaBreachedAt == null ? {} : { slaBreachedAt: ticket.slaBreachedAt }),
         } satisfies BoardTicketView);
       }
     });

@@ -713,6 +713,9 @@ const make = Effect.gen(function* () {
             ...(step.agent.options === undefined ? {} : { options: step.agent.options }),
             ...(worktree.projectId === undefined ? {} : { projectId: worktree.projectId }),
             threadTitle: `Workflow step ${step.key}${titleSuffix} · ${ctx.ticketId}`,
+            // Dispatch-time metadata for steer validation (TOCTOU-safe).
+            captureOutput: step.captureOutput === true,
+            panelSize: step.panel ?? 1,
           });
           const terminal = yield* dispatch.awaitTerminal(
             turnIds.dispatchId as never,

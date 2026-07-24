@@ -16,9 +16,11 @@ export type TurnState =
   | { readonly _tag: "failed"; readonly error: string };
 
 export interface TurnProjectionPortShape {
-  readonly getLatestTurnState: (
-    threadId: ThreadId,
-  ) => Effect.Effect<{ readonly state: string; readonly completed: boolean }>;
+  readonly getLatestTurnState: (threadId: ThreadId) => Effect.Effect<{
+    readonly state: string;
+    readonly completed: boolean;
+    readonly turnId: string | null;
+  }>;
 }
 
 export class TurnProjectionPort extends Context.Service<

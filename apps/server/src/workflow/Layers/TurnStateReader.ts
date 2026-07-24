@@ -151,8 +151,9 @@ export const TurnProjectionPortLive = Layer.effect(
           // Mirrors toTurnState: interrupted turns are terminal too.
           completed:
             turn?.state === "completed" || turn?.state === "error" || turn?.state === "interrupted",
+          turnId: turn?.turnId ?? null,
         })),
-        Effect.orElseSucceed(() => ({ state: "pending", completed: false })),
+        Effect.orElseSucceed(() => ({ state: "pending", completed: false, turnId: null })),
       );
 
     return { getLatestTurnState } satisfies TurnProjectionPortShape;

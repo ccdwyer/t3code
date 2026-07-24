@@ -7,6 +7,7 @@ import {
   type ProviderSessionStartInput,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -27,11 +28,13 @@ import {
   type ProviderDispatchTerminalResult,
   type ProviderDispatchOutboxShape,
   type ProviderTurnPortShape,
+  type SteerTarget,
 } from "../Services/ProviderDispatchOutbox.ts";
-import { TurnStateReader } from "../Services/TurnStateReader.ts";
+import { TurnProjectionPort, TurnStateReader } from "../Services/TurnStateReader.ts";
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const TERMINAL_WAIT_TIMEOUT = Duration.minutes(30);
+const TERMINAL_WAIT_TIMEOUT_MS = Duration.toMillis(TERMINAL_WAIT_TIMEOUT);
 
 const toDispatchError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });
@@ -100,10 +103,31 @@ interface DispatchForStepRow {
   readonly turnId: string | null;
 }
 
+interface SteerTargetRow {
+  readonly dispatchId: string;
+  readonly threadId: string;
+  readonly turnId: string | null;
+  readonly status: string;
+  readonly captureOutput: number | null;
+  readonly panelSize: number | null;
+  readonly steerPendingMessageId: string | null;
+}
+
+interface DeadlineRow {
+  readonly steerAcceptedAt: string | null;
+  readonly startedAt: string | null;
+  readonly createdAt: string;
+  readonly steerPendingMessageId: string | null;
+  readonly turnId: string | null;
+}
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const provider = yield* ProviderTurnPort;
   const turns = yield* TurnStateReader;
+  // Optional: unit tests that only stub TurnStateReader still compile; live
+  // wiring provides the port so awaitTerminal can single-read turn id+state.
+  const turnProjection = yield* Effect.serviceOption(TurnProjectionPort);
 
   const getDispatchStatus = (dispatchId: string) =>
     wrapSql(sql<DispatchStatusRow>`
@@ -149,6 +173,8 @@ const make = Effect.gen(function* () {
           project_id,
           thread_title,
           runtime_mode,
+          capture_output,
+          panel_size,
           status,
           created_at
         )
@@ -165,6 +191,8 @@ const make = Effect.gen(function* () {
           ${req.projectId ?? null},
           ${req.threadTitle ?? null},
           ${req.runtimeMode ?? null},
+          ${req.captureOutput === undefined ? null : req.captureOutput ? 1 : 0},
+          ${req.panelSize ?? null},
           'pending',
           ${createdAt}
         )
@@ -213,67 +241,174 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const getSteerTarget: ProviderDispatchOutboxShape["getSteerTarget"] = (stepRunId) =>
+    wrapSql(sql<SteerTargetRow>`
+      SELECT
+        dispatch_id AS "dispatchId",
+        thread_id AS "threadId",
+        turn_id AS "turnId",
+        status,
+        capture_output AS "captureOutput",
+        panel_size AS "panelSize",
+        steer_pending_message_id AS "steerPendingMessageId"
+      FROM workflow_dispatch_outbox
+      WHERE step_run_id = ${stepRunId}
+      ORDER BY created_at DESC, dispatch_id DESC
+      LIMIT 1
+    `).pipe(
+      Effect.map((rows): SteerTarget | null => {
+        const row = rows[0];
+        if (!row || row.status !== "started" || row.turnId === null) {
+          return null;
+        }
+        return {
+          dispatchId: row.dispatchId as never,
+          threadId: row.threadId as never,
+          turnId: row.turnId as never,
+          captureOutput: row.captureOutput === 1,
+          panelSize: row.panelSize,
+          steerPendingMessageId: row.steerPendingMessageId,
+        };
+      }),
+    );
+
+  const markSteerPending: ProviderDispatchOutboxShape["markSteerPending"] = (
+    dispatchId,
+    messageId,
+  ) =>
+    Effect.gen(function* () {
+      yield* wrapSql(sql`
+        UPDATE workflow_dispatch_outbox
+        SET steer_pending_message_id = ${messageId}
+        WHERE dispatch_id = ${dispatchId}
+          AND status = 'started'
+          AND steer_pending_message_id IS NULL
+          AND steer_tombstone_message_id IS NULL
+      `);
+      // CAS success: we hold the reservation for this messageId (or already
+      // held it from an idempotent retry that re-issued the same id).
+      const rows = yield* wrapSql(sql<{ readonly pending: string | null }>`
+        SELECT steer_pending_message_id AS "pending"
+        FROM workflow_dispatch_outbox
+        WHERE dispatch_id = ${dispatchId}
+      `);
+      return rows[0]?.pending === (messageId as string);
+    });
+
+  const clearSteerPending: ProviderDispatchOutboxShape["clearSteerPending"] = (dispatchId) =>
+    wrapSql(sql`
+      UPDATE workflow_dispatch_outbox
+      SET steer_pending_message_id = NULL
+      WHERE dispatch_id = ${dispatchId}
+    `).pipe(Effect.asVoid);
+
+  const readDeadlineBase = (dispatchId: string) =>
+    wrapSql(sql<DeadlineRow>`
+      SELECT
+        steer_accepted_at AS "steerAcceptedAt",
+        started_at AS "startedAt",
+        created_at AS "createdAt",
+        steer_pending_message_id AS "steerPendingMessageId",
+        turn_id AS "turnId"
+      FROM workflow_dispatch_outbox
+      WHERE dispatch_id = ${dispatchId}
+    `).pipe(Effect.map((rows) => rows[0] ?? null));
+
+  const persistTurnIdIfChanged = (dispatchId: string, turnId: string) =>
+    wrapSql(sql`
+      UPDATE workflow_dispatch_outbox
+      SET turn_id = ${turnId}
+      WHERE dispatch_id = ${dispatchId}
+        AND (turn_id IS NULL OR turn_id != ${turnId})
+    `).pipe(Effect.asVoid);
+
   const awaitTerminal: ProviderDispatchOutboxShape["awaitTerminal"] = (dispatchId, threadId) => {
     const waitForTerminal: Effect.Effect<ProviderDispatchTerminalResult, WorkflowEventStoreError> =
       Effect.gen(function* () {
-        let state = yield* turns.read(threadId);
-        while (state._tag === "running") {
-          yield* Effect.sleep("500 millis");
-          state = yield* turns.read(threadId);
-        }
-        if (state._tag === "awaiting_user") {
-          return {
-            ok: false,
-            awaitingUser: true,
-            waitingReason: state.waitingReason,
-            providerThreadId: state.providerThreadId,
-            providerRequestId: state.providerRequestId,
-            providerResponseKind: state.providerResponseKind,
-            ...(state.providerQuestionId === undefined
-              ? {}
-              : { providerQuestionId: state.providerQuestionId }),
-          } satisfies ProviderDispatchTerminalResult;
+        // Rolling deadline: COALESCE(steer_accepted_at, started_at, created_at)
+        // + 30m, re-read each poll so only an *acked* steer extends the wait.
+        for (;;) {
+          const meta = yield* readDeadlineBase(dispatchId);
+          const baseIso = meta?.steerAcceptedAt ?? meta?.startedAt ?? meta?.createdAt;
+          const baseMs = baseIso !== undefined ? Date.parse(baseIso) : Number.NaN;
+          const nowMs = yield* Clock.currentTimeMillis;
+          if (Number.isFinite(baseMs) && nowMs - baseMs >= TERMINAL_WAIT_TIMEOUT_MS) {
+            break;
+          }
+
+          // Single-read correlation when the projection port is available:
+          // turn id + raw state come from one listByThreadId; awaiting_user
+          // enrichment still goes through TurnStateReader (same pending tables).
+          let latestTurnId: string | null = meta?.turnId ?? null;
+          if (Option.isSome(turnProjection)) {
+            const latest = yield* turnProjection.value.getLatestTurnState(threadId);
+            if (latest.turnId !== null) {
+              latestTurnId = latest.turnId;
+              yield* persistTurnIdIfChanged(dispatchId, latest.turnId);
+            }
+          }
+
+          const state = yield* turns.read(threadId);
+          if (state._tag === "running") {
+            yield* Effect.sleep("500 millis");
+            continue;
+          }
+
+          if (state._tag === "awaiting_user") {
+            // No grace / stop on the approval path. Clear any in-flight steer
+            // reservation — the provider superseded it with a question.
+            if (meta?.steerPendingMessageId != null) {
+              yield* clearSteerPending(dispatchId as never);
+            }
+            return {
+              ok: false,
+              awaitingUser: true,
+              waitingReason: state.waitingReason,
+              providerThreadId: state.providerThreadId,
+              providerRequestId: state.providerRequestId,
+              providerResponseKind: state.providerResponseKind,
+              ...(state.providerQuestionId === undefined
+                ? {}
+                : { providerQuestionId: state.providerQuestionId }),
+            } satisfies ProviderDispatchTerminalResult;
+          }
+
+          const terminalTurnId = (latestTurnId ?? meta?.turnId ?? "unknown-turn") as never;
+          const confirmedAt = yield* nowIso;
+          yield* wrapSql(sql`
+            UPDATE workflow_dispatch_outbox
+            SET status = 'confirmed',
+                confirmed_at = ${confirmedAt},
+                turn_id = COALESCE(turn_id, ${latestTurnId})
+            WHERE dispatch_id = ${dispatchId}
+          `);
+
+          return state._tag === "completed"
+            ? ({ ok: true, turnId: terminalTurnId } satisfies ProviderDispatchTerminalResult)
+            : ({
+                ok: false,
+                turnId: terminalTurnId,
+                error: state.error,
+              } satisfies ProviderDispatchTerminalResult);
         }
 
+        // Deadline elapsed while still running.
+        const meta = yield* readDeadlineBase(dispatchId);
         const confirmedAt = yield* nowIso;
         yield* wrapSql(sql`
-        UPDATE workflow_dispatch_outbox
-        SET status = 'confirmed',
-            confirmed_at = ${confirmedAt}
-        WHERE dispatch_id = ${dispatchId}
-      `);
-
-        return state._tag === "completed"
-          ? ({ ok: true } satisfies ProviderDispatchTerminalResult)
-          : ({ ok: false, error: state.error } satisfies ProviderDispatchTerminalResult);
+          UPDATE workflow_dispatch_outbox
+          SET status = 'confirmed',
+              confirmed_at = ${confirmedAt}
+          WHERE dispatch_id = ${dispatchId}
+        `);
+        return {
+          ok: false,
+          turnId: (meta?.turnId ?? "unknown-turn") as never,
+          error: "turn did not reach a terminal state before timeout",
+        } satisfies ProviderDispatchTerminalResult;
       });
 
-    return waitForTerminal.pipe(
-      Effect.timeoutOption(TERMINAL_WAIT_TIMEOUT),
-      Effect.flatMap((result) =>
-        Option.match(result, {
-          onNone: () =>
-            Effect.gen(function* () {
-              // The pipeline treats this timeout as the step's terminal
-              // failure, so settle the outbox row too — otherwise restart
-              // recovery would re-dispatch/re-monitor a step the pipeline
-              // already routed on.
-              const confirmedAt = yield* nowIso;
-              yield* wrapSql(sql`
-                UPDATE workflow_dispatch_outbox
-                SET status = 'confirmed',
-                    confirmed_at = ${confirmedAt}
-                WHERE dispatch_id = ${dispatchId}
-              `);
-              return {
-                ok: false,
-                error: "turn did not reach a terminal state before timeout",
-              } satisfies ProviderDispatchTerminalResult;
-            }),
-          onSome: Effect.succeed,
-        }),
-      ),
-    );
+    return waitForTerminal;
   };
 
   const awaitStepTerminal: ProviderDispatchOutboxShape["awaitStepTerminal"] = (
@@ -372,6 +507,9 @@ const make = Effect.gen(function* () {
     confirmStep,
     ensureStarted,
     getDispatchForStep,
+    getSteerTarget,
+    markSteerPending,
+    clearSteerPending,
     awaitTerminal,
     awaitStepTerminal,
     recoverPending,

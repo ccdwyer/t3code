@@ -388,6 +388,9 @@ const mk = (
           getDispatchForStep: () => Effect.succeed(null),
           awaitTerminal: () => Effect.succeed(terminal),
           awaitStepTerminal: () => Effect.succeed(terminal),
+          getSteerTarget: () => Effect.succeed(null),
+          markSteerPending: () => Effect.succeed(false),
+          clearSteerPending: () => Effect.void,
           recoverPending: () => Effect.void,
         }),
       ),
@@ -877,7 +880,7 @@ const descSpillDiscussionInlineContext: StepExecutionContext = {
   },
 };
 
-mk({ ok: true })("RealStepExecutor success", (it) => {
+mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor success", (it) => {
   it.effect("completes an agent step and releases the worktree lease", () =>
     Effect.gen(function* () {
       checkpointCalls.length = 0;
@@ -1269,32 +1272,32 @@ mk({ ok: true })("RealStepExecutor success", (it) => {
   );
 });
 
-mk({ ok: true }, { fileSystemLayer: CanonicalInstructionFileSystemLayer })(
-  "RealStepExecutor canonical instruction read",
-  (it) => {
-    it.effect("reads the canonical real instruction path after validation", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        canonicalInstructionReadPaths.length = 0;
-        const executor = yield* StepExecutor;
-        yield* seedCanonicalFileInstructionStepStarted;
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  { fileSystemLayer: CanonicalInstructionFileSystemLayer },
+)("RealStepExecutor canonical instruction read", (it) => {
+  it.effect("reads the canonical real instruction path after validation", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      canonicalInstructionReadPaths.length = 0;
+      const executor = yield* StepExecutor;
+      yield* seedCanonicalFileInstructionStepStarted;
 
-        const outcome = yield* executor.execute(canonicalFileInstructionContext);
+      const outcome = yield* executor.execute(canonicalFileInstructionContext);
 
-        assert.deepEqual(outcome, { _tag: "completed" });
-        assert.deepEqual(canonicalInstructionReadPaths, [
-          "/tmp/repo-ticket-1/instructions/target.md",
-        ]);
-        assert.equal(
-          (dispatchStartInputs[0] as { readonly instruction?: string } | undefined)?.instruction,
-          "Canonical instruction",
-        );
-      }),
-    );
-  },
-);
+      assert.deepEqual(outcome, { _tag: "completed" });
+      assert.deepEqual(canonicalInstructionReadPaths, [
+        "/tmp/repo-ticket-1/instructions/target.md",
+      ]);
+      assert.equal(
+        (dispatchStartInputs[0] as { readonly instruction?: string } | undefined)?.instruction,
+        "Canonical instruction",
+      );
+    }),
+  );
+});
 
-mk({ ok: true })("RealStepExecutor handoff", (it) => {
+mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor handoff", (it) => {
   it.effect("inlines {{prev.output}} from the preceding step's current-pass output", () =>
     Effect.gen(function* () {
       dispatchStartInputs.length = 0;
@@ -1446,257 +1449,254 @@ mk({ ok: true })("RealStepExecutor handoff", (it) => {
   );
 });
 
-mk({ ok: true }, { providerServiceLayer: providerServiceLayerWithMaxInput(undefined) })(
-  "RealStepExecutor description spill (120k provider)",
-  (it) => {
-    it.effect("inlines a short description and writes no DESCRIPTION.md", () =>
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  { providerServiceLayer: providerServiceLayerWithMaxInput(undefined) },
+)("RealStepExecutor description spill (120k provider)", (it) => {
+  it.effect("inlines a short description and writes no DESCRIPTION.md", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const fileSystem = yield* FileSystem.FileSystem;
+      yield* seedStepStartedFor(descSpillContext, "event-step-started-desc-short");
+      yield* seedTicketDescription(descSpillContext, "Short and sweet description.");
+
+      const outcome = yield* executor.execute(descSpillContext);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      assert.include(dispatched.instruction, "Short and sweet description.");
+      assert.notInclude(dispatched.instruction, "DESCRIPTION.md");
+      const exists = yield* fileSystem.exists(
+        "/tmp/wt-ticket-1/.t3/ticket/ticket-desc-spill/DESCRIPTION.md",
+      );
+      assert.isFalse(exists);
+    }),
+  );
+
+  it.effect("preserves handoff-like syntax inside an inlined description verbatim", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const ctx = { ...descSpillContext, ticketId: "ticket-desc-handoff-syntax" as never };
+      yield* seedStepStartedFor(ctx, "event-step-started-desc-handoff-syntax");
+      // A description that literally contains handoff placeholder syntax. The
+      // handoff resolver runs against the instruction skeleton (description still
+      // a marker), so this text must reach the agent verbatim — never matched or
+      // replaced as if it were one of the instruction's own handoff references.
+      yield* seedTicketDescription(
+        ctx,
+        "Use {{prev.output}} and {{step.review.output}} as the input.",
+      );
+
+      const outcome = yield* executor.execute(ctx);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      assert.include(
+        dispatched.instruction,
+        "Use {{prev.output}} and {{step.review.output}} as the input.",
+      );
+    }),
+  );
+
+  it.effect("uses the 120k budget when no maxInputChars is declared (today's behavior)", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const desc = "Y".repeat(50_000);
+      const ctx = { ...descSpillContext, ticketId: "ticket-desc-120k" as never };
+      yield* seedStepStartedFor(ctx, "event-step-started-desc-120k");
+      yield* seedTicketDescription(ctx, desc);
+
+      const outcome = yield* executor.execute(ctx);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      // 50k * 2 occurrences = 100k < 120k budget → inlined, no spill.
+      assert.include(dispatched.instruction, desc);
+      const exists = yield* fileSystem.exists(
+        "/tmp/wt-ticket-1/.t3/ticket/ticket-desc-120k/DESCRIPTION.md",
+      );
+      assert.isFalse(exists);
+    }),
+  );
+
+  it.effect("does not append a second discussion section when inlined via placeholder", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      yield* seedStepStartedFor(
+        descSpillDiscussionInlineContext,
+        "event-step-started-desc-discussion-inline",
+      );
+      yield* seedTicketDescription(descSpillDiscussionInlineContext, "Short desc.");
+      yield* seedTicketMessages(descSpillDiscussionInlineContext, [
+        { author: "user", body: "Use the retry helper", attachments: 0 },
+      ]);
+
+      const outcome = yield* executor.execute(descSpillDiscussionInlineContext);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      assert.include(dispatched.instruction, "Short desc.");
+      assert.include(dispatched.instruction, "Use the retry helper");
+      // Inlined via {{ticket.discussion}} — never double-appended.
+      assert.notInclude(dispatched.instruction, "## Ticket discussion");
+      assert.notInclude(dispatched.instruction, "{{ticket.discussion}}");
+    }),
+  );
+});
+
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  { providerServiceLayer: providerServiceLayerWithMaxInput(800) },
+)("RealStepExecutor description spill (tight provider)", (it) => {
+  it.effect("spills a long description to DESCRIPTION.md and replaces all occurrences", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const longDescription = "D".repeat(5_000);
+      yield* seedStepStartedFor(descSpillContext, "event-step-started-desc-spill");
+      yield* seedTicketDescription(descSpillContext, longDescription);
+
+      const outcome = yield* executor.execute(descSpillContext);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      const spillPath = ".t3/ticket/ticket-desc-spill/DESCRIPTION.md";
+      // The pointer replaces the body; the raw body is NOT inlined.
+      assert.include(dispatched.instruction, spillPath);
+      assert.notInclude(dispatched.instruction, longDescription);
+      // Both {{ticket.description}} occurrences were replaced (no literal left).
+      assert.notInclude(dispatched.instruction, "{{ticket.description}}");
+      // The spill file holds a single-line `# <title>` header then the body.
+      const written = yield* fileSystem.readFileString(`/tmp/wt-ticket-1/${spillPath}`);
+      assert.equal(written, `# Executor ticket\n\n${longDescription}`);
+      yield* fileSystem
+        .remove("/tmp/wt-ticket-1/.t3/ticket/ticket-desc-spill", { recursive: true })
+        .pipe(Effect.catch(() => Effect.void));
+    }),
+  );
+
+  it.effect("spills both the description and an over-budget handoff, staying within budget", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const longDescription = "D".repeat(5_000);
+      const longReview = "R".repeat(5_000);
+      yield* seedStepStartedFor(descSpillWithHandoffContext, "event-step-started-desc-handoff");
+      yield* seedTicketDescription(descSpillWithHandoffContext, longDescription);
+      yield* seedHandoffStepRun({
+        stepRunId: "review-run-desc-handoff",
+        pipelineRunId: "pipeline-desc-spill-handoff-prior",
+        ticketId: descSpillWithHandoffContext.ticketId as string,
+        laneKey: descSpillWithHandoffContext.laneKey as string,
+        laneEntryToken: descSpillWithHandoffContext.laneEntryToken as string,
+        stepKey: "review",
+        output: longReview,
+        finishedAt: "2026-06-07T00:00:01.000Z",
+      });
+
+      const outcome = yield* executor.execute(descSpillWithHandoffContext);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      // Description spilled.
+      assert.include(dispatched.instruction, ".t3/ticket/ticket-desc-spill-handoff/DESCRIPTION.md");
+      assert.notInclude(dispatched.instruction, longDescription);
+      // Over-budget handoff spilled.
+      assert.include(
+        dispatched.instruction,
+        ".t3/ticket/ticket-desc-spill-handoff/handoff/review.md",
+      );
+      assert.notInclude(dispatched.instruction, longReview);
+      // Final prompt fits the 800-char provider budget after both spills.
+      assert.isAtMost(dispatched.instruction.length, 800);
+      yield* fileSystem
+        .remove("/tmp/wt-ticket-1/.t3/ticket/ticket-desc-spill-handoff", { recursive: true })
+        .pipe(Effect.catch(() => Effect.void));
+    }),
+  );
+
+  it.effect(
+    "spills an inlinable description when handoff overhead pushes the body over budget",
+    () =>
       Effect.gen(function* () {
         dispatchStartInputs.length = 0;
         const executor = yield* StepExecutor;
         const fileSystem = yield* FileSystem.FileSystem;
-        yield* seedStepStartedFor(descSpillContext, "event-step-started-desc-short");
-        yield* seedTicketDescription(descSpillContext, "Short and sweet description.");
-
-        const outcome = yield* executor.execute(descSpillContext);
-
-        assert.equal(outcome._tag, "completed");
-        const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        assert.include(dispatched.instruction, "Short and sweet description.");
-        assert.notInclude(dispatched.instruction, "DESCRIPTION.md");
-        const exists = yield* fileSystem.exists(
-          "/tmp/wt-ticket-1/.t3/ticket/ticket-desc-spill/DESCRIPTION.md",
-        );
-        assert.isFalse(exists);
-      }),
-    );
-
-    it.effect("preserves handoff-like syntax inside an inlined description verbatim", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        const executor = yield* StepExecutor;
-        const ctx = { ...descSpillContext, ticketId: "ticket-desc-handoff-syntax" as never };
-        yield* seedStepStartedFor(ctx, "event-step-started-desc-handoff-syntax");
-        // A description that literally contains handoff placeholder syntax. The
-        // handoff resolver runs against the instruction skeleton (description still
-        // a marker), so this text must reach the agent verbatim — never matched or
-        // replaced as if it were one of the instruction's own handoff references.
-        yield* seedTicketDescription(
-          ctx,
-          "Use {{prev.output}} and {{step.review.output}} as the input.",
-        );
-
-        const outcome = yield* executor.execute(ctx);
-
-        assert.equal(outcome._tag, "completed");
-        const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        assert.include(
-          dispatched.instruction,
-          "Use {{prev.output}} and {{step.review.output}} as the input.",
-        );
-      }),
-    );
-
-    it.effect("uses the 120k budget when no maxInputChars is declared (today's behavior)", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        const executor = yield* StepExecutor;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const desc = "Y".repeat(50_000);
-        const ctx = { ...descSpillContext, ticketId: "ticket-desc-120k" as never };
-        yield* seedStepStartedFor(ctx, "event-step-started-desc-120k");
-        yield* seedTicketDescription(ctx, desc);
-
-        const outcome = yield* executor.execute(ctx);
-
-        assert.equal(outcome._tag, "completed");
-        const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        // 50k * 2 occurrences = 100k < 120k budget → inlined, no spill.
-        assert.include(dispatched.instruction, desc);
-        const exists = yield* fileSystem.exists(
-          "/tmp/wt-ticket-1/.t3/ticket/ticket-desc-120k/DESCRIPTION.md",
-        );
-        assert.isFalse(exists);
-      }),
-    );
-
-    it.effect("does not append a second discussion section when inlined via placeholder", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        const executor = yield* StepExecutor;
-        yield* seedStepStartedFor(
-          descSpillDiscussionInlineContext,
-          "event-step-started-desc-discussion-inline",
-        );
-        yield* seedTicketDescription(descSpillDiscussionInlineContext, "Short desc.");
-        yield* seedTicketMessages(descSpillDiscussionInlineContext, [
-          { author: "user", body: "Use the retry helper", attachments: 0 },
-        ]);
-
-        const outcome = yield* executor.execute(descSpillDiscussionInlineContext);
-
-        assert.equal(outcome._tag, "completed");
-        const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        assert.include(dispatched.instruction, "Short desc.");
-        assert.include(dispatched.instruction, "Use the retry helper");
-        // Inlined via {{ticket.discussion}} — never double-appended.
-        assert.notInclude(dispatched.instruction, "## Ticket discussion");
-        assert.notInclude(dispatched.instruction, "{{ticket.discussion}}");
-      }),
-    );
-  },
-);
-
-mk({ ok: true }, { providerServiceLayer: providerServiceLayerWithMaxInput(800) })(
-  "RealStepExecutor description spill (tight provider)",
-  (it) => {
-    it.effect("spills a long description to DESCRIPTION.md and replaces all occurrences", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        const executor = yield* StepExecutor;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const longDescription = "D".repeat(5_000);
-        yield* seedStepStartedFor(descSpillContext, "event-step-started-desc-spill");
-        yield* seedTicketDescription(descSpillContext, longDescription);
-
-        const outcome = yield* executor.execute(descSpillContext);
-
-        assert.equal(outcome._tag, "completed");
-        const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        const spillPath = ".t3/ticket/ticket-desc-spill/DESCRIPTION.md";
-        // The pointer replaces the body; the raw body is NOT inlined.
-        assert.include(dispatched.instruction, spillPath);
-        assert.notInclude(dispatched.instruction, longDescription);
-        // Both {{ticket.description}} occurrences were replaced (no literal left).
-        assert.notInclude(dispatched.instruction, "{{ticket.description}}");
-        // The spill file holds a single-line `# <title>` header then the body.
-        const written = yield* fileSystem.readFileString(`/tmp/wt-ticket-1/${spillPath}`);
-        assert.equal(written, `# Executor ticket\n\n${longDescription}`);
-        yield* fileSystem
-          .remove("/tmp/wt-ticket-1/.t3/ticket/ticket-desc-spill", { recursive: true })
-          .pipe(Effect.catch(() => Effect.void));
-      }),
-    );
-
-    it.effect("spills both the description and an over-budget handoff, staying within budget", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        const executor = yield* StepExecutor;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const longDescription = "D".repeat(5_000);
+        // 750 chars fits inline on its own under the 800 budget, so the up-front
+        // decision keeps it inline. Only the post-handoff fallback spills it, once
+        // the spilled-handoff pointer overhead makes the assembled body overflow.
+        const inlinableDescription = "D".repeat(750);
         const longReview = "R".repeat(5_000);
-        yield* seedStepStartedFor(descSpillWithHandoffContext, "event-step-started-desc-handoff");
-        yield* seedTicketDescription(descSpillWithHandoffContext, longDescription);
+        const ctx = {
+          ...descSpillWithHandoffContext,
+          ticketId: "ticket-desc-fallback" as never,
+          pipelineRunId: "pipeline-desc-fallback" as never,
+          stepRunId: "step-run-desc-fallback" as never,
+        };
+        yield* seedStepStartedFor(ctx, "event-step-started-desc-fallback");
+        yield* seedTicketDescription(ctx, inlinableDescription);
         yield* seedHandoffStepRun({
-          stepRunId: "review-run-desc-handoff",
-          pipelineRunId: "pipeline-desc-spill-handoff-prior",
-          ticketId: descSpillWithHandoffContext.ticketId as string,
-          laneKey: descSpillWithHandoffContext.laneKey as string,
-          laneEntryToken: descSpillWithHandoffContext.laneEntryToken as string,
+          stepRunId: "review-run-desc-fallback",
+          pipelineRunId: "pipeline-desc-fallback-prior",
+          ticketId: ctx.ticketId as string,
+          laneKey: ctx.laneKey as string,
+          laneEntryToken: ctx.laneEntryToken as string,
           stepKey: "review",
           output: longReview,
           finishedAt: "2026-06-07T00:00:01.000Z",
         });
 
-        const outcome = yield* executor.execute(descSpillWithHandoffContext);
-
-        assert.equal(outcome._tag, "completed");
-        const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        // Description spilled.
-        assert.include(
-          dispatched.instruction,
-          ".t3/ticket/ticket-desc-spill-handoff/DESCRIPTION.md",
-        );
-        assert.notInclude(dispatched.instruction, longDescription);
-        // Over-budget handoff spilled.
-        assert.include(
-          dispatched.instruction,
-          ".t3/ticket/ticket-desc-spill-handoff/handoff/review.md",
-        );
-        assert.notInclude(dispatched.instruction, longReview);
-        // Final prompt fits the 800-char provider budget after both spills.
-        assert.isAtMost(dispatched.instruction.length, 800);
-        yield* fileSystem
-          .remove("/tmp/wt-ticket-1/.t3/ticket/ticket-desc-spill-handoff", { recursive: true })
-          .pipe(Effect.catch(() => Effect.void));
-      }),
-    );
-
-    it.effect(
-      "spills an inlinable description when handoff overhead pushes the body over budget",
-      () =>
-        Effect.gen(function* () {
-          dispatchStartInputs.length = 0;
-          const executor = yield* StepExecutor;
-          const fileSystem = yield* FileSystem.FileSystem;
-          // 750 chars fits inline on its own under the 800 budget, so the up-front
-          // decision keeps it inline. Only the post-handoff fallback spills it, once
-          // the spilled-handoff pointer overhead makes the assembled body overflow.
-          const inlinableDescription = "D".repeat(750);
-          const longReview = "R".repeat(5_000);
-          const ctx = {
-            ...descSpillWithHandoffContext,
-            ticketId: "ticket-desc-fallback" as never,
-            pipelineRunId: "pipeline-desc-fallback" as never,
-            stepRunId: "step-run-desc-fallback" as never,
-          };
-          yield* seedStepStartedFor(ctx, "event-step-started-desc-fallback");
-          yield* seedTicketDescription(ctx, inlinableDescription);
-          yield* seedHandoffStepRun({
-            stepRunId: "review-run-desc-fallback",
-            pipelineRunId: "pipeline-desc-fallback-prior",
-            ticketId: ctx.ticketId as string,
-            laneKey: ctx.laneKey as string,
-            laneEntryToken: ctx.laneEntryToken as string,
-            stepKey: "review",
-            output: longReview,
-            finishedAt: "2026-06-07T00:00:01.000Z",
-          });
-
-          const outcome = yield* executor.execute(ctx);
-
-          assert.equal(outcome._tag, "completed");
-          const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-          // The fallback spilled the description even though it fit inline alone.
-          assert.include(dispatched.instruction, ".t3/ticket/ticket-desc-fallback/DESCRIPTION.md");
-          assert.notInclude(dispatched.instruction, inlinableDescription);
-          assert.isAtMost(dispatched.instruction.length, 800);
-          yield* fileSystem
-            .remove("/tmp/wt-ticket-1/.t3/ticket/ticket-desc-fallback", { recursive: true })
-            .pipe(Effect.catch(() => Effect.void));
-        }),
-    );
-  },
-);
-
-mk({ ok: true }, { providerServiceLayer: providerServiceLayerWithMaxInput(20) })(
-  "RealStepExecutor description spill (pointer guard)",
-  (it) => {
-    it.effect("inlines a description shorter than the pointer even when over budget", () =>
-      Effect.gen(function* () {
-        dispatchStartInputs.length = 0;
-        const executor = yield* StepExecutor;
-        const fileSystem = yield* FileSystem.FileSystem;
-        // Over the 20-char body budget, but far shorter than the ~100-char pointer,
-        // so spilling would only enlarge the prompt → inline instead.
-        const smallDescription = "just a little over budget";
-        const ctx = { ...descSpillContext, ticketId: "ticket-desc-guard" as never };
-        yield* seedStepStartedFor(ctx, "event-step-started-desc-guard");
-        yield* seedTicketDescription(ctx, smallDescription);
-
         const outcome = yield* executor.execute(ctx);
 
         assert.equal(outcome._tag, "completed");
         const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-        assert.include(dispatched.instruction, smallDescription);
-        assert.notInclude(dispatched.instruction, "DESCRIPTION.md");
-        const exists = yield* fileSystem.exists(
-          "/tmp/wt-ticket-1/.t3/ticket/ticket-desc-guard/DESCRIPTION.md",
-        );
-        assert.isFalse(exists);
+        // The fallback spilled the description even though it fit inline alone.
+        assert.include(dispatched.instruction, ".t3/ticket/ticket-desc-fallback/DESCRIPTION.md");
+        assert.notInclude(dispatched.instruction, inlinableDescription);
+        assert.isAtMost(dispatched.instruction.length, 800);
+        yield* fileSystem
+          .remove("/tmp/wt-ticket-1/.t3/ticket/ticket-desc-fallback", { recursive: true })
+          .pipe(Effect.catch(() => Effect.void));
       }),
-    );
-  },
-);
+  );
+});
+
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  { providerServiceLayer: providerServiceLayerWithMaxInput(20) },
+)("RealStepExecutor description spill (pointer guard)", (it) => {
+  it.effect("inlines a description shorter than the pointer even when over budget", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const fileSystem = yield* FileSystem.FileSystem;
+      // Over the 20-char body budget, but far shorter than the ~100-char pointer,
+      // so spilling would only enlarge the prompt → inline instead.
+      const smallDescription = "just a little over budget";
+      const ctx = { ...descSpillContext, ticketId: "ticket-desc-guard" as never };
+      yield* seedStepStartedFor(ctx, "event-step-started-desc-guard");
+      yield* seedTicketDescription(ctx, smallDescription);
+
+      const outcome = yield* executor.execute(ctx);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      assert.include(dispatched.instruction, smallDescription);
+      assert.notInclude(dispatched.instruction, "DESCRIPTION.md");
+      const exists = yield* fileSystem.exists(
+        "/tmp/wt-ticket-1/.t3/ticket/ticket-desc-guard/DESCRIPTION.md",
+      );
+      assert.isFalse(exists);
+    }),
+  );
+});
 
 captureLayer({ verdict: "pass", score: 0.98 })("RealStepExecutor output capture", (it) => {
   it.effect("appends the capture instruction, persists it, and returns the last JSON block", () =>
@@ -1774,7 +1774,7 @@ captureLayer(undefined)("RealStepExecutor missing output capture", (it) => {
 
 const panelVerdictQueue: unknown[] = [];
 mk(
-  { ok: true },
+  { ok: true, turnId: "turn-stub" as never },
   {
     capturedOutputForRead: () => panelVerdictQueue.shift(),
   },
@@ -1863,78 +1863,87 @@ mk(
   );
 });
 
-mk({ ok: true }, { projectTrusted: false })("RealStepExecutor untrusted script", (it) => {
-  it.effect("blocks before setup, lease, checkpoints, or command execution", () =>
-    Effect.gen(function* () {
-      checkpointCalls.length = 0;
-      setupCalls.length = 0;
-      const executor = yield* StepExecutor;
-      const sql = yield* SqlClient.SqlClient;
-      yield* seedBoard;
-      yield* seedStepStartedFor(scriptContext, "event-step-started-untrusted-script");
+mk({ ok: true, turnId: "turn-stub" as never }, { projectTrusted: false })(
+  "RealStepExecutor untrusted script",
+  (it) => {
+    it.effect("blocks before setup, lease, checkpoints, or command execution", () =>
+      Effect.gen(function* () {
+        checkpointCalls.length = 0;
+        setupCalls.length = 0;
+        const executor = yield* StepExecutor;
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedBoard;
+        yield* seedStepStartedFor(scriptContext, "event-step-started-untrusted-script");
 
-      const outcome = yield* executor.execute(scriptContext);
+        const outcome = yield* executor.execute(scriptContext);
 
-      assert.deepEqual(outcome, {
-        _tag: "blocked",
-        reason: "Project not trusted to run scripts",
-      });
-      assert.deepEqual(setupCalls, []);
-      assert.deepEqual(checkpointCalls, [
-        "hasBaseline:/tmp/wt-ticket-1",
-        "captureBaseline:/tmp/wt-ticket-1",
-      ]);
-      const rows = yield* sql<{ readonly ownerKind: string }>`
+        assert.deepEqual(outcome, {
+          _tag: "blocked",
+          reason: "Project not trusted to run scripts",
+        });
+        assert.deepEqual(setupCalls, []);
+        assert.deepEqual(checkpointCalls, [
+          "hasBaseline:/tmp/wt-ticket-1",
+          "captureBaseline:/tmp/wt-ticket-1",
+        ]);
+        const rows = yield* sql<{ readonly ownerKind: string }>`
         SELECT owner_kind AS "ownerKind"
         FROM worktree_lease
         WHERE worktree_ref = 'wt-ticket-1'
       `;
-      assert.deepEqual(rows, []);
-    }),
-  );
-});
+        assert.deepEqual(rows, []);
+      }),
+    );
+  },
+);
 
-mk({ ok: true }, { projectTrusted: false })("RealStepExecutor untrusted agent", (it) => {
-  it.effect("runs the agent step but SKIPS the untrusted project's setup script", () =>
-    Effect.gen(function* () {
-      checkpointCalls.length = 0;
-      setupCalls.length = 0;
-      const executor = yield* StepExecutor;
-      yield* seedBoard;
-      yield* seedStepStarted;
+mk({ ok: true, turnId: "turn-stub" as never }, { projectTrusted: false })(
+  "RealStepExecutor untrusted agent",
+  (it) => {
+    it.effect("runs the agent step but SKIPS the untrusted project's setup script", () =>
+      Effect.gen(function* () {
+        checkpointCalls.length = 0;
+        setupCalls.length = 0;
+        const executor = yield* StepExecutor;
+        yield* seedBoard;
+        yield* seedStepStarted;
 
-      // The project's setup shell is arbitrary code, so on an untrusted project it
-      // is SKIPPED (never executed). But — unlike a script step, whose whole
-      // purpose is the untrusted script — the agent itself is not the untrusted
-      // surface, so the agent step still runs and is NOT blocked.
-      const outcome = yield* executor.execute(context);
+        // The project's setup shell is arbitrary code, so on an untrusted project it
+        // is SKIPPED (never executed). But — unlike a script step, whose whole
+        // purpose is the untrusted script — the agent itself is not the untrusted
+        // surface, so the agent step still runs and is NOT blocked.
+        const outcome = yield* executor.execute(context);
 
-      assert.deepEqual(outcome, { _tag: "completed" });
-      assert.deepEqual(setupCalls, []);
-    }),
-  );
-});
+        assert.deepEqual(outcome, { _tag: "completed" });
+        assert.deepEqual(setupCalls, []);
+      }),
+    );
+  },
+);
 
-mk({ ok: false, error: "provider failed" })("RealStepExecutor failure", (it) => {
-  it.effect("fails an agent step when provider dispatch fails", () =>
-    Effect.gen(function* () {
-      checkpointCalls.length = 0;
-      const executor = yield* StepExecutor;
-      yield* seedStepStarted;
+mk({ ok: false, turnId: "turn-stub" as never, error: "provider failed" })(
+  "RealStepExecutor failure",
+  (it) => {
+    it.effect("fails an agent step when provider dispatch fails", () =>
+      Effect.gen(function* () {
+        checkpointCalls.length = 0;
+        const executor = yield* StepExecutor;
+        yield* seedStepStarted;
 
-      const outcome = yield* executor.execute(context);
+        const outcome = yield* executor.execute(context);
 
-      assert.deepEqual(outcome, { _tag: "failed", error: "provider failed" });
-      assert.deepEqual(checkpointCalls, [
-        "hasBaseline:/tmp/wt-ticket-1",
-        "captureBaseline:/tmp/wt-ticket-1",
-        "captureStep:step-run-1:/tmp/wt-ticket-1:pre",
-        "captureStep:step-run-1:/tmp/wt-ticket-1:post",
-      ]);
-      yield* assertProjectedStepRefs;
-    }),
-  );
-});
+        assert.deepEqual(outcome, { _tag: "failed", error: "provider failed" });
+        assert.deepEqual(checkpointCalls, [
+          "hasBaseline:/tmp/wt-ticket-1",
+          "captureBaseline:/tmp/wt-ticket-1",
+          "captureStep:step-run-1:/tmp/wt-ticket-1:pre",
+          "captureStep:step-run-1:/tmp/wt-ticket-1:post",
+        ]);
+        yield* assertProjectedStepRefs;
+      }),
+    );
+  },
+);
 
 const preCheckpointFailureLayer = it.layer(
   RealStepExecutorLive.pipe(
@@ -1988,8 +1997,11 @@ const preCheckpointFailureLayer = it.layer(
         confirmStep: () => Effect.void,
         ensureStarted: () => Effect.succeed({ turnId: "turn-stub" as never }),
         getDispatchForStep: () => Effect.succeed(null),
-        awaitTerminal: () => Effect.succeed({ ok: true }),
-        awaitStepTerminal: () => Effect.succeed({ ok: true }),
+        awaitTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
+        awaitStepTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
+        getSteerTarget: () => Effect.succeed(null),
+        markSteerPending: () => Effect.succeed(false),
+        clearSteerPending: () => Effect.void,
         recoverPending: () => Effect.void,
       }),
     ),
@@ -2098,13 +2110,18 @@ const terminalTimeoutLayer = it.layer(
         awaitTerminal: () =>
           Effect.succeed({
             ok: false,
+            turnId: "turn-stub" as never,
             error: "turn did not reach a terminal state before timeout",
           }),
         awaitStepTerminal: () =>
           Effect.succeed({
             ok: false,
+            turnId: "turn-stub" as never,
             error: "turn did not reach a terminal state before timeout",
           }),
+        getSteerTarget: () => Effect.succeed(null),
+        markSteerPending: () => Effect.succeed(false),
+        clearSteerPending: () => Effect.void,
         recoverPending: () => Effect.void,
       }),
     ),
@@ -2299,6 +2316,9 @@ const continueSessionLayer = (terminal: ProviderDispatchTerminalResult) =>
           getDispatchForStep: () => Effect.succeed(null),
           awaitTerminal: () => Effect.succeed(terminal),
           awaitStepTerminal: () => Effect.succeed(terminal),
+          getSteerTarget: () => Effect.succeed(null),
+          markSteerPending: () => Effect.succeed(false),
+          clearSteerPending: () => Effect.void,
           recoverPending: () => Effect.void,
         }),
       ),
@@ -2341,136 +2361,140 @@ const continueSessionLayer = (terminal: ProviderDispatchTerminalResult) =>
     ),
   );
 
-continueSessionLayer({ ok: true })("RealStepExecutor continueSession resume", (it) => {
-  it.effect("mints + upserts a stable thread on the first continueSession run", () =>
-    Effect.gen(function* () {
-      continueDispatchInputs.length = 0;
-      continueUpsertCalls.length = 0;
-      storedThreads.clear();
-      const executor = yield* StepExecutor;
-      yield* seedStepStartedFor(continueContext, "event-step-started-continue-miss");
-
-      const outcome = yield* executor.execute(continueContext);
-
-      assert.equal(outcome._tag, "completed");
-      // Miss: a fresh thread is minted, dispatched, AND recorded for resume.
-      assert.equal(continueDispatchInputs.length, 1);
-      const mintedThread = continueDispatchInputs[0]?.threadId;
-      assert.isDefined(mintedThread);
-      assert.equal(continueUpsertCalls.length, 1);
-      assert.deepEqual(continueUpsertCalls[0], {
-        ticketId: "ticket-continue",
-        laneKey: "lane-continue",
-        agentKey: continueAgentKey,
-        threadId: mintedThread,
-      });
-    }),
-  );
-
-  it.effect("dispatches the stored thread (not a fresh eventId) when one exists", () =>
-    Effect.gen(function* () {
-      continueDispatchInputs.length = 0;
-      continueUpsertCalls.length = 0;
-      storedThreads.clear();
-      storedThreads.set(
-        `ticket-continue|lane-continue|${continueAgentKey}`,
-        "stored-thread-resume",
-      );
-      const executor = yield* StepExecutor;
-      yield* seedStepStartedFor(continueContext, "event-step-started-continue-hit");
-
-      const outcome = yield* executor.execute(continueContext);
-
-      assert.equal(outcome._tag, "completed");
-      // Hit: dispatch reuses the stored thread, and no new upsert overwrites it.
-      assert.equal(continueDispatchInputs.length, 1);
-      assert.equal(continueDispatchInputs[0]?.threadId, "stored-thread-resume");
-      assert.equal(continueUpsertCalls.length, 0);
-    }),
-  );
-
-  it.effect("reuses the same thread across a second (loop) run", () =>
-    Effect.gen(function* () {
-      continueDispatchInputs.length = 0;
-      continueUpsertCalls.length = 0;
-      storedThreads.clear();
-      const executor = yield* StepExecutor;
-      yield* seedStepStartedFor(continueContext, "event-step-started-continue-loop-1");
-
-      const first = yield* executor.execute(continueContext);
-      assert.equal(first._tag, "completed");
-      const firstThread = continueDispatchInputs[0]?.threadId;
-      assert.isDefined(firstThread);
-      // The first run records the thread; the second run reads it back.
-      assert.equal(continueUpsertCalls.length, 1);
-
-      const second = yield* executor.execute({
-        ...continueContext,
-        stepRunId: "step-run-continue-loop-2" as never,
-      });
-      assert.equal(second._tag, "completed");
-      assert.equal(continueDispatchInputs.length, 2);
-      assert.equal(continueDispatchInputs[1]?.threadId, firstThread);
-      // No second upsert — the stored thread is preserved on the hit path.
-      assert.equal(continueUpsertCalls.length, 1);
-    }),
-  );
-
-  it.effect("leaves a plain (non-continueSession) step minting a fresh thread", () =>
-    Effect.gen(function* () {
-      continueDispatchInputs.length = 0;
-      continueUpsertCalls.length = 0;
-      storedThreads.clear();
-      const executor = yield* StepExecutor;
-      yield* seedStepStartedFor(plainContext, "event-step-started-plain");
-
-      const outcome = yield* executor.execute(plainContext);
-
-      assert.equal(outcome._tag, "completed");
-      assert.equal(continueDispatchInputs.length, 1);
-      // A plain step never touches the session store.
-      assert.equal(continueUpsertCalls.length, 0);
-      assert.equal(storedThreads.size, 0);
-    }),
-  );
-});
-
-continueSessionLayer({ ok: false, error: "turn did not reach a terminal state before timeout" })(
-  "RealStepExecutor continueSession failure cleanup",
+continueSessionLayer({ ok: true, turnId: "turn-stub" as never })(
+  "RealStepExecutor continueSession resume",
   (it) => {
-    it.effect("still interrupts + stops the session on failure, then resumes next run", () =>
+    it.effect("mints + upserts a stable thread on the first continueSession run", () =>
       Effect.gen(function* () {
         continueDispatchInputs.length = 0;
         continueUpsertCalls.length = 0;
-        continueProviderCalls.length = 0;
         storedThreads.clear();
         const executor = yield* StepExecutor;
-        yield* seedStepStartedFor(continueContext, "event-step-started-continue-fail");
+        yield* seedStepStartedFor(continueContext, "event-step-started-continue-miss");
 
         const outcome = yield* executor.execute(continueContext);
 
-        assert.equal(outcome._tag, "failed");
-        // The first (failed) run still minted + recorded the stable thread.
-        const failedThread = continueDispatchInputs[0]?.threadId;
-        assert.isDefined(failedThread);
+        assert.equal(outcome._tag, "completed");
+        // Miss: a fresh thread is minted, dispatched, AND recorded for resume.
+        assert.equal(continueDispatchInputs.length, 1);
+        const mintedThread = continueDispatchInputs[0]?.threadId;
+        assert.isDefined(mintedThread);
         assert.equal(continueUpsertCalls.length, 1);
-        assert.equal(continueUpsertCalls[0]?.threadId, failedThread);
-        // Failure cleanup MUST still run — interrupt the live turn and stop the
-        // session (stopSession preserves the resume cursor, so resume survives).
-        assert.deepEqual(continueProviderCalls, [
-          `interrupt:${failedThread}:turn-stub`,
-          `stop:${failedThread}`,
-        ]);
-
-        // A later run resumes the SAME thread (the store kept it through cleanup).
-        const retry = yield* executor.execute({
-          ...continueContext,
-          stepRunId: "step-run-continue-fail-retry" as never,
+        assert.deepEqual(continueUpsertCalls[0], {
+          ticketId: "ticket-continue",
+          laneKey: "lane-continue",
+          agentKey: continueAgentKey,
+          threadId: mintedThread,
         });
-        assert.equal(retry._tag, "failed");
-        assert.equal(continueDispatchInputs[1]?.threadId, failedThread);
+      }),
+    );
+
+    it.effect("dispatches the stored thread (not a fresh eventId) when one exists", () =>
+      Effect.gen(function* () {
+        continueDispatchInputs.length = 0;
+        continueUpsertCalls.length = 0;
+        storedThreads.clear();
+        storedThreads.set(
+          `ticket-continue|lane-continue|${continueAgentKey}`,
+          "stored-thread-resume",
+        );
+        const executor = yield* StepExecutor;
+        yield* seedStepStartedFor(continueContext, "event-step-started-continue-hit");
+
+        const outcome = yield* executor.execute(continueContext);
+
+        assert.equal(outcome._tag, "completed");
+        // Hit: dispatch reuses the stored thread, and no new upsert overwrites it.
+        assert.equal(continueDispatchInputs.length, 1);
+        assert.equal(continueDispatchInputs[0]?.threadId, "stored-thread-resume");
+        assert.equal(continueUpsertCalls.length, 0);
+      }),
+    );
+
+    it.effect("reuses the same thread across a second (loop) run", () =>
+      Effect.gen(function* () {
+        continueDispatchInputs.length = 0;
+        continueUpsertCalls.length = 0;
+        storedThreads.clear();
+        const executor = yield* StepExecutor;
+        yield* seedStepStartedFor(continueContext, "event-step-started-continue-loop-1");
+
+        const first = yield* executor.execute(continueContext);
+        assert.equal(first._tag, "completed");
+        const firstThread = continueDispatchInputs[0]?.threadId;
+        assert.isDefined(firstThread);
+        // The first run records the thread; the second run reads it back.
         assert.equal(continueUpsertCalls.length, 1);
+
+        const second = yield* executor.execute({
+          ...continueContext,
+          stepRunId: "step-run-continue-loop-2" as never,
+        });
+        assert.equal(second._tag, "completed");
+        assert.equal(continueDispatchInputs.length, 2);
+        assert.equal(continueDispatchInputs[1]?.threadId, firstThread);
+        // No second upsert — the stored thread is preserved on the hit path.
+        assert.equal(continueUpsertCalls.length, 1);
+      }),
+    );
+
+    it.effect("leaves a plain (non-continueSession) step minting a fresh thread", () =>
+      Effect.gen(function* () {
+        continueDispatchInputs.length = 0;
+        continueUpsertCalls.length = 0;
+        storedThreads.clear();
+        const executor = yield* StepExecutor;
+        yield* seedStepStartedFor(plainContext, "event-step-started-plain");
+
+        const outcome = yield* executor.execute(plainContext);
+
+        assert.equal(outcome._tag, "completed");
+        assert.equal(continueDispatchInputs.length, 1);
+        // A plain step never touches the session store.
+        assert.equal(continueUpsertCalls.length, 0);
+        assert.equal(storedThreads.size, 0);
       }),
     );
   },
 );
+
+continueSessionLayer({
+  ok: false,
+  turnId: "turn-stub" as never,
+  error: "turn did not reach a terminal state before timeout",
+})("RealStepExecutor continueSession failure cleanup", (it) => {
+  it.effect("still interrupts + stops the session on failure, then resumes next run", () =>
+    Effect.gen(function* () {
+      continueDispatchInputs.length = 0;
+      continueUpsertCalls.length = 0;
+      continueProviderCalls.length = 0;
+      storedThreads.clear();
+      const executor = yield* StepExecutor;
+      yield* seedStepStartedFor(continueContext, "event-step-started-continue-fail");
+
+      const outcome = yield* executor.execute(continueContext);
+
+      assert.equal(outcome._tag, "failed");
+      // The first (failed) run still minted + recorded the stable thread.
+      const failedThread = continueDispatchInputs[0]?.threadId;
+      assert.isDefined(failedThread);
+      assert.equal(continueUpsertCalls.length, 1);
+      assert.equal(continueUpsertCalls[0]?.threadId, failedThread);
+      // Failure cleanup MUST still run — interrupt the live turn and stop the
+      // session (stopSession preserves the resume cursor, so resume survives).
+      assert.deepEqual(continueProviderCalls, [
+        `interrupt:${failedThread}:turn-stub`,
+        `stop:${failedThread}`,
+      ]);
+
+      // A later run resumes the SAME thread (the store kept it through cleanup).
+      const retry = yield* executor.execute({
+        ...continueContext,
+        stepRunId: "step-run-continue-fail-retry" as never,
+      });
+      assert.equal(retry._tag, "failed");
+      assert.equal(continueDispatchInputs[1]?.threadId, failedThread);
+      assert.equal(continueUpsertCalls.length, 1);
+    }),
+  );
+});

@@ -78,7 +78,7 @@ it.effect("starts provider dispatch idempotently and confirms from terminal turn
       yield* Effect.yieldNow;
       yield* TestClock.adjust("500 millis");
       const terminal = yield* Fiber.join(terminalFiber);
-      assert.deepEqual(terminal, { ok: true });
+      assert.deepEqual(terminal, { ok: true, turnId: "turn-1" });
 
       const confirmed = yield* sql<{ readonly status: string }>`
         SELECT status FROM workflow_dispatch_outbox WHERE dispatch_id = ${request.dispatchId}
@@ -119,6 +119,7 @@ it.effect("confirms the outbox row when the terminal wait times out", () =>
       const terminal = yield* Fiber.join(terminalFiber);
       assert.deepEqual(terminal, {
         ok: false,
+        turnId: "turn-1",
         error: "turn did not reach a terminal state before timeout",
       });
 
@@ -388,6 +389,99 @@ it.effect("deletes pending dispatches whose ticket projection no longer exists",
         WHERE dispatch_id = 'dispatch-orphan'
       `;
       assert.equal(remaining[0]?.count, 0);
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("getSteerTarget and CAS markSteerPending/clearSteerPending", () =>
+  Effect.gen(function* () {
+    const layer = ProviderDispatchOutboxLive.pipe(
+      Layer.provideMerge(
+        Layer.succeed(ProviderTurnPort, {
+          ensureTurnStarted: () => Effect.succeed({ turnId: "turn-1" as never }),
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(TurnStateReader, {
+          read: () => Effect.succeed({ _tag: "running" as const }),
+        }),
+      ),
+      Layer.provideMerge(MigrationsLive),
+      Layer.provideMerge(SqlitePersistenceMemory),
+    );
+
+    yield* Effect.gen(function* () {
+      const outbox = yield* ProviderDispatchOutbox;
+
+      yield* outbox.ensureStarted({
+        ...request,
+        captureOutput: true,
+        panelSize: 1,
+      });
+
+      const target = yield* outbox.getSteerTarget(request.stepRunId);
+      assert.isNotNull(target);
+      assert.equal(target?.dispatchId, request.dispatchId);
+      assert.equal(target?.turnId, "turn-1");
+      assert.equal(target?.captureOutput, true);
+      assert.equal(target?.panelSize, 1);
+      assert.equal(target?.steerPendingMessageId, null);
+
+      const won = yield* outbox.markSteerPending(request.dispatchId, "msg-steer-1" as never);
+      assert.isTrue(won);
+      const after = yield* outbox.getSteerTarget(request.stepRunId);
+      assert.equal(after?.steerPendingMessageId, "msg-steer-1");
+
+      // Second reservation must lose CAS.
+      const lost = yield* outbox.markSteerPending(request.dispatchId, "msg-steer-2" as never);
+      assert.isFalse(lost);
+      assert.equal(
+        (yield* outbox.getSteerTarget(request.stepRunId))?.steerPendingMessageId,
+        "msg-steer-1",
+      );
+
+      // Same messageId re-check is still true (idempotent ownership).
+      const same = yield* outbox.markSteerPending(request.dispatchId, "msg-steer-1" as never);
+      assert.isTrue(same);
+
+      yield* outbox.clearSteerPending(request.dispatchId);
+      assert.equal((yield* outbox.getSteerTarget(request.stepRunId))?.steerPendingMessageId, null);
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
+it.effect("clears steer pending when thread reaches awaiting_user", () =>
+  Effect.gen(function* () {
+    const layer = ProviderDispatchOutboxLive.pipe(
+      Layer.provideMerge(
+        Layer.succeed(ProviderTurnPort, {
+          ensureTurnStarted: () => Effect.succeed({ turnId: "turn-1" as never }),
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(TurnStateReader, {
+          read: () =>
+            Effect.succeed({
+              _tag: "awaiting_user" as const,
+              waitingReason: "need input",
+              providerThreadId: "thread-1" as never,
+              providerRequestId: "req-1" as never,
+              providerResponseKind: "user-input" as const,
+            }),
+        }),
+      ),
+      Layer.provideMerge(MigrationsLive),
+      Layer.provideMerge(SqlitePersistenceMemory),
+    );
+
+    yield* Effect.gen(function* () {
+      const outbox = yield* ProviderDispatchOutbox;
+      yield* outbox.ensureStarted(request);
+      yield* outbox.markSteerPending(request.dispatchId, "msg-pending" as never);
+
+      const terminal = yield* outbox.awaitTerminal(request.dispatchId, request.threadId);
+      assert.isTrue("awaitingUser" in terminal && terminal.awaitingUser === true);
+      assert.equal((yield* outbox.getSteerTarget(request.stepRunId))?.steerPendingMessageId, null);
     }).pipe(Effect.provide(layer));
   }),
 );

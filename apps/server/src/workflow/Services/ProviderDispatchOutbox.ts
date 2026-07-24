@@ -1,6 +1,7 @@
 import type {
   ApprovalRequestId,
   DispatchId,
+  MessageId,
   ProviderOptionSelections,
   StepRunId,
   ThreadId,
@@ -31,21 +32,34 @@ export interface DispatchRequest {
   // Defaults to "full-access" (worktree-isolated steps); intake runs at the
   // real project root and passes a stricter mode.
   readonly runtimeMode?: "approval-required" | "auto-accept-edits" | "full-access";
+  /** Dispatch-time step metadata for steer validation (TOCTOU-safe). */
+  readonly captureOutput?: boolean;
+  readonly panelSize?: number;
 }
 
 export interface ProviderTurnPortShape {
   readonly ensureTurnStarted: (
     req: DispatchRequest,
   ) => Effect.Effect<{ readonly turnId: TurnId }, WorkflowEventStoreError>;
+  /**
+   * Mid-run steer: durable `thread.turn.start` with commandId
+   * `workflow-steer-<messageId>`. Implemented in live-agent-steering task 6.
+   */
+  readonly steerTurn?: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly text: string;
+  }) => Effect.Effect<void, WorkflowEventStoreError>;
 }
 
 export class ProviderTurnPort extends Context.Service<ProviderTurnPort, ProviderTurnPortShape>()(
   "t3/workflow/Services/ProviderDispatchOutbox/ProviderTurnPort",
 ) {}
 
+/** Non-awaitingUser arms always carry the terminal turn id (steer-safe capture). */
 export type ProviderDispatchTerminalResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly error?: string }
+  | { readonly ok: true; readonly turnId: TurnId }
+  | { readonly ok: false; readonly turnId: TurnId; readonly error?: string }
   | {
       readonly ok: false;
       readonly awaitingUser: true;
@@ -55,6 +69,15 @@ export type ProviderDispatchTerminalResult =
       readonly providerResponseKind: "request" | "user-input";
       readonly providerQuestionId?: string;
     };
+
+export interface SteerTarget {
+  readonly dispatchId: DispatchId;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId;
+  readonly captureOutput: boolean;
+  readonly panelSize: number | null;
+  readonly steerPendingMessageId: string | null;
+}
 
 export interface ProviderDispatchOutboxShape {
   readonly confirmStep: (stepRunId: StepRunId) => Effect.Effect<void, WorkflowEventStoreError>;
@@ -67,6 +90,21 @@ export interface ProviderDispatchOutboxShape {
     { readonly threadId: ThreadId; readonly turnId: TurnId } | null,
     WorkflowEventStoreError
   >;
+  /** Latest started dispatch for a step, including steer reservation cells. */
+  readonly getSteerTarget: (
+    stepRunId: StepRunId,
+  ) => Effect.Effect<SteerTarget | null, WorkflowEventStoreError>;
+  /**
+   * CAS: set `steer_pending_message_id` only when currently null and not
+   * tombstoned. Returns true when this caller won the reservation.
+   */
+  readonly markSteerPending: (
+    dispatchId: DispatchId,
+    messageId: MessageId,
+  ) => Effect.Effect<boolean, WorkflowEventStoreError>;
+  readonly clearSteerPending: (
+    dispatchId: DispatchId,
+  ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly awaitTerminal: (
     dispatchId: DispatchId,
     threadId: ThreadId,

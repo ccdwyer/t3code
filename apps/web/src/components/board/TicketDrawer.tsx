@@ -53,6 +53,7 @@ import { AgentSessionDialog } from "./AgentSessionDialog";
 import { MarkdownComposerField } from "./MarkdownComposerField";
 import { pickAgentConversationStep } from "./pickAgentConversationStep";
 import { TicketArtifacts } from "./TicketArtifacts";
+import { SteerComposer } from "./SteerComposer";
 import { StepActivityFeed } from "./StepActivityFeed";
 import { dispatchParkAction, splitParkActions } from "./TicketCard";
 import { TicketDiff } from "./TicketDiff";
@@ -1559,112 +1560,6 @@ function presentTicketStep(detail: TicketDrawerDetail, index: number): StepRowSt
 
 /** A single step row `<li>`. Shared between the drawer and the fullscreen right
  *  column. The `liClassName` lets each context supply its own padding. */
-function SteerComposer({
-  api,
-  ticketId,
-  step,
-  onSteered,
-}: {
-  readonly api: EnvironmentApi;
-  readonly ticketId: string;
-  readonly step: StepRowStep;
-  readonly onSteered?: (() => void) | undefined;
-}) {
-  const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const blocked = step.steerBlockedReason;
-  const visible = step.canSteer === true || blocked === "awaiting_user" || blocked === "delivering";
-  if (!visible) {
-    return null;
-  }
-
-  const interactive = step.canSteer === true && blocked === undefined;
-  const disabled = submitting || !interactive || text.trim().length === 0;
-
-  const tooltip =
-    blocked === "awaiting_user"
-      ? "Answer the agent's question above instead"
-      : blocked === "delivering"
-        ? "Previous steering message is on its way"
-        : undefined;
-
-  const submit = async () => {
-    if (disabled) {
-      return;
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.workflow.steerTicketStep({
-        ticketId: TicketId.make(ticketId),
-        stepRunId: StepRunId.make(step.stepRunId),
-        messageId: randomUUID() as never,
-        text: text.trim(),
-      });
-      setText("");
-      onSteered?.();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="mt-2 space-y-1.5" data-testid="steer-composer">
-      <label className="text-xs font-medium text-muted-foreground">
-        Steer the agent
-        {step.steerCount !== undefined && step.steerCount > 0
-          ? ` · steered ${step.steerCount}×`
-          : null}
-      </label>
-      <textarea
-        className="w-full resize-y rounded-md border border-border/60 bg-background px-2 py-1.5 text-sm"
-        rows={2}
-        placeholder="Steer the agent…"
-        value={text}
-        disabled={submitting || !interactive}
-        title={tooltip}
-        data-testid="steer-composer-input"
-        onChange={(event) => {
-          setText(event.target.value);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            void submit();
-          }
-        }}
-      />
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="xs"
-          disabled={disabled}
-          title={tooltip}
-          data-testid="steer-composer-send"
-          onClick={() => {
-            void submit();
-          }}
-        >
-          Send
-        </Button>
-        {blocked !== undefined ? (
-          <span className="text-xs text-muted-foreground" data-testid="steer-composer-blocked">
-            {tooltip}
-          </span>
-        ) : null}
-      </div>
-      {error !== null ? (
-        <p className="text-xs text-destructive-foreground" data-testid="steer-composer-error">
-          {error}
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
 function TicketStepRow({
   step,
   api,

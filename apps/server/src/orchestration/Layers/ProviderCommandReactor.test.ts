@@ -38,6 +38,7 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { MigrationsLive } from "../../persistence/Migrations.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -58,6 +59,8 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
+import * as Option from "effect/Option";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
@@ -151,6 +154,9 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    readonly sendTurnEffect?: (
+      input: unknown,
+    ) => Effect.Effect<{ threadId: ThreadId; turnId: TurnId }, ProviderAdapterRequestError>;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -227,11 +233,13 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
-    const sendTurn = vi.fn((_: unknown) =>
-      Effect.succeed({
-        threadId: ThreadId.make("thread-1"),
-        turnId: asTurnId("turn-1"),
-      }),
+    const sendTurn = vi.fn((sendInput: unknown) =>
+      input?.sendTurnEffect
+        ? input.sendTurnEffect(sendInput)
+        : Effect.succeed({
+            threadId: ThreadId.make("thread-1"),
+            turnId: asTurnId("turn-1"),
+          }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
@@ -384,6 +392,9 @@ describe("ProviderCommandReactor", () => {
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
+      // Workflow outbox table for steer tombstone fence checks.
+      Layer.provideMerge(MigrationsLive),
+      Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(makeProviderRegistryLayer(providerSnapshots as never)),
       Layer.provideMerge(
@@ -2810,5 +2821,230 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     expect(thread?.session?.activeTurnId).toBeNull();
+  });
+
+  describe("live agent steering receipts", () => {
+    it("emits workflow.steer.delivered on successful same-turn steer sendTurn", async () => {
+      const harness = await createHarness({
+        sendTurnEffect: () =>
+          Effect.succeed({
+            threadId: ThreadId.make("thread-1"),
+            // Same-turn adapter: returns the existing turn id.
+            turnId: TurnId.make("turn-existing"),
+          }),
+      });
+      const now = "2026-01-01T00:00:00.000Z";
+
+      // Seed a live session so sendTurn does not also start one path-only.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-set-steer"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: TurnId.make("turn-existing"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("workflow-steer-msg-steer-ok"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("msg-steer-ok"),
+            role: "user",
+            text: "Mid-run guidance: fix the tests",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(() => harness.sendTurn.mock.calls.length >= 1);
+      await waitFor(async () => {
+        const readModel = await harness.readModel();
+        const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+        return (
+          thread?.activities.some((activity) => activity.kind === "workflow.steer.delivered") ===
+          true
+        );
+      });
+
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const delivered = thread?.activities.find(
+        (activity) => activity.kind === "workflow.steer.delivered",
+      );
+      expect(delivered).toBeDefined();
+      expect(delivered?.payload).toMatchObject({
+        messageId: "msg-steer-ok",
+      });
+      // Steer success must not project the session as error.
+      expect(thread?.session?.status).not.toBe("error");
+    });
+
+    it("emits workflow.steer.failed without session error when sendTurn fails", async () => {
+      const harness = await createHarness({
+        sendTurnEffect: () =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: "codex",
+              method: "sendTurn",
+              detail: "provider refused steer",
+            }),
+          ),
+      });
+      const now = "2026-01-01T00:00:00.000Z";
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-set-steer-fail"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: TurnId.make("turn-running"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("workflow-steer-msg-steer-fail"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("msg-steer-fail"),
+            role: "user",
+            text: "this will fail",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(async () => {
+        const readModel = await harness.readModel();
+        const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+        return (
+          thread?.activities.some((activity) => activity.kind === "workflow.steer.failed") === true
+        );
+      });
+
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.activities.some((activity) => activity.kind === "workflow.steer.failed")).toBe(
+        true,
+      );
+      // Critical: steer failure must NOT project the whole session as error
+      // (would cause premature routing of a still-healthy turn).
+      expect(thread?.session?.status).not.toBe("error");
+      expect(
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed"),
+      ).toBe(false);
+    });
+
+    it("drops a tombstoned steer with workflow.steer.failed and never calls sendTurn", async () => {
+      const harness = await createHarness();
+      const now = "2026-01-01T00:00:00.000Z";
+      const beforeSend = harness.sendTurn.mock.calls.length;
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-tomb"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "approval-required",
+            activeTurnId: TurnId.make("turn-1"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+
+      // Insert tombstone on the SqlClient the reactor sees.
+      await runtime!.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`
+            INSERT OR REPLACE INTO workflow_dispatch_outbox (
+              dispatch_id, ticket_id, step_run_id, thread_id, provider_instance, model,
+              instruction, worktree_path, status, created_at, steer_tombstone_message_id
+            ) VALUES (
+              'd-tomb', 't-tomb', 's-tomb', 'thread-1', 'codex', 'gpt-5.5',
+              'x', '/tmp', 'confirmed', ${now}, 'msg-tombstoned'
+            )
+          `;
+        }),
+      );
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("workflow-steer-msg-tombstoned"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("msg-tombstoned"),
+            role: "user",
+            text: "late steer after reap",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(async () => {
+        const readModel = await harness.readModel();
+        const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+        return (
+          thread?.activities.some(
+            (activity) =>
+              activity.kind === "workflow.steer.failed" &&
+              typeof activity.payload === "object" &&
+              activity.payload !== null &&
+              (activity.payload as { messageId?: string }).messageId === "msg-tombstoned",
+          ) === true
+        );
+      });
+
+      expect(harness.sendTurn.mock.calls.length).toBe(beforeSend);
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const failed = thread?.activities.find(
+        (activity) =>
+          activity.kind === "workflow.steer.failed" &&
+          (activity.payload as { messageId?: string } | null)?.messageId === "msg-tombstoned",
+      );
+      expect(failed).toBeDefined();
+      expect(String((failed?.payload as { detail?: string } | undefined)?.detail ?? "")).toMatch(
+        /tombstone|reaped/i,
+      );
+    });
   });
 });

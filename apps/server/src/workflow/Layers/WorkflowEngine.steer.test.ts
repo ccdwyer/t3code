@@ -1,11 +1,13 @@
 // @effect-diagnostics globalTimers:off
 /**
- * Engine ladder for live agent steering — frozen rejection messages and
- * CAS reserve + submit happy path (with stubbed outbox/port).
+ * Engine ladder for live agent steering — frozen rejection messages,
+ * CAS reserve + submit, ack→StepSteered e2e, failed-submit zero event, and
+ * same-messageId idempotency after pending is cleared.
  */
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
@@ -38,6 +40,7 @@ const idleExecutor = Layer.succeed(StepExecutor, {
 
 let pending: string | null = null;
 let steerCalls: Array<{ messageId: string; text: string }> = [];
+let steerShouldFail = false;
 
 const makeOutboxLayer = (target: SteerTarget | null) =>
   Layer.succeed(ProviderDispatchOutbox, {
@@ -67,7 +70,10 @@ const makeOutboxLayer = (target: SteerTarget | null) =>
 const turnPortLayer = Layer.succeed(ProviderTurnPort, {
   ensureTurnStarted: () => Effect.succeed({ turnId: "turn-1" as never }),
   steerTurn: (input) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      if (steerShouldFail) {
+        return yield* Effect.fail(new Error("provider refused steer") as never);
+      }
       steerCalls.push({ messageId: input.messageId as string, text: input.text });
     }),
 });
@@ -144,7 +150,6 @@ const seedRunningAgent = Effect.gen(function* () {
     title: `Steer me ${n}`,
     initialLane: "impl" as never,
   });
-  // Prefer any step created by admission; otherwise insert a synthetic running step.
   const steps = yield* sql<{ readonly stepRunId: string }>`
     SELECT step_run_id AS "stepRunId"
     FROM projection_step_run
@@ -165,10 +170,11 @@ const seedRunningAgent = Effect.gen(function* () {
     `;
     yield* sql`
       INSERT INTO projection_step_run (
-        step_run_id, pipeline_run_id, ticket_id, step_key, step_type, status, started_at
+        step_run_id, pipeline_run_id, ticket_id, step_key, step_type, status, started_at,
+        steer_count
       ) VALUES (
         ${stepRunId}, ${`pipe-steer-${n}`}, ${ticketId}, 'code', 'agent', 'running',
-        '2026-07-24T00:00:00.000Z'
+        '2026-07-24T00:00:00.000Z', 0
       )
     `;
     yield* sql`
@@ -177,15 +183,43 @@ const seedRunningAgent = Effect.gen(function* () {
   } else {
     yield* sql`
       UPDATE projection_step_run
-      SET status = 'running', step_type = 'agent'
+      SET status = 'running', step_type = 'agent', steer_count = 0
       WHERE step_run_id = ${stepRunId}
     `;
     yield* sql`
       UPDATE projection_ticket SET status = 'running' WHERE ticket_id = ${ticketId}
     `;
   }
-  return { ticketId, stepRunId };
+
+  // Real outbox row so the ack fiber can update steer_accepted_at / steer_count.
+  yield* sql`
+    INSERT OR REPLACE INTO workflow_dispatch_outbox (
+      dispatch_id, ticket_id, step_run_id, thread_id, provider_instance, model,
+      instruction, worktree_path, status, turn_id, created_at, started_at,
+      capture_output, panel_size, steer_count
+    ) VALUES (
+      'dispatch-steer', ${ticketId}, ${stepRunId}, 'thread-steer',
+      'codex', 'gpt-5.5', 'do work', '/tmp/wt', 'started', 'turn-steer',
+      '2026-07-24T00:00:00.000Z', '2026-07-24T00:00:00.000Z',
+      0, 1, 0
+    )
+  `;
+
+  return { ticketId, stepRunId: stepRunId as string };
 });
+
+const waitUntil = (predicate: () => Effect.Effect<boolean>, attempts = 40) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < attempts; i++) {
+      if (yield* predicate()) {
+        return;
+      }
+      // Advance TestClock so the engine's forkDetach ack fiber (250ms polls) runs.
+      yield* TestClock.adjust("300 millis");
+      yield* Effect.yieldNow;
+    }
+    return yield* Effect.die("waitUntil timed out");
+  });
 
 const target: SteerTarget = {
   dispatchId: "dispatch-steer" as never,
@@ -203,6 +237,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
     Effect.gen(function* () {
       pending = null;
       steerCalls = [];
+      steerShouldFail = false;
       const engine = yield* WorkflowEngine;
       const { ticketId, stepRunId } = yield* seedRunningAgent;
       const result = yield* engine.steerTicketStep({
@@ -219,9 +254,248 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
     }),
   );
 
+  it.effect("on delivered receipt: StepSteered + steering message + accepted_at + steerCount", () =>
+    Effect.gen(function* () {
+      pending = null;
+      steerCalls = [];
+      steerShouldFail = false;
+      const engine = yield* WorkflowEngine;
+      const sql = yield* SqlClient.SqlClient;
+      const { ticketId, stepRunId } = yield* seedRunningAgent;
+      const messageId = "msg-steer-ack-e2e";
+
+      yield* engine.steerTicketStep({
+        ticketId: ticketId as never,
+        stepRunId: stepRunId as never,
+        messageId: messageId as never,
+        text: "fix the wrong package",
+      });
+      assert.equal(steerCalls.length, 1);
+
+      // Simulate reactor receipt the ack fiber watches.
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES (
+          'act-steer-delivered',
+          'thread-steer',
+          'turn-steer',
+          'info',
+          'workflow.steer.delivered',
+          'Workflow steer delivered',
+          ${JSON.stringify({ messageId, commandId: `workflow-steer-${messageId}` })},
+          '2026-07-24T00:00:01.000Z'
+        )
+      `;
+
+      yield* waitUntil(() =>
+        sql<{ readonly count: number }>`
+            SELECT COUNT(*) AS count
+            FROM workflow_events
+            WHERE event_type = 'StepSteered'
+              AND json_extract(payload_json, '$.messageId') = ${messageId}
+          `.pipe(Effect.map((rows) => (rows[0]?.count ?? 0) >= 1)),
+      );
+
+      const events = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM workflow_events
+        WHERE event_type = 'StepSteered'
+          AND json_extract(payload_json, '$.messageId') = ${messageId}
+      `;
+      assert.equal(events[0]?.count, 1);
+
+      const messages = yield* sql<{
+        readonly kind: string | null;
+        readonly body: string;
+      }>`
+        SELECT kind, body
+        FROM projection_ticket_message
+        WHERE message_id = ${messageId}
+      `;
+      assert.equal(messages.length, 1);
+      assert.equal(messages[0]?.kind, "steering");
+      assert.equal(messages[0]?.body, "fix the wrong package");
+
+      const step = yield* sql<{
+        readonly steerCount: number;
+        readonly lastSteeredAt: string | null;
+      }>`
+        SELECT steer_count AS "steerCount", last_steered_at AS "lastSteeredAt"
+        FROM projection_step_run
+        WHERE step_run_id = ${stepRunId}
+      `;
+      assert.equal(step[0]?.steerCount, 1);
+      assert.isTrue(typeof step[0]?.lastSteeredAt === "string");
+
+      const outbox = yield* sql<{
+        readonly acceptedAt: string | null;
+        readonly pending: string | null;
+        readonly steerCount: number;
+      }>`
+        SELECT
+          steer_accepted_at AS "acceptedAt",
+          steer_pending_message_id AS "pending",
+          steer_count AS "steerCount"
+        FROM workflow_dispatch_outbox
+        WHERE dispatch_id = 'dispatch-steer'
+      `;
+      assert.isTrue(typeof outbox[0]?.acceptedAt === "string");
+      assert.equal(outbox[0]?.pending, null);
+      assert.isTrue((outbox[0]?.steerCount ?? 0) >= 1);
+    }),
+  );
+
+  it.effect("failed submit leaves no StepSteered and clears pending", () =>
+    Effect.gen(function* () {
+      pending = null;
+      steerCalls = [];
+      steerShouldFail = true;
+      const engine = yield* WorkflowEngine;
+      const sql = yield* SqlClient.SqlClient;
+      const { ticketId, stepRunId } = yield* seedRunningAgent;
+      const messageId = "msg-steer-fail-submit";
+
+      const exit = yield* Effect.exit(
+        engine.steerTicketStep({
+          ticketId: ticketId as never,
+          stepRunId: stepRunId as never,
+          messageId: messageId as never,
+          text: "should fail",
+        }),
+      );
+      assert.isTrue(exit._tag === "Failure");
+      assert.equal(pending, null);
+      assert.equal(steerCalls.length, 0);
+
+      const events = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM workflow_events
+        WHERE event_type = 'StepSteered'
+          AND json_extract(payload_json, '$.messageId') = ${messageId}
+      `;
+      assert.equal(events[0]?.count, 0);
+
+      const outbox = yield* sql<{
+        readonly acceptedAt: string | null;
+        readonly steerCount: number;
+      }>`
+        SELECT steer_accepted_at AS "acceptedAt", steer_count AS "steerCount"
+        FROM workflow_dispatch_outbox
+        WHERE dispatch_id = 'dispatch-steer'
+      `;
+      assert.equal(outbox[0]?.acceptedAt, null);
+      assert.equal(outbox[0]?.steerCount, 0);
+    }),
+  );
+
+  it.effect("failed receipt clears pending without StepSteered or count bump", () =>
+    Effect.gen(function* () {
+      pending = null;
+      steerCalls = [];
+      steerShouldFail = false;
+      const engine = yield* WorkflowEngine;
+      const sql = yield* SqlClient.SqlClient;
+      const { ticketId, stepRunId } = yield* seedRunningAgent;
+      const messageId = "msg-steer-fail-receipt";
+
+      yield* engine.steerTicketStep({
+        ticketId: ticketId as never,
+        stepRunId: stepRunId as never,
+        messageId: messageId as never,
+        text: "will fail at provider",
+      });
+      assert.equal(pending, messageId);
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES (
+          'act-steer-failed',
+          'thread-steer',
+          NULL,
+          'error',
+          'workflow.steer.failed',
+          'Workflow steer failed',
+          ${JSON.stringify({ messageId, commandId: `workflow-steer-${messageId}` })},
+          '2026-07-24T00:00:02.000Z'
+        )
+      `;
+
+      yield* waitUntil(() => Effect.succeed(pending === null));
+
+      const events = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM workflow_events
+        WHERE event_type = 'StepSteered'
+          AND json_extract(payload_json, '$.messageId') = ${messageId}
+      `;
+      assert.equal(events[0]?.count, 0);
+
+      const outbox = yield* sql<{
+        readonly acceptedAt: string | null;
+        readonly steerCount: number;
+      }>`
+        SELECT steer_accepted_at AS "acceptedAt", steer_count AS "steerCount"
+        FROM workflow_dispatch_outbox
+        WHERE dispatch_id = 'dispatch-steer'
+      `;
+      assert.equal(outbox[0]?.acceptedAt, null);
+      assert.equal(outbox[0]?.steerCount, 0);
+    }),
+  );
+
+  it.effect("same messageId is no-op success after pending cleared by delivered receipt", () =>
+    Effect.gen(function* () {
+      pending = null;
+      steerCalls = [];
+      steerShouldFail = false;
+      const engine = yield* WorkflowEngine;
+      const sql = yield* SqlClient.SqlClient;
+      const { ticketId, stepRunId } = yield* seedRunningAgent;
+      const messageId = "msg-steer-idempotent";
+
+      yield* engine.steerTicketStep({
+        ticketId: ticketId as never,
+        stepRunId: stepRunId as never,
+        messageId: messageId as never,
+        text: "once",
+      });
+      assert.equal(steerCalls.length, 1);
+
+      // Delivered receipt + clear pending without waiting for StepSteered.
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES (
+          'act-steer-idem',
+          'thread-steer',
+          'turn-steer',
+          'info',
+          'workflow.steer.delivered',
+          'Workflow steer delivered',
+          ${JSON.stringify({ messageId })},
+          '2026-07-24T00:00:03.000Z'
+        )
+      `;
+      pending = null;
+
+      const again = yield* engine.steerTicketStep({
+        ticketId: ticketId as never,
+        stepRunId: stepRunId as never,
+        messageId: messageId as never,
+        text: "once",
+      });
+      assert.deepEqual(again, { accepted: true });
+      // Must not re-dispatch.
+      assert.equal(steerCalls.length, 1);
+    }),
+  );
+
   it.effect("rejects parked tickets with frozen message", () =>
     Effect.gen(function* () {
       pending = null;
+      steerShouldFail = false;
       const engine = yield* WorkflowEngine;
       const { ticketId, stepRunId } = yield* seedRunningAgent;
       const sql = yield* SqlClient.SqlClient;
@@ -236,8 +510,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
       );
       assert.isTrue(exit._tag === "Failure");
       if (exit._tag === "Failure") {
-        const err = exit.cause;
-        assert.isTrue(String(err).includes(STEER_REJECTION.parkedTicket));
+        assert.isTrue(String(exit.cause).includes(STEER_REJECTION.parkedTicket));
       }
     }),
   );
@@ -245,6 +518,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
   it.effect("rejects concurrent second steer while pending", () =>
     Effect.gen(function* () {
       pending = "msg-first";
+      steerShouldFail = false;
       const engine = yield* WorkflowEngine;
       const { ticketId, stepRunId } = yield* seedRunningAgent;
       const exit = yield* Effect.exit(
@@ -265,9 +539,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
   it.effect("rejects panel steps", () =>
     Effect.gen(function* () {
       pending = null;
-      // Rebuild layer with panelSize 2 via local override is hard; use CAS target
-      // by mutating getSteerTarget is already fixed in layer. Swap pending path:
-      // call with a dedicated layer.
+      steerShouldFail = false;
       const panelLayer = makeLayer({ ...target, panelSize: 2 });
       yield* Effect.gen(function* () {
         const engine = yield* WorkflowEngine;

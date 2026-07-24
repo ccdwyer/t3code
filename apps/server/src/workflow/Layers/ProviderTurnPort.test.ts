@@ -101,6 +101,37 @@ it.effect("forwards agent option selections into the provider model selection", 
   }),
 );
 
+it.effect("steerTurn dispatches thread.turn.start with workflow-steer command id", () =>
+  Effect.gen(function* () {
+    const commands: Array<Record<string, unknown>> = [];
+    const captured: Captured = {
+      start: yield* Ref.make<ProviderSessionStartInput | null>(null),
+      send: yield* Ref.make<ProviderSendTurnInput | null>(null),
+      commands,
+    };
+
+    yield* Effect.gen(function* () {
+      const port = yield* ProviderTurnPort;
+      assert.isDefined(port.steerTurn);
+      yield* port.steerTurn!({
+        threadId: "thread-1" as never,
+        messageId: "msg-steer-port" as never,
+        text: "Mid-run guidance from the operator — incorporate it and continue the current task: fix package",
+      });
+    }).pipe(Effect.provide(makeLayer(captured)));
+
+    assert.equal(commands.length, 1);
+    const command = commands[0];
+    assert.equal(command?.["type"], "thread.turn.start");
+    assert.equal(command?.["commandId"], "workflow-steer-msg-steer-port");
+    assert.equal(command?.["threadId"], "thread-1");
+    const message = command?.["message"] as Record<string, unknown> | undefined;
+    assert.equal(message?.["messageId"], "msg-steer-port");
+    assert.equal(message?.["role"], "user");
+    assert.isTrue(String(message?.["text"] ?? "").includes("fix package"));
+  }),
+);
+
 it.effect("creates a hidden orchestration thread so ingestion projects the dispatch turn", () =>
   Effect.gen(function* () {
     const commands: Array<Record<string, unknown>> = [];

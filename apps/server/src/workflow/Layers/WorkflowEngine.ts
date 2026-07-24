@@ -2318,13 +2318,29 @@ const make = Effect.gen(function* () {
         return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.messageIdReuse });
       }
 
-      // Submitted but not yet acked: a pending steer reservation with this messageId.
-      const pendingRows = yield* wrapSql(sql<{ readonly n: number }>`
-        SELECT COUNT(*) AS n
-        FROM workflow_dispatch_outbox
-        WHERE steer_pending_message_id = ${input.messageId}
+      // Submitted or later: pending reservation, durable reactor receipt, or
+      // orchestration command receipt for this messageId. Retries after the
+      // outbox clears pending (delivered/failed) must NOT re-dispatch.
+      const submittedMarkers = yield* wrapSql(sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM (
+          SELECT 1 AS x
+          FROM workflow_dispatch_outbox
+          WHERE steer_pending_message_id = ${input.messageId}
+          UNION ALL
+          SELECT 1 AS x
+          FROM projection_thread_activities
+          WHERE kind IN ('workflow.steer.delivered', 'workflow.steer.failed')
+            AND (
+              json_extract(payload_json, '$.messageId') = ${input.messageId}
+              OR payload_json LIKE ${`%${input.messageId as string}%`}
+            )
+          UNION ALL
+          SELECT 1 AS x
+          FROM orchestration_command_receipts
+          WHERE command_id = ${`workflow-steer-${input.messageId as string}`}
+        )
       `).pipe(Effect.orElseSucceed(() => [{ n: 0 }]));
-      if ((pendingRows[0]?.n ?? 0) > 0) {
+      if ((submittedMarkers[0]?.n ?? 0) > 0) {
         return { accepted: true as const };
       }
 
@@ -2418,7 +2434,7 @@ const make = Effect.gen(function* () {
       // Reconcile ack → StepSteered in the background. awaitTerminal also
       // updates outbox columns when it observes the receipt; this fiber owns
       // the audit event append (unique on messageId).
-      yield* Effect.gen(function* () {
+      const reconcileSteerAck = Effect.gen(function* () {
         for (let attempt = 0; attempt < 120; attempt++) {
           yield* Effect.sleep(Duration.millis(250));
           const receipts = yield* wrapSql(sql<{ readonly kind: string }>`
@@ -2445,27 +2461,38 @@ const make = Effect.gen(function* () {
               SET steer_accepted_at = COALESCE(steer_accepted_at, ${acceptedAt}),
                   steer_count = CASE
                     WHEN steer_pending_message_id = ${input.messageId}
-                    THEN COALESCE(steer_count, 0) + 1
+                      OR steer_pending_message_id IS NULL
+                    THEN CASE
+                      WHEN steer_accepted_at IS NULL THEN COALESCE(steer_count, 0) + 1
+                      ELSE steer_count
+                    END
                     ELSE steer_count
                   END,
                   steer_pending_message_id = NULL
               WHERE dispatch_id = ${target.dispatchId}
             `);
-            yield* committer
-              .commit({
-                type: "StepSteered",
-                ticketId: input.ticketId,
-                payload: {
-                  stepRunId: input.stepRunId,
-                  messageId: input.messageId,
-                  text: input.text,
-                },
-              } as never)
-              .pipe(Effect.catch(() => Effect.void));
+            // Clear in-memory pending for stubs that only track process state.
+            yield* outbox.clearSteerPending(target.dispatchId);
+            // Use engine `commit` so eventId/occurredAt are stamped.
+            yield* commit({
+              type: "StepSteered",
+              ticketId: input.ticketId,
+              payload: {
+                stepRunId: input.stepRunId,
+                messageId: input.messageId,
+                text: input.text,
+              },
+            });
             return;
           }
         }
-      }).pipe(Effect.forkDetach, Effect.asVoid);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workflow.steer.ack-reconcile-failed", { cause }),
+        ),
+      );
+
+      yield* reconcileSteerAck.pipe(Effect.forkDetach, Effect.asVoid);
 
       return { accepted: true as const };
     });

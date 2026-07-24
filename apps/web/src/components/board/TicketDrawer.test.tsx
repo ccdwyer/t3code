@@ -274,6 +274,101 @@ describe("TicketDrawer", () => {
     expect(markup).toContain("Open conversation");
   });
 
+  it("renders the steer composer for a running agent step when canSteer is true", () => {
+    const api = {
+      workflow: {
+        steerTicketStep: vi.fn(async () => ({ accepted: true as const })),
+      },
+    } as never;
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        api={api}
+        detail={{
+          ...ticketDetail,
+          ticket: { ...ticketDetail.ticket, status: "running" },
+          steps: [
+            {
+              stepRunId: "step-running",
+              stepKey: "implement",
+              stepType: "agent",
+              status: "running",
+              waitingReason: null,
+              blockedReason: null,
+              providerThreadId: "thread-impl",
+              canSteer: true,
+              startedAt: "2026-07-24T00:00:00.000Z",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+    expect(markup).toContain('data-testid="steer-composer"');
+    expect(markup).toContain("Steer the agent");
+  });
+
+  it("renders disabled steer composer with tooltip when steerBlockedReason is delivering", () => {
+    const api = {
+      workflow: {
+        steerTicketStep: vi.fn(async () => ({ accepted: true as const })),
+      },
+    } as never;
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        api={api}
+        detail={{
+          ...ticketDetail,
+          ticket: { ...ticketDetail.ticket, status: "running" },
+          steps: [
+            {
+              stepRunId: "step-running",
+              stepKey: "implement",
+              stepType: "agent",
+              status: "running",
+              waitingReason: null,
+              blockedReason: null,
+              providerThreadId: "thread-impl",
+              canSteer: false,
+              steerBlockedReason: "delivering",
+              startedAt: "2026-07-24T00:00:00.000Z",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+    expect(markup).toContain('data-testid="steer-composer"');
+    expect(markup).toContain("Previous steering message is on its way");
+  });
+
+  it("badges steering messages in the discussion thread", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...ticketDetail,
+          messages: [
+            {
+              messageId: MessageId.make("message-steer"),
+              ticketId: "ticket-1",
+              stepRunId: "step-1",
+              author: "user",
+              body: "also update the tests",
+              attachments: [],
+              createdAt: "2026-06-08T14:02:00.000Z",
+              kind: "steering",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+    expect(markup).toContain("steered mid-run");
+    expect(markup).toContain("also update the tests");
+  });
+
   it("hides Open conversation when no agent step has a provider thread", () => {
     const markup = renderToStaticMarkup(
       <TicketDrawer detail={ticketDetail} onApprove={async () => undefined} onRunLane={() => {}} />,

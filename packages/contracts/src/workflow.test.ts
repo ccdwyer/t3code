@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -400,6 +401,83 @@ describe("WorkflowDefinition", () => {
     }),
   );
 
+  it.effect("decodes optional lane SLA with budget and escalateTo", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeWorkflowDefinition({
+        name: "sla lanes",
+        lanes: [
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "4 hours", escalateTo: "escalation" },
+          },
+          { key: "escalation", name: "Escalation", entry: "manual" },
+          {
+            key: "notify_only",
+            name: "Notify only",
+            entry: "manual",
+            sla: { budget: "1 hour" },
+          },
+        ],
+      });
+
+      assert.isDefined(decoded.lanes[0]?.sla);
+      assert.equal(decoded.lanes[0]?.sla?.escalateTo, "escalation");
+      assert.equal(Duration.toMillis(decoded.lanes[0]!.sla!.budget), 14_400_000);
+      assert.equal(decoded.lanes[2]?.sla?.escalateTo, undefined);
+      assert.equal(Duration.toMillis(decoded.lanes[2]!.sla!.budget), 3_600_000);
+
+      const encoded = yield* decodeWorkflowDefinitionEncoded({
+        name: "sla lanes encoded",
+        lanes: [
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "4 hours", escalateTo: "escalation" },
+          },
+          { key: "escalation", name: "Escalation", entry: "manual" },
+        ],
+      });
+      assert.equal((encoded as any).lanes[0].sla.budget, "4 hours");
+      assert.equal((encoded as any).lanes[0].sla.escalateTo, "escalation");
+
+      const badBudget = yield* Effect.exit(
+        decodeWorkflowDefinition({
+          name: "bad sla",
+          lanes: [
+            {
+              key: "review",
+              name: "Review",
+              entry: "manual",
+              sla: { budget: "soonish", escalateTo: "escalation" },
+            },
+            { key: "escalation", name: "Escalation", entry: "manual" },
+          ],
+        }),
+      );
+      assert.strictEqual(badBudget._tag, "Failure");
+
+      const badBreach = yield* Effect.exit(
+        decodeWorkflowEvent({
+          type: "TicketSlaBreached",
+          eventId: "evt-bad",
+          ticketId: "t-1",
+          streamVersion: 1,
+          occurredAt: "2026-06-07T04:00:00.000Z",
+          payload: {
+            // missing laneKey
+            laneEntryToken: "tok",
+            budgetMs: 14_400_000,
+            enteredLaneAt: "2026-06-06T00:00:00.000Z",
+          },
+        }),
+      );
+      assert.strictEqual(badBreach._tag, "Failure");
+    }),
+  );
+
   it.effect("exposes an encoded workflow definition schema for editor JSON", () =>
     Effect.gen(function* () {
       const encoded = yield* decodeWorkflowDefinitionEncoded({
@@ -573,6 +651,16 @@ describe("pullRequest step and TicketPrOpened event", () => {
       assert.equal(withoutCi.pr?.number, 8);
       assert.equal(withoutCi.pr?.state, "merged");
       assert.equal(withoutCi.pr?.ciState, undefined);
+
+      const withSla = yield* decodeBoardTicketView({
+        ticketId: "t1",
+        boardId: "b1",
+        title: "T",
+        currentLaneKey: "lane",
+        status: "idle",
+        slaBreachedAt: "2026-06-12T04:00:00.000Z",
+      });
+      assert.equal(withSla.slaBreachedAt, "2026-06-12T04:00:00.000Z");
     }),
   );
 
@@ -785,6 +873,61 @@ describe("WorkflowEvent", () => {
         payload: { toLane: "implement", laneEntryToken: "tok-1", reason: "manual" },
       });
       assert.equal(event.type, "TicketMovedToLane");
+    }),
+  );
+
+  it.effect("decodes TicketMovedToLane with reason sla and TicketSlaBreached", () =>
+    Effect.gen(function* () {
+      const moved = yield* decodeWorkflowEvent({
+        type: "TicketMovedToLane",
+        eventId: "evt-sla-move",
+        ticketId: "t-1",
+        streamVersion: 4,
+        occurredAt: "2026-06-07T04:00:00.000Z",
+        payload: { toLane: "escalation", laneEntryToken: "tok-sla", reason: "sla" },
+      });
+      assert.equal(moved.type, "TicketMovedToLane");
+      if (moved.type === "TicketMovedToLane") {
+        assert.equal(moved.payload.reason, "sla");
+      }
+
+      const breach = yield* decodeWorkflowEvent({
+        type: "TicketSlaBreached",
+        eventId: "evt-sla-breach",
+        ticketId: "t-1",
+        streamVersion: 3,
+        occurredAt: "2026-06-07T04:00:00.000Z",
+        payload: {
+          laneKey: "review",
+          laneEntryToken: "tok-entry",
+          budgetMs: 14_400_000,
+          enteredLaneAt: "2026-06-06T00:00:00.000Z",
+          escalatedTo: "escalation",
+        },
+      });
+      assert.equal(breach.type, "TicketSlaBreached");
+      if (breach.type === "TicketSlaBreached") {
+        assert.equal(breach.payload.budgetMs, 14_400_000);
+        assert.equal(breach.payload.escalatedTo, "escalation");
+      }
+
+      const notifyOnly = yield* decodeWorkflowEvent({
+        type: "TicketSlaBreached",
+        eventId: "evt-sla-notify",
+        ticketId: "t-1",
+        streamVersion: 5,
+        occurredAt: "2026-06-07T05:00:00.000Z",
+        payload: {
+          laneKey: "review",
+          laneEntryToken: "tok-entry-2",
+          budgetMs: 3_600_000,
+          enteredLaneAt: "2026-06-07T04:00:00.000Z",
+        },
+      });
+      assert.equal(notifyOnly.type, "TicketSlaBreached");
+      if (notifyOnly.type === "TicketSlaBreached") {
+        assert.equal(notifyOnly.payload.escalatedTo, undefined);
+      }
     }),
   );
 
@@ -1265,6 +1408,7 @@ describe("board creation contracts", () => {
   it.effect("decodes workflow editor result contracts", () =>
     Effect.gen(function* () {
       assert.equal(yield* decodeWorkflowLintCode("invalid_wip_limit"), "invalid_wip_limit");
+      assert.equal(yield* decodeWorkflowLintCode("invalid_sla"), "invalid_sla");
       assert.equal(
         yield* decodeWorkflowLintCode("unsafe_instruction_path"),
         "unsafe_instruction_path",
@@ -1724,10 +1868,13 @@ describe("WorkflowNeedsAttentionTicketView", () => {
         attentionReason: "Merge conflict",
         updatedAt: "2026-06-13T00:00:00.000Z",
         parkedAt: null,
+        slaBreachedAt: null,
+        slaBreachedReason: null,
       });
       assert.equal(view.attentionKind, "blocked");
       assert.equal(view.ticketId, "t1");
       assert.equal(view.parkedAt, null);
+      assert.equal(view.slaBreachedAt, null);
     }),
   );
 
@@ -1744,6 +1891,8 @@ describe("WorkflowNeedsAttentionTicketView", () => {
         attentionReason: null,
         updatedAt: "2026-06-13T00:00:00.000Z",
         parkedAt: null,
+        slaBreachedAt: null,
+        slaBreachedReason: null,
       });
       assert.equal(view.attentionKind, null);
     }),
@@ -1762,9 +1911,33 @@ describe("WorkflowNeedsAttentionTicketView", () => {
         attentionReason: "Hit a snag",
         updatedAt: "2026-06-13T05:00:00.000Z",
         parkedAt: "2026-06-13T00:00:00.000Z",
+        slaBreachedAt: null,
+        slaBreachedReason: null,
       });
       assert.equal(view.parkedAt, "2026-06-13T00:00:00.000Z");
       assert.equal(view.attentionKind, "parked_issue");
+    }),
+  );
+
+  it.effect("decodes an SLA-only needs-attention row with null attentionKind", () =>
+    Effect.gen(function* () {
+      const view = yield* decode({
+        ticketId: "t4",
+        boardId: "b1",
+        boardName: "Delivery",
+        title: "Stuck in review",
+        status: "idle",
+        currentLaneKey: "review",
+        attentionKind: null,
+        attentionReason: null,
+        updatedAt: "2026-06-13T05:00:00.000Z",
+        parkedAt: null,
+        slaBreachedAt: "2026-06-13T04:00:00.000Z",
+        slaBreachedReason: "SLA breached: over 4 hours in Review",
+      });
+      assert.equal(view.attentionKind, null);
+      assert.equal(view.slaBreachedAt, "2026-06-13T04:00:00.000Z");
+      assert.equal(view.slaBreachedReason, "SLA breached: over 4 hours in Review");
     }),
   );
 });
@@ -2390,6 +2563,32 @@ describe("Workflow park sub-states (WorkflowRouteTarget)", () => {
       assert.equal(view.toLane, undefined);
       assert.equal(view.park?.substate, "issue");
       assert.equal(view.park?.reason, "Tests failed twice");
+    }),
+  );
+
+  it.effect("WorkflowRouteDecisionView sla variant covers notify-only and escalation", () =>
+    Effect.gen(function* () {
+      const notifyOnly = yield* decodeWorkflowRouteDecisionView({
+        occurredAt: "2026-07-22T04:00:00.000Z",
+        fromLane: "review",
+        source: "sla",
+        sla: { budgetMs: 14_400_000 },
+      });
+      assert.equal(notifyOnly.source, "sla");
+      assert.equal(notifyOnly.toLane, undefined);
+      assert.equal(notifyOnly.sla?.budgetMs, 14_400_000);
+      assert.equal(notifyOnly.sla?.escalatedTo, undefined);
+
+      const escalated = yield* decodeWorkflowRouteDecisionView({
+        occurredAt: "2026-07-22T04:00:00.000Z",
+        fromLane: "review",
+        toLane: "escalation",
+        source: "sla",
+        sla: { budgetMs: 14_400_000, escalatedTo: "escalation" },
+      });
+      assert.equal(escalated.source, "sla");
+      assert.equal(escalated.toLane, "escalation");
+      assert.equal(escalated.sla?.escalatedTo, "escalation");
     }),
   );
 

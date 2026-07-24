@@ -315,6 +315,14 @@ export const WorkflowLaneEvent = Schema.Struct({
 });
 export type WorkflowLaneEvent = typeof WorkflowLaneEvent.Type;
 
+/** Per-lane time budget. On breach the board escalates or (Phase B) notifies. */
+export const WorkflowLaneSla = Schema.Struct({
+  budget: Schema.DurationFromString, // e.g. "4 hours"
+  // Route on breach; absent = notify-only (Phase B). Phase A's editor requires it.
+  escalateTo: Schema.optional(LaneKey),
+});
+export type WorkflowLaneSla = typeof WorkflowLaneSla.Type;
+
 export const WorkflowLane = Schema.Struct({
   key: LaneKey,
   name: TrimmedNonEmptyString,
@@ -328,6 +336,7 @@ export const WorkflowLane = Schema.Struct({
   color: Schema.optional(Schema.String),
   terminal: Schema.optional(Schema.Boolean),
   retention: Schema.optional(Schema.DurationFromString),
+  sla: Schema.optional(WorkflowLaneSla),
 });
 export type WorkflowLane = typeof WorkflowLane.Type;
 
@@ -426,6 +435,7 @@ export const WorkflowLintCode = Schema.Union([
   Schema.Literal("duplicate_outbound_id"),
   Schema.Literal("invalid_continue_session"),
   Schema.Literal("invalid_handoff_reference"),
+  Schema.Literal("invalid_sla"),
 ]);
 export type WorkflowLintCode = typeof WorkflowLintCode.Type;
 
@@ -666,7 +676,22 @@ export const WorkflowEvent = Schema.Union([
         Schema.Literal("routed"),
         Schema.Literal("initial"),
         Schema.Literal("external"),
+        Schema.Literal("sla"),
       ]),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketSlaBreached"),
+    payload: Schema.Struct({
+      laneKey: LaneKey,
+      laneEntryToken: LaneEntryToken, // dedupe key: one breach per lane entry
+      // Duration.toMillis(budget). Lint requires >= 60_000; NonNegativeInt keeps
+      // the wire type an integer (Infinity rejected at encode of Duration).
+      budgetMs: NonNegativeInt,
+      enteredLaneAt: IsoDateTime,
+      // Present when the same commit also moved/queued the ticket.
+      escalatedTo: Schema.optional(LaneKey),
     }),
   }),
   Schema.Struct({
@@ -956,6 +981,9 @@ export const BoardTicketView = Schema.Struct({
   ),
   // What the agent is currently doing, for running tickets.
   currentStepLabel: Schema.optional(Schema.String),
+  // Set while the current lane entry has an active SLA breach (not cleared by
+  // starting work — only by leaving the lane or de-SLA'ing the definition).
+  slaBreachedAt: Schema.optional(IsoDateTime),
 });
 export type BoardTicketView = typeof BoardTicketView.Type;
 
@@ -973,6 +1001,10 @@ export const WorkflowNeedsAttentionTicketView = Schema.Struct({
   // projection bumps `updatedAt` on any edit, so parked rows must age from this
   // stable clock; consumers fall back to `updatedAt` when it is null.
   parkedAt: Schema.NullOr(Schema.String),
+  // SLA breach fields — non-null for SLA-only (and dual-signal) Needs You rows.
+  // attentionKind stays in the legacy five-literal domain (null for SLA-only).
+  slaBreachedAt: Schema.NullOr(IsoDateTime),
+  slaBreachedReason: Schema.NullOr(Schema.String),
 });
 export type WorkflowNeedsAttentionTicketView = typeof WorkflowNeedsAttentionTicketView.Type;
 
@@ -1002,6 +1034,7 @@ export const BoardSnapshot = Schema.Struct({
         wipLimit: Schema.optional(Schema.Int),
         terminal: Schema.optional(Schema.Boolean),
         actions: Schema.optional(Schema.Array(WorkflowLaneAction)),
+        sla: Schema.optional(WorkflowLaneSla),
       }),
     ),
   }),
@@ -1118,9 +1151,9 @@ export type WorkflowRouteStepSnapshotView = typeof WorkflowRouteStepSnapshotView
 export const WorkflowRouteDecisionView = Schema.Struct({
   occurredAt: IsoDateTime,
   fromLane: Schema.optional(LaneKey),
-  // Invariant (producer-enforced): exactly one of toLane/park is present.
-  // Absent for a park variant (see `park` below) — the ticket never left
-  // its lane, so there is no destination lane to report.
+  // Invariant (producer-enforced): exactly one of toLane/park is present for
+  // non-SLA rows. SLA notify-only rows may have neither (ticket stays put);
+  // SLA escalation rows set toLane.
   toLane: Schema.optional(LaneKey),
   source: Schema.Literals([
     "step_on",
@@ -1129,6 +1162,7 @@ export const WorkflowRouteDecisionView = Schema.Struct({
     "manual",
     "external_event",
     "work_source",
+    "sla",
   ]),
   matchedTransitionIndex: Schema.optional(Schema.Int),
   // For external_event decisions: the inbound event name.
@@ -1144,6 +1178,14 @@ export const WorkflowRouteDecisionView = Schema.Struct({
       substate: WorkflowParkSubstate,
       label: Schema.String,
       reason: Schema.String,
+    }),
+  ),
+  // Present when this entry renders a `TicketSlaBreached` event. Notify-only
+  // breaches omit toLane; escalations set toLane + escalatedTo.
+  sla: Schema.optional(
+    Schema.Struct({
+      budgetMs: NonNegativeInt,
+      escalatedTo: Schema.optional(LaneKey),
     }),
   ),
 });

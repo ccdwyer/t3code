@@ -77,7 +77,27 @@ describe("workflow RPC contracts", () => {
           board: {
             boardId: "board-1",
             name: "Delivery",
-            lanes: [{ key: "backlog", name: "Backlog", entry: "manual", pipelineStepCount: 0 }],
+            lanes: [
+              {
+                key: "backlog",
+                name: "Backlog",
+                entry: "manual",
+                pipelineStepCount: 0,
+              },
+              {
+                key: "review",
+                name: "Review",
+                entry: "manual",
+                pipelineStepCount: 0,
+                sla: { budget: "4 hours", escalateTo: "escalation" },
+              },
+              {
+                key: "escalation",
+                name: "Escalation",
+                entry: "manual",
+                pipelineStepCount: 0,
+              },
+            ],
           },
           tickets: [
             {
@@ -87,6 +107,14 @@ describe("workflow RPC contracts", () => {
               currentLaneKey: "backlog",
               status: "idle",
             },
+            {
+              ticketId: "ticket-2",
+              boardId: "board-1",
+              title: "Breached review",
+              currentLaneKey: "review",
+              status: "idle",
+              slaBreachedAt: "2026-06-13T04:00:00.000Z",
+            },
           ],
         },
       });
@@ -94,6 +122,8 @@ describe("workflow RPC contracts", () => {
       assert.equal(item.kind, "snapshot");
       if (item.kind === "snapshot") {
         assert.equal(item.snapshot.tickets[0]?.title, "Ship workflow UI");
+        assert.equal(item.snapshot.board.lanes[1]?.sla?.escalateTo, "escalation");
+        assert.equal(item.snapshot.tickets[1]?.slaBreachedAt, "2026-06-13T04:00:00.000Z");
       }
     }),
   );

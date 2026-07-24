@@ -981,4 +981,130 @@ describe.sequential("WorkflowBoardNotificationDispatcher", () => {
       ),
     );
   });
+
+  it.effect(
+    "publishes an idle SLA breach row and maps outbox kind to legacy wire attention",
+    () => {
+      const recorder = makeRecorder();
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-sla-idle",
+          ticketId: "ticket-sla-idle",
+          boardId: "board-1",
+          sequence: 50,
+          status: "idle",
+          attentionKind: "sla_breached",
+          attentionReason: "SLA breached in review",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        assert.strictEqual(result.sent, 1);
+        assert.strictEqual(result.superseded, 0);
+        assert.strictEqual(recorder.calls.length, 1);
+        const call = recorder.calls[0]!;
+        // Internal sla_breached kind is not a wire attention kind.
+        assert.strictEqual(call.state.attentionKind, "waiting_for_input");
+        assert.strictEqual(call.state.body, "SLA breached in review");
+        assert.strictEqual(call.state.transitionId, "50");
+        assert.strictEqual((yield* readOutbox("ob-sla-idle")).delivery_state, "sent");
+      }).pipe(
+        Effect.provide(
+          buildLayer(recorder, {
+            "ticket-sla-idle": detail(
+              makeTicketRow({
+                ticketId: "ticket-sla-idle",
+                status: "idle",
+                currentLaneEntryToken: "tok-sla-idle",
+                slaBreachedAt: "2026-06-12T04:00:00.000Z",
+                slaBreachedEntryToken: "tok-sla-idle",
+                slaBreachedReason: "SLA breached in review",
+              }),
+            ),
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "supersedes an SLA outbox row when the breach token no longer matches the live lane token",
+    () => {
+      const recorder = makeRecorder();
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-sla-stale",
+          ticketId: "ticket-sla-stale",
+          boardId: "board-1",
+          sequence: 51,
+          status: "idle",
+          attentionKind: "sla_breached",
+          attentionReason: "SLA breached in review",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        assert.strictEqual(result.superseded, 1);
+        assert.strictEqual(result.sent, 0);
+        assert.strictEqual(recorder.calls.length, 0);
+        assert.strictEqual((yield* readOutbox("ob-sla-stale")).delivery_state, "superseded");
+      }).pipe(
+        Effect.provide(
+          buildLayer(recorder, {
+            // Ticket moved to a new lane entry after the outbox row was written —
+            // current token no longer equals the breach token (stale/moved).
+            "ticket-sla-stale": detail(
+              makeTicketRow({
+                ticketId: "ticket-sla-stale",
+                status: "idle",
+                currentLaneKey: "escalation",
+                currentLaneEntryToken: "tok-new-entry",
+                slaBreachedAt: null,
+                slaBreachedEntryToken: null,
+              }),
+            ),
+          }),
+        ),
+      );
+    },
+  );
+
+  it.effect(
+    "supersedes an SLA outbox row when tokens mismatch even if slaBreachedAt is still set",
+    () => {
+      const recorder = makeRecorder();
+      return Effect.gen(function* () {
+        yield* insertOutboxRow({
+          outboxId: "ob-sla-mismatch",
+          ticketId: "ticket-sla-mismatch",
+          boardId: "board-1",
+          sequence: 52,
+          status: "running",
+          attentionKind: "sla_breached",
+          attentionReason: "SLA breached in review",
+        });
+        const dispatcher = yield* WorkflowBoardNotificationDispatcher;
+        const result = yield* dispatcher.sweep();
+
+        assert.strictEqual(result.superseded, 1);
+        assert.strictEqual(result.sent, 0);
+        assert.strictEqual(recorder.calls.length, 0);
+      }).pipe(
+        Effect.provide(
+          buildLayer(recorder, {
+            "ticket-sla-mismatch": detail(
+              makeTicketRow({
+                ticketId: "ticket-sla-mismatch",
+                status: "running",
+                currentLaneEntryToken: "tok-live",
+                slaBreachedAt: "2026-06-12T04:00:00.000Z",
+                // Breach recorded against a prior entry token — recheck fails.
+                slaBreachedEntryToken: "tok-old",
+              }),
+            ),
+          }),
+        ),
+      );
+    },
+  );
 });

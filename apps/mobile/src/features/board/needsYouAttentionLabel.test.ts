@@ -36,6 +36,26 @@ describe("attentionLabel", () => {
   it("falls back to the raw status for a non-parked ticket with an unrecognized/null attentionKind", () => {
     expect(attentionLabel({ attentionKind: null, status: "running" })).toBe("running");
   });
+
+  it("labels a notify-only SLA breach (null attentionKind + reason) as SLA breached", () => {
+    expect(
+      attentionLabel({
+        attentionKind: null,
+        status: "idle",
+        slaBreachedReason: "SLA breached in review",
+      }),
+    ).toBe("SLA breached");
+  });
+
+  it("does not prefer SLA copy when slaBreachedReason is empty", () => {
+    expect(
+      attentionLabel({
+        attentionKind: null,
+        status: "idle",
+        slaBreachedReason: "",
+      }),
+    ).toBe("idle");
+  });
 });
 
 describe("attentionAgeSource", () => {
@@ -53,9 +73,28 @@ describe("attentionAgeSource", () => {
       attentionAgeSource({
         parkedAt: null,
         slaBreachedAt: null,
-        slaBreachedReason: null,
         updatedAt: "2026-07-22T05:00:00.000Z",
       }),
     ).toBe("2026-07-22T05:00:00.000Z");
+  });
+
+  it("ages an SLA breach from slaBreachedAt when not parked", () => {
+    expect(
+      attentionAgeSource({
+        parkedAt: null,
+        slaBreachedAt: "2026-07-22T03:00:00.000Z",
+        updatedAt: "2026-07-22T05:00:00.000Z",
+      }),
+    ).toBe("2026-07-22T03:00:00.000Z");
+  });
+
+  it("prefers parkedAt over slaBreachedAt when both are set", () => {
+    expect(
+      attentionAgeSource({
+        parkedAt: "2026-07-22T01:00:00.000Z",
+        slaBreachedAt: "2026-07-22T03:00:00.000Z",
+        updatedAt: "2026-07-22T05:00:00.000Z",
+      }),
+    ).toBe("2026-07-22T01:00:00.000Z");
   });
 });

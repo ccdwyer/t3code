@@ -202,4 +202,55 @@ layer("WorkflowSla integration", (it) => {
       assert.isTrue((row?.slaBreachedReason ?? "").length > 0);
     }),
   );
+
+  it.effect("escalation breach produces zero notification outbox rows", () =>
+    Effect.gen(function* () {
+      const engine = yield* WorkflowEngine;
+      const registry = yield* BoardRegistry;
+      const read = yield* WorkflowReadModel;
+      const sql = yield* SqlClient.SqlClient;
+      const boardId = "b-int-esc-outbox" as never;
+
+      yield* read.registerBoard({
+        boardId,
+        projectId: "p-int" as never,
+        name: "Esc outbox",
+        workflowFilePath: ".t3/boards/esc-outbox.json",
+        workflowVersionHash: "h1",
+        maxConcurrentTickets: 3,
+      });
+      yield* registry.register(boardId, escalationDefinition as never);
+
+      const ticketId = yield* engine.createTicket({
+        boardId,
+        title: "Escalate no push",
+        initialLane: "review" as never,
+      });
+      const detail = yield* read.getTicketDetail(ticketId);
+      const token = detail!.ticket.currentLaneEntryToken!;
+      yield* sql`
+        UPDATE projection_ticket
+        SET current_lane_entered_at = '2026-07-24T00:00:00.000Z'
+        WHERE ticket_id = ${ticketId}
+      `;
+
+      const outcome = yield* engine.escalateTicketSla({
+        ticketId,
+        expectedLaneKey: "review" as never,
+        expectedEntryToken: token,
+        nowMs: Effect.succeed(fixedNow),
+      });
+      assert.equal(outcome, "escalated");
+
+      const after = yield* read.getTicketDetail(ticketId);
+      assert.equal(after?.ticket.currentLaneKey, "escalation");
+
+      const outbox = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM workflow_notification_outbox
+        WHERE ticket_id = ${ticketId}
+      `;
+      assert.equal(outbox[0]?.count ?? -1, 0);
+    }),
+  );
 });

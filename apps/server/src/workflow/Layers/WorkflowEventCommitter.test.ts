@@ -1164,6 +1164,220 @@ layer("WorkflowEventCommitter", (it) => {
         assert.equal(older?.deliveryState, "superseded");
       }),
   );
+
+  it.effect(
+    "notify-only TicketSlaBreached inserts one sla_breached outbox row for an idle ticket",
+    () =>
+      Effect.gen(function* () {
+        const boardId = "b-outbox-sla-notify";
+        const ticketId = "t-outbox-sla-notify";
+        const committer = yield* WorkflowEventCommitter;
+        const sql = yield* SqlClient.SqlClient;
+        yield* registerBoard(boardId);
+        yield* insertProjectedTicket({
+          ticketId,
+          boardId,
+          title: "Idle SLA",
+          status: "idle",
+          lane: "review",
+        });
+        yield* sql`
+        UPDATE projection_ticket
+        SET current_lane_entry_token = 'tok-sla-notify',
+            current_lane_entered_at = '2026-06-07T00:00:00.000Z'
+        WHERE ticket_id = ${ticketId}
+      `;
+
+        yield* committer.commit({
+          type: "TicketSlaBreached",
+          eventId: "e-outbox-sla-notify" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T04:00:00.000Z" as never,
+          payload: {
+            laneKey: "review" as never,
+            laneEntryToken: "tok-sla-notify" as never,
+            budgetMs: 3_600_000,
+            enteredLaneAt: "2026-06-07T00:00:00.000Z" as never,
+          },
+        });
+
+        const rows = yield* outboxRows(ticketId);
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0]?.attentionKind, "sla_breached");
+        assert.equal(rows[0]?.deliveryState, "pending");
+        assert.isTrue((rows[0]?.attentionReason ?? "").includes("SLA breached"));
+      }),
+  );
+
+  it.effect("escalation TicketSlaBreached (with escalatedTo) writes zero outbox rows", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-sla-esc";
+      const ticketId = "t-outbox-sla-esc";
+      const committer = yield* WorkflowEventCommitter;
+      const sql = yield* SqlClient.SqlClient;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({
+        ticketId,
+        boardId,
+        title: "Escalating",
+        status: "idle",
+        lane: "review",
+      });
+      yield* sql`
+        UPDATE projection_ticket
+        SET current_lane_entry_token = 'tok-sla-esc',
+            current_lane_entered_at = '2026-06-07T00:00:00.000Z'
+        WHERE ticket_id = ${ticketId}
+      `;
+
+      yield* committer.commitMany([
+        {
+          type: "TicketSlaBreached",
+          eventId: "e-outbox-sla-esc-1" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T04:00:00.000Z" as never,
+          payload: {
+            laneKey: "review" as never,
+            laneEntryToken: "tok-sla-esc" as never,
+            budgetMs: 3_600_000,
+            enteredLaneAt: "2026-06-07T00:00:00.000Z" as never,
+            escalatedTo: "escalation" as never,
+          },
+        },
+        {
+          type: "TicketMovedToLane",
+          eventId: "e-outbox-sla-esc-2" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T04:00:00.000Z" as never,
+          payload: {
+            toLane: "escalation" as never,
+            laneEntryToken: "tok-esc" as never,
+            reason: "sla",
+          },
+        },
+      ]);
+
+      assert.equal(yield* outboxCount(ticketId), 0);
+    }),
+  );
+
+  it.effect(
+    "SLA and parked outbox rows coexist without kind-scoped supersession killing each other",
+    () =>
+      Effect.gen(function* () {
+        const boardId = "b-outbox-sla-coexist";
+        const ticketId = "t-outbox-sla-coexist";
+        const committer = yield* WorkflowEventCommitter;
+        const sql = yield* SqlClient.SqlClient;
+        yield* registerBoard(boardId);
+        yield* insertProjectedTicket({
+          ticketId,
+          boardId,
+          title: "Coexist",
+          status: "idle",
+          lane: "review",
+        });
+        yield* sql`
+        UPDATE projection_ticket
+        SET current_lane_entry_token = 'tok-coexist',
+            current_lane_entered_at = '2026-06-07T00:00:00.000Z'
+        WHERE ticket_id = ${ticketId}
+      `;
+
+        // 1) Notify-only SLA breach while idle → sla_breached outbox.
+        yield* committer.commit({
+          type: "TicketSlaBreached",
+          eventId: "e-outbox-sla-coexist-1" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T04:00:00.000Z" as never,
+          payload: {
+            laneKey: "review" as never,
+            laneEntryToken: "tok-coexist" as never,
+            budgetMs: 3_600_000,
+            enteredLaneAt: "2026-06-07T00:00:00.000Z" as never,
+          },
+        });
+        // 2) Park (issue) → classic needs-you outbox; must NOT supersede the SLA row.
+        yield* committer.commit({
+          type: "TicketParked",
+          eventId: "e-outbox-sla-coexist-2" as never,
+          ticketId: ticketId as never,
+          occurredAt: "2026-06-07T04:01:00.000Z" as never,
+          payload: {
+            substate: "issue",
+            label: "Issue encountered",
+            reason: "snag",
+            parkOrigin: '{"src":"step","stepKey":"code","fp":"deadbeef"}',
+            actionsSnapshot: [],
+          },
+        } as never);
+
+        const rows = yield* outboxRows(ticketId);
+        assert.equal(rows.length, 2);
+        const slaRow = rows.find((row) => row.attentionKind === "sla_breached");
+        const parkRow = rows.find((row) => row.attentionKind === "parked_issue");
+        assert.equal(slaRow?.deliveryState, "pending");
+        assert.equal(parkRow?.deliveryState, "pending");
+      }),
+  );
+
+  it.effect("parked then SLA notify-only outbox also coexist (reverse order)", () =>
+    Effect.gen(function* () {
+      const boardId = "b-outbox-sla-coexist-rev";
+      const ticketId = "t-outbox-sla-coexist-rev";
+      const committer = yield* WorkflowEventCommitter;
+      const sql = yield* SqlClient.SqlClient;
+      yield* registerBoard(boardId);
+      yield* insertProjectedTicket({
+        ticketId,
+        boardId,
+        title: "Coexist reverse",
+        status: "running",
+        lane: "review",
+      });
+      yield* sql`
+        UPDATE projection_ticket
+        SET current_lane_entry_token = 'tok-coexist-rev',
+            current_lane_entered_at = '2026-06-07T00:00:00.000Z'
+        WHERE ticket_id = ${ticketId}
+      `;
+
+      // 1) Park waiting → classic needs-you.
+      yield* committer.commit({
+        type: "TicketParked",
+        eventId: "e-outbox-sla-coexist-rev-1" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T04:00:00.000Z" as never,
+        payload: {
+          substate: "waiting",
+          label: "Need a decision",
+          reason: "awaiting human choice",
+          parkOrigin: '{"src":"step","stepKey":"code","fp":"cafebabe"}',
+          actionsSnapshot: [],
+        },
+      } as never);
+      // 2) Notify-only SLA breach while parked → must NOT supersede the parked row.
+      yield* committer.commit({
+        type: "TicketSlaBreached",
+        eventId: "e-outbox-sla-coexist-rev-2" as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-06-07T05:00:00.000Z" as never,
+        payload: {
+          laneKey: "review" as never,
+          laneEntryToken: "tok-coexist-rev" as never,
+          budgetMs: 3_600_000,
+          enteredLaneAt: "2026-06-07T00:00:00.000Z" as never,
+        },
+      });
+
+      const rows = yield* outboxRows(ticketId);
+      assert.equal(rows.length, 2);
+      const slaRow = rows.find((row) => row.attentionKind === "sla_breached");
+      const parkRow = rows.find((row) => row.attentionKind === "parked_waiting");
+      assert.equal(slaRow?.deliveryState, "pending");
+      assert.equal(parkRow?.deliveryState, "pending");
+    }),
+  );
 });
 
 it.effect(

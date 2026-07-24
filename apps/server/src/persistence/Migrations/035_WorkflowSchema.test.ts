@@ -146,7 +146,7 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     type: "table",
     name: "workflow_dispatch_outbox",
     tbl_name: "workflow_dispatch_outbox",
-    sql: "CREATE TABLE workflow_dispatch_outbox ( dispatch_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, step_run_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT, provider_instance TEXT NOT NULL, model TEXT NOT NULL, instruction TEXT NOT NULL, worktree_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, confirmed_at TEXT , options_json TEXT, project_id TEXT, thread_title TEXT, runtime_mode TEXT)",
+    sql: "CREATE TABLE workflow_dispatch_outbox ( dispatch_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, step_run_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT, provider_instance TEXT NOT NULL, model TEXT NOT NULL, instruction TEXT NOT NULL, worktree_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, confirmed_at TEXT , options_json TEXT, project_id TEXT, thread_title TEXT, runtime_mode TEXT, capture_output INTEGER, panel_size INTEGER, steer_pending_message_id TEXT, steer_accepted_at TEXT, steer_count INTEGER NOT NULL DEFAULT 0, steer_tombstone_message_id TEXT)",
   },
   {
     type: "index",
@@ -728,6 +728,43 @@ layer("035_WorkflowSchema", (it) => {
       assert.isTrue(
         cols.some((c) => c.name === "edited_at"),
         "edited_at column missing on projection_ticket_message",
+      );
+    }),
+  );
+
+  it.effect("live-agent-steering columns exist on outbox, step_run, and ticket_message", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+
+      const outboxCols = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(workflow_dispatch_outbox)
+      `;
+      const outboxNames = new Set(outboxCols.map((c) => c.name));
+      for (const name of [
+        "capture_output",
+        "panel_size",
+        "steer_pending_message_id",
+        "steer_accepted_at",
+        "steer_count",
+        "steer_tombstone_message_id",
+      ]) {
+        assert.isTrue(outboxNames.has(name), `outbox missing ${name}`);
+      }
+
+      const stepCols = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_step_run)
+      `;
+      const stepNames = new Set(stepCols.map((c) => c.name));
+      assert.isTrue(stepNames.has("steer_count"), "step_run missing steer_count");
+      assert.isTrue(stepNames.has("last_steered_at"), "step_run missing last_steered_at");
+
+      const msgCols = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_ticket_message)
+      `;
+      assert.isTrue(
+        msgCols.some((c) => c.name === "kind"),
+        "ticket_message missing kind",
       );
     }),
   );

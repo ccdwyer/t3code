@@ -114,7 +114,7 @@ export default Effect.gen(function* () {
 
   // projection_step_run base (033) + pre/post_checkpoint_ref (038) +
   // output_json (041) + provider_response_kind (045) + attempt (048) +
-  // usage columns (049).
+  // usage columns (049) + steer counters (live-agent-steering).
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_step_run (
       step_run_id TEXT PRIMARY KEY,
@@ -136,13 +136,15 @@ export default Effect.gen(function* () {
       cached_input_tokens INTEGER,
       output_tokens INTEGER,
       total_tokens INTEGER,
-      retryable INTEGER
+      retryable INTEGER,
+      steer_count INTEGER NOT NULL DEFAULT 0,
+      last_steered_at TEXT
     )
   `;
 
   // projection_ticket_message (044). edited_at was added via ALTER in the
   // former 035 (TicketMessageEditedAt) — folded inline here (TEXT, nullable,
-  // matching the ALTER-produced column).
+  // matching the ALTER-produced column). kind marks steering messages.
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_ticket_message (
       message_id TEXT PRIMARY KEY NOT NULL,
@@ -152,7 +154,8 @@ export default Effect.gen(function* () {
       body TEXT NOT NULL,
       attachments_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      edited_at TEXT
+      edited_at TEXT,
+      kind TEXT
     )
   `;
 
@@ -205,6 +208,15 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN project_id TEXT`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN thread_title TEXT`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN runtime_mode TEXT`;
+  // Live-agent-steering: dispatch-time step metadata + steer reservation cells.
+  // ALTER (not CREATE rewrite) matches the options_json / runtime_mode pattern
+  // so sqlite_master keeps the historical `, col` whitespace shape.
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN capture_output INTEGER`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN panel_size INTEGER`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_message_id TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_accepted_at TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_count INTEGER NOT NULL DEFAULT 0`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_tombstone_message_id TEXT`;
 
   // --- Setup run (037) ---
   yield* sql`

@@ -95,9 +95,21 @@ const seedTicketOwnedRows = (ticketId: string) =>
         step_key,
         step_type,
         status,
-        started_at
+        started_at,
+        steer_count,
+        last_steered_at
       )
-      VALUES (${`step-${ticketId}`}, ${`pipeline-${ticketId}`}, ${ticketId}, 'cleanup', 'script', 'completed', ${now})
+      VALUES (
+        ${`step-${ticketId}`},
+        ${`pipeline-${ticketId}`},
+        ${ticketId},
+        'cleanup',
+        'script',
+        'completed',
+        ${now},
+        1,
+        ${now}
+      )
     `;
     yield* sql`
       INSERT INTO workflow_script_run (
@@ -122,9 +134,32 @@ const seedTicketOwnedRows = (ticketId: string) =>
         instruction,
         worktree_path,
         status,
-        created_at
+        created_at,
+        capture_output,
+        panel_size,
+        steer_pending_message_id,
+        steer_accepted_at,
+        steer_count,
+        steer_tombstone_message_id
       )
-      VALUES (${`dispatch-${ticketId}`}, ${ticketId}, ${`step-${ticketId}`}, ${`thread-${ticketId}`}, 'codex', 'gpt-5.5', 'cleanup', ${`/tmp/${ticketId}`}, 'completed', ${now})
+      VALUES (
+        ${`dispatch-${ticketId}`},
+        ${ticketId},
+        ${`step-${ticketId}`},
+        ${`thread-${ticketId}`},
+        'codex',
+        'gpt-5.5',
+        'cleanup',
+        ${`/tmp/${ticketId}`},
+        'completed',
+        ${now},
+        1,
+        1,
+        ${`msg-pending-${ticketId}`},
+        ${now},
+        1,
+        ${`msg-tombstone-${ticketId}`}
+      )
     `;
     yield* sql`
       INSERT INTO workflow_setup_run (
@@ -144,9 +179,19 @@ const seedTicketOwnedRows = (ticketId: string) =>
         author,
         body,
         attachments_json,
-        created_at
+        created_at,
+        kind
       )
-      VALUES (${`message-${ticketId}`}, ${ticketId}, ${`step-${ticketId}`}, 'user', 'cleanup', '[]', ${now})
+      VALUES (
+        ${`message-${ticketId}`},
+        ${ticketId},
+        ${`step-${ticketId}`},
+        'user',
+        'cleanup',
+        '[]',
+        ${now},
+        'steering'
+      )
     `;
     yield* sql`
       INSERT INTO workflow_pr_state (

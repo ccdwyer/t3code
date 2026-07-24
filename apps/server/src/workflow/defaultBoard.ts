@@ -135,6 +135,7 @@ export const defaultBoardDefinition = (input: {
             type: "agent",
             agent,
             instruction: PLAN_INSTRUCTION,
+            captureOutput: true,
             retry: { maxAttempts: 2 },
           },
         ],
@@ -150,6 +151,7 @@ export const defaultBoardDefinition = (input: {
             type: "agent",
             agent,
             instruction: SPEC_INSTRUCTION,
+            captureOutput: true,
             retry: { maxAttempts: 2 },
           },
         ],
@@ -165,6 +167,7 @@ export const defaultBoardDefinition = (input: {
             type: "agent",
             agent,
             instruction: IMPLEMENT_INSTRUCTION,
+            captureOutput: true,
             retry: { maxAttempts: 2 },
           },
           {

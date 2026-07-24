@@ -137,6 +137,7 @@ const liteAgentLoopDefinition = (input: {
             type: "agent",
             agent,
             instruction: IMPLEMENT_INSTRUCTION,
+            captureOutput: true,
             retry: { maxAttempts: 2 },
           },
           {
@@ -208,6 +209,7 @@ const designBoardDefinition = (input: {
     type: "agent",
     agent,
     instruction,
+    captureOutput: true,
     retry: { maxAttempts: 2 },
   });
   return decodeWorkflowDefinition({

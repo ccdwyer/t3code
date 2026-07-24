@@ -190,6 +190,19 @@ describe("BOARD_TEMPLATES", () => {
     }
   });
 
+  it("enables output capture for every agent step in every template", () => {
+    for (const template of BOARD_TEMPLATES) {
+      const def = template.build({ name: "X", agent: baseAgent });
+      for (const lane of def.lanes) {
+        for (const step of lane.pipeline ?? []) {
+          if (step.type === "agent") {
+            assert.equal(step.captureOutput, true, `${template.id} ${step.key}`);
+          }
+        }
+      }
+    }
+  });
+
   const stepKeys = (def: WorkflowDefinition) =>
     def.lanes.flatMap((l) => (l.pipeline ?? []).map((s) => s.key as string));
 

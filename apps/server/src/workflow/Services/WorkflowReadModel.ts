@@ -177,6 +177,7 @@ export interface TicketMessageRow {
   readonly attachments: ReadonlyArray<TicketAttachment>;
   readonly createdAt: string;
   readonly editedAt: IsoDateTime | null;
+  readonly kind?: "steering" | null;
 }
 
 /**
@@ -259,6 +260,13 @@ export interface StepRunRow {
   readonly cachedInputTokens: number | null;
   readonly outputTokens: number | null;
   readonly totalTokens: number | null;
+  /** Projection-derived steer stats (optional for SELECTs that omit them). */
+  readonly steerCount?: number | null;
+  readonly lastSteeredAt?: string | null;
+  readonly steerPendingMessageId?: string | null;
+  readonly panelSize?: number | null;
+  readonly canSteer?: boolean;
+  readonly steerBlockedReason?: "awaiting_user" | "delivering" | null;
 }
 
 export interface PipelineStepRunRow {

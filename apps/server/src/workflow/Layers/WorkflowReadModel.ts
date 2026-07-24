@@ -1,6 +1,7 @@
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
@@ -16,6 +17,7 @@ import {
 
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
+import { TurnStateReader } from "../Services/TurnStateReader.ts";
 import { parseParkOrigin, type ParkOriginSource } from "../parkOrigin.ts";
 import {
   WorkflowReadModel,
@@ -1072,6 +1074,22 @@ const make = Effect.gen(function* () {
             ORDER BY outbox.rowid DESC
             LIMIT 1
           ) AS "providerThreadId",
+          (
+            SELECT outbox.steer_pending_message_id
+            FROM workflow_dispatch_outbox AS outbox
+            WHERE outbox.step_run_id = step.step_run_id
+            ORDER BY outbox.rowid DESC
+            LIMIT 1
+          ) AS "steerPendingMessageId",
+          (
+            SELECT outbox.panel_size
+            FROM workflow_dispatch_outbox AS outbox
+            WHERE outbox.step_run_id = step.step_run_id
+            ORDER BY outbox.rowid DESC
+            LIMIT 1
+          ) AS "panelSize",
+          step.steer_count AS "steerCount",
+          step.last_steered_at AS "lastSteeredAt",
           step.input_tokens AS "inputTokens",
           step.cached_input_tokens AS "cachedInputTokens",
           step.output_tokens AS "outputTokens",
@@ -1082,7 +1100,41 @@ const make = Effect.gen(function* () {
         WHERE step.ticket_id = ${ticketId}
         ORDER BY step.started_at ASC, step.rowid ASC
       `);
-      const steps = yield* Effect.forEach(stepRows, toStepRunRow);
+      let steps = yield* Effect.forEach(stepRows, toStepRunRow);
+      // SQL-first canSteer gates + single TurnStateReader probe for the active agent.
+      const activeAgent = steps.find(
+        (s) => s.stepType === "agent" && s.status === "running" && s.providerThreadId !== null,
+      );
+      if (activeAgent !== undefined) {
+        let canSteer = true;
+        let steerBlockedReason: "awaiting_user" | "delivering" | null = null;
+        if ((activeAgent.panelSize ?? 0) >= 2) {
+          canSteer = false;
+        } else if (activeAgent.steerPendingMessageId != null) {
+          canSteer = false;
+          steerBlockedReason = "delivering";
+        } else {
+          const turnStateReader = yield* Effect.serviceOption(TurnStateReader);
+          if (Option.isSome(turnStateReader) && activeAgent.providerThreadId !== null) {
+            const state = yield* turnStateReader.value
+              .read(activeAgent.providerThreadId as never)
+              .pipe(Effect.orElseSucceed(() => ({ _tag: "running" as const })));
+            if (state._tag === "awaiting_user") {
+              canSteer = false;
+              steerBlockedReason = "awaiting_user";
+            } else if (state._tag !== "running") {
+              canSteer = false;
+            }
+          }
+        }
+        steps = steps.map((s) =>
+          s.stepRunId === activeAgent.stepRunId
+            ? { ...s, canSteer, steerBlockedReason }
+            : { ...s, canSteer: false, steerBlockedReason: null },
+        );
+      } else {
+        steps = steps.map((s) => ({ ...s, canSteer: false, steerBlockedReason: null }));
+      }
       const messages = yield* listTicketMessages(ticketId);
       return { ticket, steps, messages, ...(syncedSource !== undefined ? { syncedSource } : {}) };
     });
@@ -1098,7 +1150,8 @@ const make = Effect.gen(function* () {
           body,
           attachments_json AS "attachmentsJson",
           created_at AS "createdAt",
-          edited_at AS "editedAt"
+          edited_at AS "editedAt",
+          kind
         FROM projection_ticket_message
         WHERE ticket_id = ${ticketId}
         ORDER BY created_at ASC, message_id ASC

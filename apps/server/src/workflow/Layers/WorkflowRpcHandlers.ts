@@ -408,6 +408,16 @@ const toStepRunView = (step: StepRunRow): WorkflowStepRunView => ({
   ...(step.finishedAt === null ? {} : { finishedAt: step.finishedAt as never }),
   ...(toStepUsageView(step) === undefined ? {} : { usage: toStepUsageView(step) }),
   ...(step.providerThreadId === null ? {} : { providerThreadId: step.providerThreadId as never }),
+  ...(step.steerCount === undefined || step.steerCount === null
+    ? {}
+    : { steerCount: step.steerCount }),
+  ...(step.lastSteeredAt === undefined || step.lastSteeredAt === null
+    ? {}
+    : { lastSteeredAt: step.lastSteeredAt as never }),
+  ...(step.canSteer === undefined ? {} : { canSteer: step.canSteer }),
+  ...(step.steerBlockedReason === undefined || step.steerBlockedReason === null
+    ? {}
+    : { steerBlockedReason: step.steerBlockedReason }),
 });
 
 const workflowRpcError = (message: string, cause?: unknown) =>
@@ -624,6 +634,7 @@ const ticketDetail = (
         attachments: [...message.attachments],
         createdAt: message.createdAt,
         ...(message.editedAt == null ? {} : { editedAt: message.editedAt }),
+        ...(message.kind === "steering" ? { kind: "steering" as const } : {}),
       })),
       ...(detail.syncedSource !== undefined ? { syncedSource: detail.syncedSource } : {}),
     } satisfies WorkflowTicketDetailView;
@@ -2990,12 +3001,16 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to answer workflow ticket step"))),
         { "rpc.aggregate": "workflow" },
       ),
-    // Engine path lands in live-agent-steering task 6; keep the RPC surface
-    // registered so contracts HandlersFrom stays complete after task 1.
-    [WORKFLOW_WS_METHODS.steerTicketStep]: (_input: WorkflowSteerTicketStepInputType) =>
+    [WORKFLOW_WS_METHODS.steerTicketStep]: (input: WorkflowSteerTicketStepInputType) =>
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.steerTicketStep,
-        Effect.fail(new WorkflowRpcError({ message: "steerTicketStep not yet implemented" })),
+        deps.engine
+          .steerTicketStep(input)
+          .pipe(
+            Effect.mapError((cause) =>
+              toWorkflowRpcErrorWithCauseMessage("Failed to steer workflow ticket step")(cause),
+            ),
+          ),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.postTicketMessage]: (input: {

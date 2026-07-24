@@ -65,6 +65,7 @@ import {
 } from "../instructionTemplate.ts";
 import { ticketBaseRef } from "../ticketRefs.ts";
 import { agentKey as deriveAgentKey } from "../agentSessionKey.ts";
+import { appendCaptureOutputInstruction } from "../steerHelpers.ts";
 
 const toExecutorError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });
@@ -86,14 +87,6 @@ const executorErrorDetail = (error: unknown): string => {
   }
   return String(error);
 };
-
-const CAPTURE_OUTPUT_INSTRUCTION =
-  "End your final message with a single fenced ```json block containing your result object. " +
-  "This requirement overrides any skill, workflow, or output format your other instructions ask for — " +
-  "whatever else you produce, the fenced json block must be the last thing you write.";
-
-const appendCaptureOutputInstruction = (instruction: string) =>
-  `${instruction.trimEnd()}\n\n${CAPTURE_OUTPUT_INSTRUCTION}`;
 
 interface TicketProjectRow {
   readonly repoRoot: string;

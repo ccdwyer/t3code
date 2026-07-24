@@ -663,8 +663,39 @@ const make = Effect.gen(function* () {
           break;
         }
         case "StepSteered": {
-          // Message + step-run counter projection lands in live-agent-steering
-          // task 7. Keep the switch exhaustive so new contract variants compile.
+          yield* sql`
+            INSERT OR IGNORE INTO projection_ticket_message (
+              message_id,
+              ticket_id,
+              step_run_id,
+              author,
+              body,
+              attachments_json,
+              created_at,
+              kind
+            )
+            VALUES (
+              ${event.payload.messageId},
+              ${event.ticketId},
+              ${event.payload.stepRunId},
+              'user',
+              ${event.payload.text},
+              '[]',
+              ${event.occurredAt},
+              'steering'
+            )
+          `;
+          yield* sql`
+            UPDATE projection_step_run
+            SET steer_count = COALESCE(steer_count, 0) + 1,
+                last_steered_at = ${event.occurredAt}
+            WHERE step_run_id = ${event.payload.stepRunId}
+          `;
+          yield* sql`
+            UPDATE projection_ticket
+            SET updated_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+          `;
           break;
         }
         case "TicketSlaBreached": {

@@ -39,8 +39,9 @@ import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { CapturedStepOutputReader } from "../Services/CapturedStepOutputReader.ts";
 import { WorkflowEventStoreError, WorkflowEventStoreErrorCode } from "../Services/Errors.ts";
 import { PredicateEvaluator } from "../Services/PredicateEvaluator.ts";
-import { ProviderDispatchOutbox } from "../Services/ProviderDispatchOutbox.ts";
+import { ProviderDispatchOutbox, ProviderTurnPort } from "../Services/ProviderDispatchOutbox.ts";
 import { ProviderResponsePort } from "../Services/ProviderResponsePort.ts";
+import { frameSteerText, STEER_REJECTION } from "../steerHelpers.ts";
 import { ScriptCancelRegistry } from "../Services/ScriptCancelRegistry.ts";
 import { StepExecutor } from "../Services/StepExecutor.ts";
 import { StepUsageReader } from "../Services/StepUsageReader.ts";
@@ -378,6 +379,10 @@ const make = Effect.gen(function* () {
       providerDispatches: Context.getOption(
         context as Context.Context<ProviderDispatchOutbox>,
         ProviderDispatchOutbox,
+      ),
+      providerTurnPort: Context.getOption(
+        context as Context.Context<ProviderTurnPort>,
+        ProviderTurnPort,
       ),
       providerService: Context.getOption(
         context as Context.Context<ProviderService>,
@@ -2275,6 +2280,196 @@ const make = Effect.gen(function* () {
       });
     });
 
+  const steerTicketStep: WorkflowEngineShape["steerTicketStep"] = (input) =>
+    Effect.gen(function* () {
+      // Idempotency first (before mutable-state validation), keyed by messageId.
+      const existingSteers = yield* wrapSql(sql<{
+        readonly ticketId: string;
+        readonly stepRunId: string;
+        readonly text: string;
+      }>`
+        SELECT
+          ticket_id AS "ticketId",
+          json_extract(payload_json, '$.stepRunId') AS "stepRunId",
+          json_extract(payload_json, '$.text') AS "text"
+        FROM workflow_events
+        WHERE event_type = 'StepSteered'
+          AND json_extract(payload_json, '$.messageId') = ${input.messageId}
+        LIMIT 1
+      `).pipe(
+        Effect.orElseSucceed(
+          () =>
+            [] as Array<{
+              readonly ticketId: string;
+              readonly stepRunId: string;
+              readonly text: string;
+            }>,
+        ),
+      );
+      if (existingSteers[0] !== undefined) {
+        const row = existingSteers[0];
+        if (
+          row.ticketId === (input.ticketId as string) &&
+          row.stepRunId === (input.stepRunId as string) &&
+          row.text === input.text
+        ) {
+          return { accepted: true as const };
+        }
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.messageIdReuse });
+      }
+
+      // Submitted but not yet acked: a pending steer reservation with this messageId.
+      const pendingRows = yield* wrapSql(sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n
+        FROM workflow_dispatch_outbox
+        WHERE steer_pending_message_id = ${input.messageId}
+      `).pipe(Effect.orElseSucceed(() => [{ n: 0 }]));
+      if ((pendingRows[0]?.n ?? 0) > 0) {
+        return { accepted: true as const };
+      }
+
+      const detail = yield* read.getTicketDetail(input.ticketId);
+      if (detail === null) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.ticketNotFound });
+      }
+      if (detail.ticket.status === "parked") {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.parkedTicket });
+      }
+
+      const step = detail.steps.find((s) => s.stepRunId === (input.stepRunId as string));
+      if (step === undefined) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.stepNotFound });
+      }
+      if (step.stepType !== "agent") {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.notAgentStep });
+      }
+      if (step.status === "dispatch_requested") {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.agentStarting });
+      }
+      if (step.status === "awaiting_user") {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.awaitingUser });
+      }
+      if (step.status !== "running") {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.stepNotRunning });
+      }
+
+      const { providerDispatches, providerTurnPort, turnStateReader } = yield* getOptionalServices;
+      if (Option.isNone(providerDispatches) || Option.isNone(providerTurnPort)) {
+        return yield* new WorkflowEventStoreError({
+          message: STEER_REJECTION.orchestrationUnavailable,
+        });
+      }
+      const outbox = providerDispatches.value;
+      const turnPort = providerTurnPort.value;
+
+      const target = yield* outbox.getSteerTarget(input.stepRunId);
+      if (target === null) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.agentStarting });
+      }
+      if (target.panelSize !== null && target.panelSize >= 2) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.panelStep });
+      }
+      if (target.steerPendingMessageId !== null) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.steerInFlight });
+      }
+
+      if (Option.isSome(turnStateReader)) {
+        const state = yield* turnStateReader.value.read(target.threadId);
+        if (state._tag === "awaiting_user") {
+          return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.awaitingUser });
+        }
+        if (state._tag === "completed" || state._tag === "failed") {
+          return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.stepNotRunning });
+        }
+        if (state._tag !== "running") {
+          return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.stepNotRunning });
+        }
+      }
+
+      const reserved = yield* outbox.markSteerPending(target.dispatchId, input.messageId);
+      if (!reserved) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.steerInFlight });
+      }
+
+      const framed = frameSteerText(input.text, target.captureOutput);
+      const submit = turnPort.steerTurn;
+      if (submit === undefined) {
+        yield* outbox.clearSteerPending(target.dispatchId);
+        return yield* new WorkflowEventStoreError({
+          message: STEER_REJECTION.orchestrationUnavailable,
+        });
+      }
+
+      const exit = yield* Effect.exit(
+        submit({
+          threadId: target.threadId,
+          messageId: input.messageId,
+          text: framed,
+        }),
+      );
+      if (exit._tag === "Failure") {
+        yield* outbox.clearSteerPending(target.dispatchId);
+        return yield* new WorkflowEventStoreError({
+          message: "steer submit failed",
+          cause: exit.cause,
+        });
+      }
+
+      // Reconcile ack → StepSteered in the background. awaitTerminal also
+      // updates outbox columns when it observes the receipt; this fiber owns
+      // the audit event append (unique on messageId).
+      yield* Effect.gen(function* () {
+        for (let attempt = 0; attempt < 120; attempt++) {
+          yield* Effect.sleep(Duration.millis(250));
+          const receipts = yield* wrapSql(sql<{ readonly kind: string }>`
+            SELECT kind
+            FROM projection_thread_activities
+            WHERE thread_id = ${target.threadId}
+              AND kind IN ('workflow.steer.delivered', 'workflow.steer.failed')
+              AND (
+                json_extract(payload_json, '$.messageId') = ${input.messageId}
+                OR payload_json LIKE ${`%${input.messageId as string}%`}
+              )
+            ORDER BY created_at DESC
+            LIMIT 1
+          `).pipe(Effect.orElseSucceed(() => [] as Array<{ readonly kind: string }>));
+          const kind = receipts[0]?.kind;
+          if (kind === "workflow.steer.failed") {
+            yield* outbox.clearSteerPending(target.dispatchId);
+            return;
+          }
+          if (kind === "workflow.steer.delivered") {
+            const acceptedAt = yield* nowIso;
+            yield* wrapSql(sql`
+              UPDATE workflow_dispatch_outbox
+              SET steer_accepted_at = COALESCE(steer_accepted_at, ${acceptedAt}),
+                  steer_count = CASE
+                    WHEN steer_pending_message_id = ${input.messageId}
+                    THEN COALESCE(steer_count, 0) + 1
+                    ELSE steer_count
+                  END,
+                  steer_pending_message_id = NULL
+              WHERE dispatch_id = ${target.dispatchId}
+            `);
+            yield* committer
+              .commit({
+                type: "StepSteered",
+                ticketId: input.ticketId,
+                payload: {
+                  stepRunId: input.stepRunId,
+                  messageId: input.messageId,
+                  text: input.text,
+                },
+              } as never)
+              .pipe(Effect.catch(() => Effect.void));
+            return;
+          }
+        }
+      }).pipe(Effect.forkDetach, Effect.asVoid);
+
+      return { accepted: true as const };
+    });
+
   const answerTicketStep: WorkflowEngineShape["answerTicketStep"] = (input) =>
     Effect.gen(function* () {
       const { text, attachments } = yield* validateTicketMessageInput(input, "answer");
@@ -3702,6 +3897,7 @@ const make = Effect.gen(function* () {
     ingestExternalEvent,
     resolveApproval,
     answerTicketStep,
+    steerTicketStep,
     postTicketMessage,
     editTicketMessage,
     cancelStep,

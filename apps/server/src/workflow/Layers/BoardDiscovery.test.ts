@@ -58,6 +58,7 @@ const workflowEngineStub = Layer.succeed(WorkflowEngine, {
   ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
   resolveApproval: () => Effect.die("unused"),
   answerTicketStep: () => Effect.die("unused"),
+  steerTicketStep: () => Effect.void,
   postTicketMessage: () => Effect.die("unused"),
   editTicketMessage: () => Effect.die("unused"),
   cancelStep: () => Effect.die("unused"),

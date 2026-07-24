@@ -348,6 +348,41 @@ const make = Effect.gen(function* () {
             }
           }
 
+          // Ack processing: watch durable reactor receipts for in-flight steers.
+          if (meta?.steerPendingMessageId != null) {
+            const receipts = yield* wrapSql(sql<{
+              readonly kind: string;
+            }>`
+              SELECT kind
+              FROM projection_thread_activities
+              WHERE thread_id = ${threadId}
+                AND kind IN ('workflow.steer.delivered', 'workflow.steer.failed')
+                AND (
+                  json_extract(payload_json, '$.messageId') = ${meta.steerPendingMessageId}
+                  OR payload_json LIKE ${`%${meta.steerPendingMessageId}%`}
+                )
+              ORDER BY created_at DESC
+              LIMIT 1
+            `).pipe(Effect.orElseSucceed(() => [] as Array<{ readonly kind: string }>));
+            const receipt = receipts[0];
+            if (receipt?.kind === "workflow.steer.delivered") {
+              const acceptedAt = yield* nowIso;
+              yield* wrapSql(sql`
+                UPDATE workflow_dispatch_outbox
+                SET steer_accepted_at = ${acceptedAt},
+                    steer_count = COALESCE(steer_count, 0) + 1,
+                    steer_pending_message_id = NULL
+                WHERE dispatch_id = ${dispatchId}
+                  AND steer_pending_message_id = ${meta.steerPendingMessageId}
+              `);
+              // StepSteered append is owned by the engine monitor path; signal
+              // via a side channel is not available here. Ack columns are the
+              // durable source; engine.ackSteer (if registered later) is optional.
+            } else if (receipt?.kind === "workflow.steer.failed") {
+              yield* clearSteerPending(dispatchId as never);
+            }
+          }
+
           const state = yield* turns.read(threadId);
           if (state._tag === "running") {
             yield* Effect.sleep("500 millis");
@@ -624,6 +659,39 @@ export const ProviderTurnPortLive = Layer.effect(
         return { turnId: turn.turnId };
       }).pipe(Effect.mapError(toDispatchError("provider start failed")));
 
-    return { ensureTurnStarted } satisfies ProviderTurnPortShape;
+    const steerTurn: NonNullable<ProviderTurnPortShape["steerTurn"]> = (input) =>
+      Effect.gen(function* () {
+        if (Option.isNone(orchestration)) {
+          return yield* new WorkflowEventStoreError({
+            message: "orchestration engine unavailable for steer",
+          });
+        }
+        const now = yield* nowIso;
+        yield* orchestration.value
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: `workflow-steer-${input.messageId}` as never,
+            threadId: input.threadId,
+            message: {
+              messageId: input.messageId,
+              role: "user",
+              text: input.text,
+              attachments: [],
+            },
+            interactionMode: "default",
+            createdAt: now as never,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowEventStoreError({
+                  message: "workflow steer dispatch failed",
+                  cause,
+                }),
+            ),
+          );
+      });
+
+    return { ensureTurnStarted, steerTurn } satisfies ProviderTurnPortShape;
   }),
 );

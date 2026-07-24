@@ -175,6 +175,17 @@ export interface WorkflowEngineShape {
     readonly text?: string | undefined;
     readonly attachments?: ReadonlyArray<TicketAttachment> | undefined;
   }) => Effect.Effect<void, WorkflowEventStoreError>;
+  /**
+   * Mid-run guidance into a live agent step. Returns `{ accepted: true }` on
+   * reserve+submit (and on idempotent retries). Failures are typed store errors
+   * whose message is a frozen STEER_REJECTION constant.
+   */
+  readonly steerTicketStep: (input: {
+    readonly ticketId: TicketId;
+    readonly stepRunId: StepRunId;
+    readonly messageId: MessageId;
+    readonly text: string;
+  }) => Effect.Effect<{ readonly accepted: true }, WorkflowEventStoreError>;
   readonly postTicketMessage: (input: {
     readonly ticketId: TicketId;
     readonly text?: string | undefined;

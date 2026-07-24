@@ -53,6 +53,7 @@ const makeEngineLayer = (calls: Array<EscalateCall>, outcome: "notified" | "stal
     ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
     resolveApproval: () => unsupported(),
     answerTicketStep: () => unsupported(),
+    steerTicketStep: () => Effect.void,
     postTicketMessage: () => unsupported(),
     editTicketMessage: () => unsupported(),
     cancelStep: () => unsupported(),

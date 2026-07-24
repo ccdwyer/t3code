@@ -53,6 +53,7 @@ import { WorkflowIntakeLive } from "./Layers/WorkflowIntake.ts";
 import { WorkflowRecoveryLive } from "./Layers/WorkflowRecovery.ts";
 import { WorkflowRoutingContextBuilderLive } from "./Layers/WorkflowRoutingContextBuilder.ts";
 import { WorkflowTerminalRetentionSweeperLive } from "./Layers/WorkflowTerminalRetentionSweeper.ts";
+import { WorkflowSlaSweeperLiveDefault } from "./Layers/WorkflowSlaSweeper.ts";
 import { AsanaProviderLive } from "./Layers/AsanaProvider.ts";
 import { GithubIssuesProviderLive } from "./Layers/GithubIssuesProvider.ts";
 import { JiraProviderLive } from "./Layers/JiraProvider.ts";
@@ -79,6 +80,7 @@ const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   WorkflowEngineLayer,
   WorkflowRecoveryLive.pipe(Layer.provideMerge(WorkflowEngineLayer)),
   WorkflowTerminalRetentionSweeperLive.pipe(Layer.provideMerge(WorkflowEngineLayer)),
+  WorkflowSlaSweeperLiveDefault.pipe(Layer.provideMerge(WorkflowEngineLayer)),
   WorkflowGitHubPollerLive.pipe(Layer.provideMerge(WorkflowEngineLayer)),
 ).pipe(
   Layer.provideMerge(StepExecutionLive),

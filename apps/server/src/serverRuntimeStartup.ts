@@ -41,6 +41,7 @@ import { WorkflowOutboundDispatcher } from "./workflow/Services/WorkflowOutbound
 import { WorkflowGitHubPoller } from "./workflow/Services/WorkflowGitHubPoller.ts";
 import { WorkflowRecovery } from "./workflow/Services/WorkflowRecovery.ts";
 import { WorkflowTerminalRetentionSweeper } from "./workflow/Services/WorkflowTerminalRetentionSweeper.ts";
+import { WorkflowSlaSweeper } from "./workflow/Services/WorkflowSlaSweeper.ts";
 import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
 import {
   formatHeadlessServeOutput,
@@ -321,6 +322,7 @@ export const make = Effect.gen(function* () {
   const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
   const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
   const workflowTerminalRetentionSweeper = yield* WorkflowTerminalRetentionSweeper;
+  const workflowSlaSweeper = yield* WorkflowSlaSweeper;
   const workflowWebhook = yield* WorkflowWebhook;
   const workflowGitHubPoller = yield* WorkflowGitHubPoller;
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -430,10 +432,19 @@ export const make = Effect.gen(function* () {
         "workflow.board-notifications.start",
         workflowBoardNotificationDispatcher.start().pipe(Scope.provide(reactorScope)),
       );
+      // SLA sweeper commits events — must not run against an unrecovered
+      // projection. Same post-recovery phase as the notification dispatcher
+      // (NOT next to the retention sweeper, which starts pre-recovery).
+      yield* Effect.logDebug("startup phase: starting workflow SLA sweeper");
+      yield* runStartupPhase(
+        "workflow.sla-sweeper.start",
+        workflowSlaSweeper.start().pipe(Scope.provide(reactorScope)),
+      );
     } else {
       yield* Effect.logWarning(
         "skipping board-notification dispatcher start: workflow recovery failed",
       );
+      yield* Effect.logWarning("skipping SLA sweeper start: workflow recovery failed");
     }
 
     // Start the work-source syncer ONLY after recovery succeeds: the syncer

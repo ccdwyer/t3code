@@ -94,6 +94,9 @@ const laneDepths = (definition: WorkflowDefinitionEncoded): ReadonlyMap<string, 
     for (const action of lane.actions ?? []) {
       add(action.to);
     }
+    if (lane.sla?.escalateTo !== undefined) {
+      add(lane.sla.escalateTo);
+    }
     return targets;
   };
 
@@ -230,6 +233,9 @@ const computeDetourExtent = (
     addSpan(laneKey, lane.on?.blocked);
     for (const action of lane.actions ?? []) {
       addSpan(laneKey, action.to);
+    }
+    if (lane.sla?.escalateTo !== undefined) {
+      addSpan(laneKey, lane.sla.escalateTo);
     }
   }
 

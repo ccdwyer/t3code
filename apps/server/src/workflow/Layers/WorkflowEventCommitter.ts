@@ -50,7 +50,12 @@ const NEEDS_YOU_STATUSES = new Set(["waiting_on_user", "blocked", "parked"]);
 // → parked). Every other event skips the status-diff reads entirely, keeping the
 // hot step loop (StepStarted/StepCompleted/StepRefsCaptured/PipelineStarted/...)
 // free of the two extra projection_ticket point-reads.
-const NOTIFIABLE_EVENT_TYPES = new Set(["StepAwaitingUser", "TicketBlocked", "TicketParked"]);
+const NOTIFIABLE_EVENT_TYPES = new Set([
+  "StepAwaitingUser",
+  "TicketBlocked",
+  "TicketParked",
+  "TicketSlaBreached",
+]);
 
 // Events that move a ticket OUT of a needs-you status but are NOT already read by
 // the notifiable/outbound gates. Crossing OUT of needs-you must supersede any
@@ -64,6 +69,12 @@ const NOTIFIABLE_EVENT_TYPES = new Set(["StepAwaitingUser", "TicketBlocked", "Ti
 // needs-you row AFTER a preceding move/admit that already superseded it, so they
 // stay on the fast path.
 const RESOLVES_NEEDS_YOU_EVENT_TYPES = new Set(["StepUserResolved", "TicketQueued"]);
+
+// Lane-identity events that must supersede SLA outbox rows even when the ticket
+// was never in a classic needs-you status (notify-only SLA can be idle).
+const LANE_EXIT_EVENT_TYPES = new Set(["TicketMovedToLane", "TicketQueued", "TicketAdmitted"]);
+
+const SLA_OUTBOX_KIND = "sla_breached";
 
 const isWorkflowEventStoreError = Schema.is(WorkflowEventStoreError);
 const toCommitterError = (cause: unknown) =>
@@ -132,13 +143,26 @@ const make = Effect.gen(function* () {
   // status, writes one durable outbox row keyed by the event sequence (UNIQUE).
   const appendAndProjectUnlocked = (event: CommitEvent) =>
     Effect.gen(function* () {
-      const needsNotification = NOTIFIABLE_EVENT_TYPES.has(event.type);
+      const isSlaBreach = event.type === "TicketSlaBreached";
+      // Escalation breaches do not push — the move produces ordinary destination
+      // signals. Only notify-only (no escalatedTo) inserts an outbox row.
+      const slaNotifyOnly =
+        isSlaBreach &&
+        (event.payload as { escalatedTo?: string | undefined }).escalatedTo === undefined;
+      const needsNotification =
+        NOTIFIABLE_EVENT_TYPES.has(event.type) && (!isSlaBreach || slaNotifyOnly);
       const needsOutbound = OUTBOUND_EVENT_TYPES.has(event.type);
       const needsLeaveSupersede = RESOLVES_NEEDS_YOU_EVENT_TYPES.has(event.type);
+      const needsSlaLaneExitSupersede = LANE_EXIT_EVENT_TYPES.has(event.type);
       // Fast path: events that can never notify, fire an outbound rule, nor resolve
       // a needs-you status skip the two projection_ticket point-reads and the
       // insert(s)/supersede entirely.
-      if (!needsNotification && !needsOutbound && !needsLeaveSupersede) {
+      if (
+        !needsNotification &&
+        !needsOutbound &&
+        !needsLeaveSupersede &&
+        !needsSlaLaneExitSupersede
+      ) {
         const persisted = yield* store.append(event);
         yield* pipeline.projectEvent(persisted);
         return persisted;
@@ -162,14 +186,44 @@ const make = Effect.gen(function* () {
         readonly title: string;
         readonly attentionKind: string | null;
         readonly attentionReason: string | null;
+        readonly slaBreachedReason: string | null;
       }>`
         SELECT status, board_id AS "boardId", title,
-               attention_kind AS "attentionKind", attention_reason AS "attentionReason"
+               attention_kind AS "attentionKind", attention_reason AS "attentionReason",
+               sla_breached_reason AS "slaBreachedReason"
         FROM projection_ticket WHERE ticket_id = ${event.ticketId}
       `;
       const next = nextRows[0];
-      if (
+      // SLA notify-only: insert regardless of ticket status (idle/running ok).
+      // Kind-scoped: only supersede prior SLA rows, never parked/waiting rows.
+      if (needsNotification && slaNotifyOnly && next !== undefined) {
+        const outboxId = yield* ids.eventId();
+        const createdAt = yield* nowIso;
+        const notificationReason =
+          next.slaBreachedReason ??
+          (typeof (event.payload as { laneKey?: string }).laneKey === "string"
+            ? `SLA breached in ${(event.payload as { laneKey: string }).laneKey}`
+            : "SLA breached");
+        yield* sql`
+          UPDATE workflow_notification_outbox
+          SET delivery_state = 'superseded'
+          WHERE ticket_id = ${event.ticketId}
+            AND delivery_state IN ('pending', 'publishing')
+            AND sequence != ${persisted.sequence}
+            AND attention_kind = ${SLA_OUTBOX_KIND}
+        `;
+        yield* sql`
+          INSERT OR IGNORE INTO workflow_notification_outbox (
+            outbox_id, ticket_id, board_id, sequence, status,
+            attention_kind, attention_reason, delivery_state, attempt_count, created_at
+          ) VALUES (
+            ${outboxId}, ${event.ticketId}, ${next.boardId}, ${persisted.sequence}, ${next.status},
+            ${SLA_OUTBOX_KIND}, ${notificationReason}, 'pending', 0, ${createdAt}
+          )
+        `;
+      } else if (
         needsNotification &&
+        !isSlaBreach &&
         next !== undefined &&
         NEEDS_YOU_STATUSES.has(next.status) &&
         next.status !== prevStatus
@@ -189,38 +243,14 @@ const make = Effect.gen(function* () {
               ? `Hit an issue: ${event.payload.reason}`
               : `Waiting on you: ${event.payload.label}`
             : next.attentionReason;
-        // Supersede any prior PENDING (or in-flight PUBLISHING) rows for this
-        // ticket so at most one row (the latest transition) ever reaches "sent".
-        // Without this, a ticket that rapidly transitions through multiple
-        // needs-you states within one sweep window would push a stale earlier
-        // row's content. Including 'publishing' closes the gate-1 re-gate
-        // residual (NEW-1): the dispatcher's atomic claim flips a row from
-        // 'pending' to 'publishing' immediately before the relay call, and that
-        // row sits in 'publishing' for the duration of the publish round-trip.
-        // A guard of `delivery_state = 'pending'` alone cannot see that row, so
-        // this transition would land, the dispatcher would still publish the
-        // claimed row's stale content, and its unconditional
-        // `markState(..., 'sent')` would clobber this supersede. Widening the
-        // guard to also match 'publishing' means this UPDATE always wins that
-        // race the instant it commits; the dispatcher's post-publish CAS
-        // (`SET delivery_state = 'sent' WHERE ... AND delivery_state =
-        // 'publishing'`) then finds the row already 'superseded' and backs off
-        // instead of overwriting it. The one residual this cannot close: if the
-        // relay call is already in flight when this UPDATE lands, the stale push
-        // still goes out over the wire — nothing server-side can un-send a
-        // network call already made. That is an unavoidable RTT residual;
-        // everything else (state bookkeeping, retry resurrection) is fully
-        // closed. The `sequence != persisted.sequence` guard is load-bearing: an
-        // idempotent re-projection of the SAME event (row already
-        // pending/publishing at this sequence) must NOT supersede its own row
-        // and strand it — only genuinely older rows (different sequence) get
-        // superseded.
+        // Kind-scoped: do not supersede SLA outbox rows (parallel track).
         yield* sql`
           UPDATE workflow_notification_outbox
           SET delivery_state = 'superseded'
           WHERE ticket_id = ${event.ticketId}
             AND delivery_state IN ('pending', 'publishing')
             AND sequence != ${persisted.sequence}
+            AND (attention_kind IS NULL OR attention_kind != ${SLA_OUTBOX_KIND})
         `;
         yield* sql`
           INSERT OR IGNORE INTO workflow_notification_outbox (
@@ -232,20 +262,7 @@ const make = Effect.gen(function* () {
           )
         `;
       }
-      // Leaving needs-you supersedes obsolete in-flight rows, independent of any
-      // insert (gate-1 round-3 NEW-2). When this event crosses the ticket OUT of a
-      // needs-you status (prev in the set, next not), any pending/publishing
-      // attention row for the ticket is now obsolete — the human no longer needs to
-      // act — so supersede it here even though this event inserts NO replacement
-      // row. Without this, a row already claimed 'publishing' by the dispatcher
-      // would survive the transition and its post-relay markSent CAS would win,
-      // ending a stale push 'sent'. Same pending+publishing guard as the
-      // crossing-INTO supersede above, but with no insert, so the insert path's
-      // exactly-once semantics stay untouched. The prev-in / next-not gate makes
-      // this and the crossing-INTO block mutually exclusive per event (next cannot
-      // be both in and not in NEEDS_YOU). The `sequence != persisted.sequence`
-      // guard is vacuously true here (this event appended no outbox row at its own
-      // sequence) but kept for symmetry with the insert-path supersede.
+      // Leaving needs-you supersedes obsolete classic attention rows (not SLA).
       if (
         next !== undefined &&
         prevStatus !== null &&
@@ -258,6 +275,18 @@ const make = Effect.gen(function* () {
           WHERE ticket_id = ${event.ticketId}
             AND delivery_state IN ('pending', 'publishing')
             AND sequence != ${persisted.sequence}
+            AND (attention_kind IS NULL OR attention_kind != ${SLA_OUTBOX_KIND})
+        `;
+      }
+      // Lane exit always supersedes SLA outbox rows (idle breach + move).
+      if (needsSlaLaneExitSupersede && next !== undefined) {
+        yield* sql`
+          UPDATE workflow_notification_outbox
+          SET delivery_state = 'superseded'
+          WHERE ticket_id = ${event.ticketId}
+            AND delivery_state IN ('pending', 'publishing')
+            AND sequence != ${persisted.sequence}
+            AND attention_kind = ${SLA_OUTBOX_KIND}
         `;
       }
       // Outbound delivery: for the broader OUTBOUND_EVENT_TYPES gate, evaluate the

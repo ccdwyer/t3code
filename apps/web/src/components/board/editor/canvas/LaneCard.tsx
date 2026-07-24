@@ -150,7 +150,23 @@ export function LaneCard({
           <LaneBadge>entry {lane.entry}</LaneBadge>
           {lane.wipLimit === undefined ? null : <LaneBadge>WIP {lane.wipLimit}</LaneBadge>}
           {lane.terminal ? <LaneBadge>terminal</LaneBadge> : null}
+          {lane.sla === undefined ? null : (
+            <span data-testid={`lane-sla-badge-${laneKey}`}>
+              <LaneBadge>
+                SLA {typeof lane.sla.budget === "string" ? lane.sla.budget : "budget"}
+              </LaneBadge>
+            </span>
+          )}
         </div>
+        {lane.sla?.escalateTo !== undefined ? (
+          <span
+            id={`lane-${laneKey}-sla`}
+            data-canvas-anchor
+            data-testid={`lane-sla-anchor-${laneKey}`}
+            aria-hidden="true"
+            className="absolute -right-1.5 top-1/3 size-3 -translate-y-1/2 rounded-full border border-warning bg-warning/80"
+          />
+        ) : null}
         {parkBadges.length === 0 ? null : (
           <div className="flex flex-wrap gap-1" onClick={(event) => event.stopPropagation()}>
             {parkBadges.map((badge, index) => (

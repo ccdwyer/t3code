@@ -35,8 +35,10 @@ import {
   renameLane,
   reorderStep,
   routeTargetSelectValue,
+  clearLaneSla,
   setLaneColor,
   setLaneEntry,
+  setLaneSla,
   setRouteTargetKind,
   updateLaneAction,
   updateLaneEvent,
@@ -206,6 +208,25 @@ describe("workflow editor model", () => {
       expect(model.definition.lanes.some((candidate) => candidate.key === "new-lane-2")).toBe(
         false,
       );
+      yield* expectDecodable(model.definition);
+    }),
+  );
+
+  it.effect("sets and clears lane SLA; removeLane drops dangling escalateTo", () =>
+    Effect.gen(function* () {
+      let model = createWorkflowEditorModel(baseDefinition);
+      model = setLaneSla(model, "queue", { budget: "2 hours", escalateTo: "done" });
+      expect(model.definition.lanes.find((l) => l.key === "queue")?.sla).toEqual({
+        budget: "2 hours",
+        escalateTo: "done",
+      });
+      model = setLaneSla(model, "run", { budget: "1 hour", escalateTo: "queue" });
+      model = removeLane(model, "queue");
+      const run = model.definition.lanes.find((l) => l.key === "run");
+      expect(run?.sla?.budget).toBe("1 hour");
+      expect(run?.sla?.escalateTo).toBeUndefined();
+      model = clearLaneSla(model, "run");
+      expect(model.definition.lanes.find((l) => l.key === "run")?.sla).toBeUndefined();
       yield* expectDecodable(model.definition);
     }),
   );

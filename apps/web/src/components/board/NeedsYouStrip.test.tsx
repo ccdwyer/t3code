@@ -82,6 +82,29 @@ describe("selectNeedsYouTickets", () => {
       "waiting-parked-newer",
     ]);
   });
+
+  it("includes SLA-only breaches below parked/waiting, ordered by breach time", () => {
+    const slaOlder = ticket({
+      ticketId: "sla-older",
+      title: "SLA older",
+      status: "idle",
+      slaBreachedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const slaNewer = ticket({
+      ticketId: "sla-newer",
+      title: "SLA newer",
+      status: "running",
+      slaBreachedAt: "2026-01-02T00:00:00.000Z",
+    });
+    const issue = ticket({
+      ticketId: "issue",
+      title: "Issue",
+      status: "parked",
+      parked: { ...issuePark, parkedAt: "2026-01-03T00:00:00.000Z" },
+    });
+    const selected = selectNeedsYouTickets([slaNewer, issue, slaOlder]);
+    expect(selected.map((t) => t.ticketId)).toEqual(["issue", "sla-older", "sla-newer"]);
+  });
 });
 
 describe("NeedsYouStrip", () => {

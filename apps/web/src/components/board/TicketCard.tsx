@@ -46,6 +46,8 @@ export interface TicketCardView {
     | undefined;
   readonly attentionKind?: string | undefined;
   readonly currentStepLabel?: string | undefined;
+  /** Set while the current lane entry is over its SLA budget. */
+  readonly slaBreachedAt?: string | undefined;
   // Park-in-place details — present while status is "parked". `actions` is
   // re-resolved from the current board definition at read time; absent means
   // the definition changed and inline recovery is unavailable (the drawer
@@ -354,6 +356,15 @@ export function TicketCard({
           >
             waiting on {unresolvedDependencies} dependenc
             {unresolvedDependencies === 1 ? "y" : "ies"}
+          </span>
+        ) : null}
+        {ticket.slaBreachedAt !== undefined ? (
+          <span
+            className="mt-1.5 inline-flex items-center gap-1 rounded-sm bg-destructive/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-destructive-foreground"
+            data-testid="ticket-sla-badge"
+            title={`SLA breached at ${ticket.slaBreachedAt}`}
+          >
+            SLA
           </span>
         ) : null}
         {showFooter ? (

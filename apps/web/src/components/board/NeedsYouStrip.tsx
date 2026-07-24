@@ -13,7 +13,7 @@ import type { BoardViewTicket } from "./BoardView";
 
 type NeedsYouTicket = Pick<
   BoardViewTicket,
-  "ticketId" | "title" | "status" | "updatedAt" | "parked"
+  "ticketId" | "title" | "status" | "updatedAt" | "parked" | "slaBreachedAt"
 >;
 
 export interface NeedsYouStripProps {
@@ -29,32 +29,46 @@ export interface NeedsYouStripProps {
   readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
 }
 
-/** Oldest-first sort key: a parked ticket's own park timestamp, a
- *  `waiting_on_user` ticket's last update. Missing/unparseable timestamps
- *  sort last within their tier rather than falsely claiming to be oldest. */
+/** Oldest-first sort key: park timestamp, SLA breach time, or last update.
+ *  Missing/unparseable timestamps sort last within their tier. */
 const attentionTimestamp = (ticket: NeedsYouTicket): number => {
-  const raw = ticket.parked?.parkedAt ?? ticket.updatedAt;
+  const raw = ticket.parked?.parkedAt ?? ticket.slaBreachedAt ?? ticket.updatedAt;
   const parsed = raw === undefined ? NaN : Date.parse(raw);
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 };
 
-const tierOrder: Record<"issue" | "waiting", number> = { issue: 0, waiting: 1 };
+const tierOrder: Record<"issue" | "waiting" | "sla", number> = {
+  issue: 0,
+  waiting: 1,
+  sla: 2,
+};
+
+const needsYouTier = (ticket: NeedsYouTicket): "issue" | "waiting" | "sla" => {
+  if (ticket.status === "parked" || ticket.status === "waiting_on_user") {
+    return ticketTier(ticket) as "issue" | "waiting";
+  }
+  return "sla";
+};
 
 /**
  * Selects and orders the tickets the strip pins: issue-tier parks first,
- * then waiting (parked-waiting and agent questions), oldest first within
- * each tier. Exported so ordering can be unit-tested without a render.
+ * then waiting (parked-waiting and agent questions), then SLA-only breaches,
+ * oldest first within each tier. Exported so ordering can be unit-tested
+ * without a render.
  */
 export function selectNeedsYouTickets(
   tickets: ReadonlyArray<NeedsYouTicket>,
 ): ReadonlyArray<NeedsYouTicket> {
   return tickets
-    .filter((ticket) => ticket.status === "parked" || ticket.status === "waiting_on_user")
+    .filter(
+      (ticket) =>
+        ticket.status === "parked" ||
+        ticket.status === "waiting_on_user" ||
+        ticket.slaBreachedAt !== undefined,
+    )
     .slice()
     .sort((a, b) => {
-      const tierDelta =
-        tierOrder[ticketTier(a) as "issue" | "waiting"] -
-        tierOrder[ticketTier(b) as "issue" | "waiting"];
+      const tierDelta = tierOrder[needsYouTier(a)] - tierOrder[needsYouTier(b)];
       if (tierDelta !== 0) {
         return tierDelta;
       }
@@ -167,20 +181,25 @@ function NeedsYouEntry({
     event.stopPropagation();
   };
 
-  const label = parked !== undefined ? parked.label : "waiting on you";
+  const isSlaOnly =
+    parked === undefined &&
+    ticket.status !== "waiting_on_user" &&
+    ticket.slaBreachedAt !== undefined;
+  const label = parked !== undefined ? parked.label : isSlaOnly ? "SLA breached" : "waiting on you";
   const reason = parked !== undefined ? parked.reason : null;
+  const entryTier = isSlaOnly ? "sla" : tier;
 
   return (
     <li
       className="flex items-center gap-2 rounded-md border border-border/70 bg-card px-2 py-1.5 text-xs"
       data-testid="needs-you-entry"
-      data-tier={tier}
+      data-tier={entryTier}
     >
       <span
         aria-hidden="true"
         className={cn(
           "size-2 shrink-0 rounded-full",
-          tier === "issue" ? "bg-destructive" : "bg-info",
+          entryTier === "issue" || entryTier === "sla" ? "bg-destructive" : "bg-info",
         )}
       />
       <button

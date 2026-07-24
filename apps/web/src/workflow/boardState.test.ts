@@ -75,6 +75,44 @@ describe("boardState", () => {
     },
   };
 
+  it("threads slaBreachedAt from snapshot and ticket delta", () => {
+    let state = applyBoardStreamItem(emptyBoardState, {
+      kind: "snapshot",
+      snapshot: {
+        projectId: "project-1",
+        board: {
+          boardId: "b-1",
+          name: "Delivery",
+          lanes: [{ key: "review", name: "Review", entry: "manual", pipelineStepCount: 0 }],
+        },
+        tickets: [
+          {
+            ticketId: "t-sla",
+            boardId: "b-1",
+            title: "Slow",
+            currentLaneKey: "review",
+            status: "idle",
+            slaBreachedAt: "2026-07-24T04:00:00.000Z",
+          },
+        ],
+      },
+    } as never);
+    expect(state.ticketById["t-sla"]?.slaBreachedAt).toBe("2026-07-24T04:00:00.000Z");
+
+    state = applyBoardStreamItem(state, {
+      kind: "ticket",
+      ticket: {
+        ticketId: "t-sla",
+        boardId: "b-1",
+        title: "Slow",
+        currentLaneKey: "review",
+        status: "idle",
+        slaBreachedAt: "2026-07-24T05:00:00.000Z",
+      },
+    } as never);
+    expect(state.ticketById["t-sla"]?.slaBreachedAt).toBe("2026-07-24T05:00:00.000Z");
+  });
+
   it("retains parked, currentStepLabel, and attentionKind from a snapshot", () => {
     const state = applyBoardStreamItem(emptyBoardState, {
       kind: "snapshot",

@@ -27,6 +27,33 @@ describe("extractVerdict", () => {
 });
 
 describe("describeRouteDecision", () => {
+  it("describes SLA escalation and notify-only breaches", () => {
+    const escalated = describeRouteDecision(
+      decision({
+        source: "sla",
+        fromLane: "review",
+        toLane: "stuck",
+        sla: { budgetMs: 14_400_000, escalatedTo: "stuck" },
+      }),
+      laneName,
+    );
+    expect(escalated.title).toContain("SLA breached");
+    expect(escalated.title).toContain("4 hours");
+    expect(escalated.details[0]).toBe("Escalated to Stuck");
+
+    const notify = describeRouteDecision(
+      decision({
+        source: "sla",
+        fromLane: "review",
+        toLane: undefined,
+        sla: { budgetMs: 3_600_000 },
+      }),
+      laneName,
+    );
+    expect(notify.title).toContain("1 hour");
+    expect(notify.details[0]).toBe("Needs attention (notify only)");
+  });
+
   it("describes a matched transition with verdict and run count", () => {
     const described = describeRouteDecision(
       decision({

@@ -601,6 +601,16 @@ const ticketDetail = (
                 reason: decision.park.reason,
               },
             }),
+        ...(decision.sla === null
+          ? {}
+          : {
+              sla: {
+                budgetMs: decision.sla.budgetMs,
+                ...(decision.sla.escalatedTo === null
+                  ? {}
+                  : { escalatedTo: decision.sla.escalatedTo as never }),
+              },
+            }),
       })),
       ticket: toBoardTicketView(detail.ticket, definition),
       steps: detail.steps.map(toStepRunView),
@@ -3251,10 +3261,8 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               attentionReason: row.attentionReason,
               updatedAt: row.updatedAt,
               parkedAt: row.parkedAt,
-              // Tasks 3/7 wire real breach fields from the read model; until
-              // then keep the additive NullOr keys populated with null.
-              slaBreachedAt: null,
-              slaBreachedReason: null,
+              slaBreachedAt: row.slaBreachedAt ?? null,
+              slaBreachedReason: row.slaBreachedReason ?? null,
             }),
           );
         }),

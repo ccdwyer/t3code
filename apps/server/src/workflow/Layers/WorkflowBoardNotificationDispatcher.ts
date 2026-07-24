@@ -40,10 +40,19 @@ const VALID_ATTENTION_KINDS = new Set<RelayBoardTicketState["attentionKind"]>([
   "parked_waiting",
 ]);
 
-const normalizeAttentionKind = (raw: string | null): RelayBoardTicketState["attentionKind"] =>
-  raw !== null && VALID_ATTENTION_KINDS.has(raw as RelayBoardTicketState["attentionKind"])
+const SLA_OUTBOX_KIND = "sla_breached";
+
+const normalizeAttentionKind = (raw: string | null): RelayBoardTicketState["attentionKind"] => {
+  // Internal SLA outbox kind is not a wire attention kind. Map to a
+  // legacy-safe domain value so old clients decode the payload; the body
+  // carries the human SLA reason text.
+  if (raw === SLA_OUTBOX_KIND) {
+    return "waiting_for_input";
+  }
+  return raw !== null && VALID_ATTENTION_KINDS.has(raw as RelayBoardTicketState["attentionKind"])
     ? (raw as RelayBoardTicketState["attentionKind"])
     : "waiting_for_input";
+};
 
 interface OutboxRow {
   readonly outboxId: string;
@@ -185,8 +194,26 @@ const makeWorkflowBoardNotificationDispatcher = (
       Effect.gen(function* () {
         const detail = yield* readModel.getTicketDetail(row.ticketId as never);
 
-        // Relevance recheck: ticket self-resolved → supersede, don't buzz.
-        if (detail === null || !NEEDS_YOU_STATUSES.has(detail.ticket.status)) {
+        // Relevance recheck. Classic needs-you rows revalidate status.
+        // SLA rows revalidate the breach token (idle/running tickets stay
+        // relevant until lane exit clears the projected breach).
+        if (detail === null) {
+          yield* markState(row.outboxId, "superseded");
+          return "superseded" as const;
+        }
+        if (row.attentionKind === SLA_OUTBOX_KIND) {
+          const token = detail.ticket.currentLaneEntryToken;
+          const breachToken = detail.ticket.slaBreachedEntryToken ?? null;
+          if (
+            token === null ||
+            breachToken === null ||
+            token !== breachToken ||
+            detail.ticket.slaBreachedAt == null
+          ) {
+            yield* markState(row.outboxId, "superseded");
+            return "superseded" as const;
+          }
+        } else if (!NEEDS_YOU_STATUSES.has(detail.ticket.status)) {
           yield* markState(row.outboxId, "superseded");
           return "superseded" as const;
         }

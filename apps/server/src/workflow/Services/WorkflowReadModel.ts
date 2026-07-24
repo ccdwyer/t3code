@@ -136,6 +136,8 @@ export interface WorkflowNeedsAttentionTicketRow {
   // Park timestamp — non-null only while parked. Consumers age parked rows from
   // this stable clock; `updated_at` is bumped on any edit.
   readonly parkedAt: string | null;
+  readonly slaBreachedAt: string | null;
+  readonly slaBreachedReason: string | null;
 }
 
 export interface BoardDigestRow {
@@ -214,7 +216,8 @@ export interface TicketRouteDecisionRow {
     | "lane_on"
     | "manual"
     | "external_event"
-    | "work_source";
+    | "work_source"
+    | "sla";
   readonly matchedTransitionIndex: number | null;
   readonly eventName: string | null;
   readonly pipelineResult: "success" | "failure" | "blocked" | null;
@@ -226,6 +229,10 @@ export interface TicketRouteDecisionRow {
     readonly substate: WorkflowParkSubstate;
     readonly label: string;
     readonly reason: string;
+  } | null;
+  readonly sla: {
+    readonly budgetMs: number;
+    readonly escalatedTo: string | null;
   } | null;
 }
 

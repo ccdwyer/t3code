@@ -45,8 +45,8 @@ interface RoutingEdge {
   readonly targetLaneKey: string;
   readonly sourceAnchorId: string;
   readonly targetAnchorId: string;
-  readonly edgeKind: "step-on" | "lane-transition" | "lane-on" | "lane-action";
-  readonly precedence: 1 | 2 | 3 | 4;
+  readonly edgeKind: "step-on" | "lane-transition" | "lane-on" | "lane-action" | "lane-sla";
+  readonly precedence: 1 | 2 | 3 | 4 | 5;
   readonly displayLabel: string;
   readonly routeKind: RouteKind | undefined;
   readonly dashed: boolean;
@@ -232,7 +232,14 @@ export function RoutingEdges({
         const dimmed = !isFocused(edge);
         const colorClass = edgeColorClass(edge);
         const coreId = `${reactId}-core-${index}`;
-        const dash = edge.edgeKind === "lane-action" ? "2 4" : edge.dashed ? "6 4" : undefined;
+        const dash =
+          edge.edgeKind === "lane-action"
+            ? "2 4"
+            : edge.edgeKind === "lane-sla"
+              ? "1 6"
+              : edge.dashed
+                ? "6 4"
+                : undefined;
         const labelPos = labelPositions.get(edge.id) ?? { x: route.labelX, y: route.labelY };
         const particleCount = clamp(
           Math.round(route.length / PARTICLE_SPACING),
@@ -593,6 +600,27 @@ export function deriveRoutingEdges(
         routeKind: undefined,
         dashed: false,
         selfLoop: laneKey === targetKey,
+        selection: { kind: "lane", laneKey },
+      });
+    }
+
+    const slaTarget = lane.sla?.escalateTo;
+    if (slaTarget !== undefined && laneNames.has(String(slaTarget))) {
+      const targetKey = String(slaTarget);
+      edges.push({
+        id: routingEdgeId(["lane-sla", laneKey, targetKey]),
+        testId: routingEdgeTestId(["lane-sla", laneKey, targetKey]),
+        label: `SLA escalation from ${lane.name} to ${laneNames.get(targetKey)}`,
+        sourceLaneKey: laneKey,
+        targetLaneKey: targetKey,
+        sourceAnchorId: `lane-${laneKey}-sla`,
+        targetAnchorId: `lane-${targetKey}-target`,
+        edgeKind: "lane-sla",
+        precedence: 5,
+        displayLabel: "SLA",
+        routeKind: undefined,
+        dashed: true,
+        selfLoop: false,
         selection: { kind: "lane", laneKey },
       });
     }

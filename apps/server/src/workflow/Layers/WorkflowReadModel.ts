@@ -240,6 +240,7 @@ const toParkRouteDecisionRow = (
     laneRunCount: null,
     steps: null,
     park: { substate, label: record["label"], reason: record["reason"] },
+    sla: null,
   };
 };
 
@@ -262,11 +263,33 @@ const toRouteDecisionRow = (
   if (eventType === "TicketParked") {
     return toParkRouteDecisionRow(occurredAt, record);
   }
+  if (eventType === "TicketSlaBreached") {
+    const budgetMs = record["budgetMs"];
+    if (typeof budgetMs !== "number" || !Number.isFinite(budgetMs)) {
+      return null;
+    }
+    const laneKey = typeof record["laneKey"] === "string" ? record["laneKey"] : null;
+    const escalatedTo = typeof record["escalatedTo"] === "string" ? record["escalatedTo"] : null;
+    return {
+      occurredAt,
+      fromLane: laneKey,
+      toLane: escalatedTo,
+      source: "sla",
+      matchedTransitionIndex: null,
+      eventName: null,
+      pipelineResult: null,
+      laneRunCount: null,
+      steps: null,
+      park: null,
+      sla: { budgetMs, escalatedTo },
+    };
+  }
   if (typeof record["toLane"] !== "string") {
     return null;
   }
   if (eventType === "TicketMovedToLane") {
-    // routed/external moves duplicate their TicketRouteDecided twin.
+    // routed/external/sla moves duplicate their decision twin (RouteDecided or
+    // TicketSlaBreached). Only bare manual moves become history rows.
     return record["reason"] === "manual"
       ? {
           occurredAt,
@@ -279,6 +302,7 @@ const toRouteDecisionRow = (
           laneRunCount: null,
           steps: null,
           park: null,
+          sla: null,
         }
       : null;
   }
@@ -307,6 +331,7 @@ const toRouteDecisionRow = (
     laneRunCount: typeof runCount === "number" && Number.isInteger(runCount) ? runCount : null,
     steps: snapshotSteps(snapshot?.["steps"]),
     park: null,
+    sla: null,
   };
 };
 
@@ -1519,12 +1544,23 @@ const make = Effect.gen(function* () {
         pt.attention_kind AS "attentionKind",
         pt.attention_reason AS "attentionReason",
         pt.updated_at AS "updatedAt",
-        pt.parked_at AS "parkedAt"
+        pt.parked_at AS "parkedAt",
+        pt.sla_breached_at AS "slaBreachedAt",
+        pt.sla_breached_reason AS "slaBreachedReason"
       FROM projection_ticket AS pt
       INNER JOIN projection_board AS pb
         ON pb.board_id = pt.board_id
       WHERE pt.status IN ('waiting_on_user', 'blocked', 'parked')
-      ORDER BY pt.updated_at ASC
+         OR (
+           pt.sla_breached_entry_token IS NOT NULL
+           AND pt.sla_breached_entry_token = pt.current_lane_entry_token
+           AND pt.terminal_at IS NULL
+         )
+      ORDER BY
+        CASE
+          WHEN pt.status IN ('waiting_on_user', 'blocked', 'parked') THEN pt.updated_at
+          ELSE COALESCE(pt.sla_breached_at, pt.updated_at)
+        END ASC
     `);
 
   const listTicketRouteDecisions: WorkflowReadModelShape["listTicketRouteDecisions"] = (ticketId) =>
@@ -1545,7 +1581,12 @@ const make = Effect.gen(function* () {
             payload_json AS "payloadJson"
           FROM workflow_events
           WHERE ticket_id = ${ticketId}
-            AND event_type IN ('TicketRouteDecided', 'TicketMovedToLane', 'TicketParked')
+            AND event_type IN (
+              'TicketRouteDecided',
+              'TicketMovedToLane',
+              'TicketParked',
+              'TicketSlaBreached'
+            )
           ORDER BY sequence DESC
           LIMIT ${ROUTE_DECISION_EVENT_CAP}
         )

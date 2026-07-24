@@ -56,6 +56,8 @@ export interface BoardState {
         | undefined;
       readonly attentionKind?: WorkflowTicketAttentionKind | undefined;
       readonly currentStepLabel?: string | undefined;
+      // SLA breach for the current lane entry — badge/strip input.
+      readonly slaBreachedAt?: string | undefined;
       // Park-in-place details — present while status is "parked". `actions`
       // is re-resolved from the current board definition at read time;
       // absent means the definition changed and actions are unavailable.
@@ -148,6 +150,7 @@ export const applyBoardStreamItem = (state: BoardState, item: BoardStreamItem): 
         ...(ticket.currentStepLabel === undefined
           ? {}
           : { currentStepLabel: ticket.currentStepLabel }),
+        ...(ticket.slaBreachedAt === undefined ? {} : { slaBreachedAt: ticket.slaBreachedAt }),
         ...(ticket.parked === undefined ? {} : { parked: ticket.parked }),
       };
     }
@@ -197,6 +200,7 @@ export const applyBoardStreamItem = (state: BoardState, item: BoardStreamItem): 
       ...(ticket.currentStepLabel === undefined
         ? {}
         : { currentStepLabel: ticket.currentStepLabel }),
+      ...(ticket.slaBreachedAt === undefined ? {} : { slaBreachedAt: ticket.slaBreachedAt }),
       ...(ticket.parked === undefined ? {} : { parked: ticket.parked }),
     },
   };

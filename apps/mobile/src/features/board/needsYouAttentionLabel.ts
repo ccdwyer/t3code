@@ -11,7 +11,7 @@ import type { WorkflowNeedsAttentionTicketView } from "@t3tools/contracts";
  * internal status onto the pill for every other status too.
  */
 export function attentionLabel(
-  ticket: Pick<WorkflowNeedsAttentionTicketView, "attentionKind" | "status">,
+  ticket: Pick<WorkflowNeedsAttentionTicketView, "attentionKind" | "status" | "slaBreachedReason">,
 ): string {
   switch (ticket.attentionKind) {
     case "waiting_for_approval":
@@ -25,6 +25,9 @@ export function attentionLabel(
     case "parked_waiting":
       return "waiting on you";
     default:
+      if (ticket.slaBreachedReason != null && ticket.slaBreachedReason.length > 0) {
+        return "SLA breached";
+      }
       return ticket.status === "parked" ? "parked" : ticket.status;
   }
 }
@@ -37,7 +40,7 @@ export function attentionLabel(
  * `parkedAt`). Non-parked rows have no `parkedAt` and keep `updatedAt`.
  */
 export function attentionAgeSource(
-  ticket: Pick<WorkflowNeedsAttentionTicketView, "parkedAt" | "updatedAt">,
+  ticket: Pick<WorkflowNeedsAttentionTicketView, "parkedAt" | "updatedAt" | "slaBreachedAt">,
 ): string {
-  return ticket.parkedAt ?? ticket.updatedAt;
+  return ticket.parkedAt ?? ticket.slaBreachedAt ?? ticket.updatedAt;
 }

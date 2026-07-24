@@ -122,6 +122,7 @@ export interface TicketDrawerDetail {
     readonly attentionKind?: string | undefined;
     readonly attentionReason?: string | undefined;
     readonly currentStepLabel?: string | undefined;
+    readonly slaBreachedAt?: string | undefined;
     // Park-in-place details — present while status is "parked".
     readonly parked?: TicketDrawerParkedView | undefined;
   };
@@ -443,6 +444,15 @@ export function TicketDrawer({
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
               {detail.ticket.currentLaneKey} / {formatStatusLabel(detail.ticket.status)}
+              {detail.ticket.slaBreachedAt !== undefined ? (
+                <span
+                  className="ml-2 inline-flex items-center rounded-sm bg-destructive/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-destructive-foreground"
+                  data-testid="drawer-sla-badge"
+                  title={`SLA breached at ${detail.ticket.slaBreachedAt}`}
+                >
+                  SLA breached
+                </span>
+              ) : null}
             </p>
             {detail.ticket.pr !== undefined ? (
               <TicketPrBadges pr={detail.ticket.pr} rowClassName="mt-1" testIds />

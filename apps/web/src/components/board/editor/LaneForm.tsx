@@ -5,12 +5,14 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import {
   addLaneAction,
+  clearLaneSla,
   lintErrorKey,
   removeLane,
   removeLaneAction,
   renameLane,
   setLaneColor,
   setLaneEntry,
+  setLaneSla,
   setLaneTerminal,
   setLaneWipLimit,
   updateLaneAction,
@@ -153,6 +155,7 @@ export function LaneForm({
             Terminal lane
           </label>
         </div>
+        <LaneSlaEditor lane={lane} lanes={lanes} disabled={disabled} onMutate={onMutate} />
         <LaneActionsEditor lane={lane} lanes={lanes} disabled={disabled} onMutate={onMutate} />
         <PipelineEditor
           lane={lane}
@@ -169,6 +172,112 @@ export function LaneForm({
           onMutate={onMutate}
         />
       </div>
+    </section>
+  );
+}
+
+function LaneSlaEditor({
+  lane,
+  lanes,
+  disabled,
+  onMutate,
+}: {
+  readonly lane: WorkflowLaneEncoded;
+  readonly lanes: ReadonlyArray<WorkflowLaneEncoded>;
+  readonly disabled: boolean;
+  readonly onMutate: WorkflowEditorMutation;
+}) {
+  const laneKey = String(lane.key);
+  const enabled = lane.sla !== undefined;
+  const otherLanes = lanes.filter((candidate) => String(candidate.key) !== laneKey);
+  const budget = typeof lane.sla?.budget === "string" ? lane.sla.budget : "";
+  const escalateTo = lane.sla?.escalateTo === undefined ? "" : String(lane.sla.escalateTo);
+
+  if (lane.terminal === true) {
+    return null;
+  }
+
+  return (
+    <section className="space-y-3 border-t border-border pt-4" data-testid="lane-sla-editor">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-semibold text-foreground">SLA</h4>
+          <p className="text-xs text-muted-foreground">
+            Wall-clock budget for tickets in this lane. On breach, escalate to another lane or
+            (budget-only) flag Needs You.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            aria-label="Enable SLA"
+            checked={enabled}
+            disabled={disabled}
+            onChange={(event) => {
+              const checked = event.currentTarget.checked;
+              onMutate((current) => {
+                if (!checked) {
+                  return clearLaneSla(current, laneKey);
+                }
+                const fallback =
+                  otherLanes[0] === undefined ? undefined : String(otherLanes[0].key);
+                return setLaneSla(current, laneKey, {
+                  budget: "4 hours",
+                  ...(fallback === undefined ? {} : { escalateTo: fallback }),
+                });
+              });
+            }}
+          />
+          Enable SLA
+        </label>
+      </div>
+      {enabled ? (
+        <div className="grid gap-3 @2xl:grid-cols-2">
+          <label className="grid gap-1.5">
+            <span className="text-xs font-medium text-foreground">Budget</span>
+            <Input
+              aria-label="SLA budget"
+              value={budget}
+              placeholder="4 hours"
+              disabled={disabled}
+              onChange={(event) => {
+                const nextBudget = event.currentTarget.value;
+                onMutate((current) =>
+                  setLaneSla(current, laneKey, {
+                    budget: nextBudget,
+                    ...(escalateTo === "" ? {} : { escalateTo }),
+                  }),
+                );
+              }}
+            />
+          </label>
+          <label className="grid gap-1.5">
+            <span className="text-xs font-medium text-foreground">Escalate to</span>
+            <select
+              aria-label="SLA escalate to"
+              className="h-8.5 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+              value={escalateTo}
+              disabled={disabled}
+              onChange={(event) => {
+                const next = event.currentTarget.value;
+                onMutate((current) =>
+                  setLaneSla(current, laneKey, {
+                    budget: budget || "4 hours",
+                    ...(next === "" ? {} : { escalateTo: next }),
+                  }),
+                );
+              }}
+            >
+              <option value="">Notify only (no move)</option>
+              {otherLanes.map((candidate) => (
+                <option key={String(candidate.key)} value={String(candidate.key)}>
+                  {candidate.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
     </section>
   );
 }

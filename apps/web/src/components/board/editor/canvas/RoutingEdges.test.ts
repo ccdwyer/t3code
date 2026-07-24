@@ -43,6 +43,30 @@ describe("channelRoutedEdgeIds", () => {
   });
 });
 
+describe("deriveRoutingEdges SLA", () => {
+  it("draws a distinct lane-sla edge when escalateTo is set", () => {
+    const slaDefinition = {
+      name: "SLA",
+      lanes: [
+        {
+          key: "review",
+          name: "Review",
+          entry: "manual",
+          sla: { budget: "4 hours", escalateTo: "escalation" },
+        },
+        { key: "escalation", name: "Escalation", entry: "manual" },
+      ],
+    } as never as WorkflowDefinitionEncoded;
+    const edges = deriveRoutingEdges(slaDefinition);
+    const slaEdges = edges.filter((edge) => edge.edgeKind === "lane-sla");
+    expect(slaEdges).toHaveLength(1);
+    expect(slaEdges[0]?.sourceLaneKey).toBe("review");
+    expect(slaEdges[0]?.targetLaneKey).toBe("escalation");
+    expect(slaEdges[0]?.displayLabel).toBe("SLA");
+    expect(slaEdges[0]?.dashed).toBe(true);
+  });
+});
+
 describe("deriveRoutingEdges park targets", () => {
   it("draws no edge for park targets on lane on.*, transitions, or step routes", () => {
     const parkDefinition = {

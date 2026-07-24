@@ -393,6 +393,12 @@ export const removeLane = (model: WorkflowEditorModel, laneKey: string): Workflo
           blocked: resolveTargetAfterLaneRemoval(step.on?.blocked, laneKey),
         });
       }
+      // Drop dangling SLA escalateTo; leave budget-only SLA for the editor to
+      // re-target (Phase A requires a target; lint flags until fixed).
+      if (lane.sla?.escalateTo === laneKey) {
+        const { escalateTo: _removed, ...rest } = lane.sla;
+        lane.sla = rest as WorkflowLaneEncoded["sla"];
+      }
     }
   });
 
@@ -425,6 +431,24 @@ export const setLaneWipLimit = (
     } else {
       lane.wipLimit = wipLimit;
     }
+  });
+
+/** Set or replace a lane's SLA policy. Pass `escalateTo` undefined for budget-only (Phase B). */
+export const setLaneSla = (
+  model: WorkflowEditorModel,
+  laneKey: string,
+  sla: { readonly budget: string; readonly escalateTo?: string | undefined },
+): WorkflowEditorModel =>
+  updateLane(model, laneKey, (lane) => {
+    lane.sla = {
+      budget: sla.budget,
+      ...(sla.escalateTo === undefined ? {} : { escalateTo: sla.escalateTo as never }),
+    } as WorkflowLaneEncoded["sla"];
+  });
+
+export const clearLaneSla = (model: WorkflowEditorModel, laneKey: string): WorkflowEditorModel =>
+  updateLane(model, laneKey, (lane) => {
+    delete lane.sla;
   });
 
 export const setLaneTerminal = (

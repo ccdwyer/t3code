@@ -49,8 +49,13 @@ describe("attentionAgeSource", () => {
   });
 
   it("falls back to updatedAt when parkedAt is null (non-parked rows)", () => {
-    expect(attentionAgeSource({ parkedAt: null, updatedAt: "2026-07-22T05:00:00.000Z" })).toBe(
-      "2026-07-22T05:00:00.000Z",
-    );
+    expect(
+      attentionAgeSource({
+        parkedAt: null,
+        slaBreachedAt: null,
+        slaBreachedReason: null,
+        updatedAt: "2026-07-22T05:00:00.000Z",
+      }),
+    ).toBe("2026-07-22T05:00:00.000Z");
   });
 });

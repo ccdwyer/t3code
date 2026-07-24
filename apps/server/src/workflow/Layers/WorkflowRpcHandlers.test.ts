@@ -1270,6 +1270,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
                 verdict: { status: "completed", exitCode: 0, verdict: "approve" },
               },
               park: null,
+              sla: null,
             },
             {
               occurredAt: "2026-06-07T00:00:02.000Z",
@@ -1282,6 +1283,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
               laneRunCount: null,
               steps: null,
               park: null,
+              sla: null,
             },
             {
               occurredAt: "2026-06-07T00:00:03.000Z",
@@ -1298,6 +1300,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
                 label: "Issue encountered",
                 reason: "step failed: boom",
               },
+              sla: null,
             },
           ]),
       },
@@ -5146,6 +5149,8 @@ it.effect(
                 attentionReason: "Please confirm the deploy target",
                 updatedAt: "2026-06-13T10:00:00.000Z",
                 parkedAt: null,
+                slaBreachedAt: null,
+                slaBreachedReason: null,
               },
               // A second ticket with status "running" — should NOT appear because the
               // read model filters; we verify the handler passes through exactly what

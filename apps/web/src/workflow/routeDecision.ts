@@ -17,7 +17,8 @@ export interface RouteDecisionView {
     | "lane_on"
     | "manual"
     | "external_event"
-    | "work_source";
+    | "work_source"
+    | "sla";
   readonly matchedTransitionIndex?: number | undefined;
   readonly eventName?: string | undefined;
   readonly pipelineResult?: "success" | "failure" | "blocked" | undefined;
@@ -33,12 +34,34 @@ export interface RouteDecisionView {
         readonly reason: string;
       }
     | undefined;
+  // Present when this entry renders a `TicketSlaBreached` event.
+  readonly sla?:
+    | {
+        readonly budgetMs: number;
+        readonly escalatedTo?: string | undefined;
+      }
+    | undefined;
 }
 
 export interface DescribedRouteDecision {
   readonly title: string;
   readonly details: ReadonlyArray<string>;
 }
+
+const formatSlaBudgetMs = (budgetMs: number | undefined): string => {
+  if (budgetMs === undefined || !Number.isFinite(budgetMs) || budgetMs <= 0) {
+    return "budget";
+  }
+  if (budgetMs % 3_600_000 === 0) {
+    const hours = budgetMs / 3_600_000;
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  if (budgetMs % 60_000 === 0) {
+    const minutes = budgetMs / 60_000;
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  return `${budgetMs} ms`;
+};
 
 /** A captured review output's verdict field, when it has the common shape. */
 export const extractVerdict = (output: unknown): string | null => {
@@ -107,6 +130,23 @@ export const describeRouteDecision = (
   // ("manual") and must never be mistaken for a manual lane move.
   if (decision.park !== undefined) {
     return describeParkDecision(decision.park, decision.source);
+  }
+
+  if (decision.source === "sla" || decision.sla !== undefined) {
+    const budgetLabel = formatSlaBudgetMs(decision.sla?.budgetMs);
+    const from = decision.fromLane === undefined ? "lane" : laneName(decision.fromLane);
+    const title =
+      decision.sla?.escalatedTo !== undefined || decision.toLane !== undefined
+        ? `SLA breached (over ${budgetLabel} in ${from})`
+        : `SLA breached (over ${budgetLabel} in ${from})`;
+    const details: string[] = [];
+    const target = decision.sla?.escalatedTo ?? decision.toLane;
+    if (target !== undefined) {
+      details.push(`Escalated to ${laneName(target)}`);
+    } else {
+      details.push("Needs attention (notify only)");
+    }
+    return { title, details };
   }
 
   const to = decision.toLane === undefined ? "—" : laneName(decision.toLane);

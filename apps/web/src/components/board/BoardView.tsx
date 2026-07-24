@@ -29,6 +29,7 @@ export interface BoardViewTicket {
     | undefined;
   readonly attentionKind?: string | undefined;
   readonly currentStepLabel?: string | undefined;
+  readonly slaBreachedAt?: string | undefined;
   // Park-in-place details — present while status is "parked". `actions` is
   // re-resolved from the current board definition at read time; absent
   // means the definition changed and actions are unavailable.

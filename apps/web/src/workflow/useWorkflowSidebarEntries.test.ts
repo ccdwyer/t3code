@@ -60,6 +60,8 @@ const attention = (
   attentionReason: null,
   updatedAt: "2026-07-22T00:00:00.000Z",
   parkedAt: null,
+  slaBreachedAt: null,
+  slaBreachedReason: null,
 });
 
 describe("filterEligibleWorkflowProjects", () => {

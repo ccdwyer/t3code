@@ -19,8 +19,10 @@ import type {
 } from "@t3tools/contracts";
 import { isParkTarget, PARK_ACTION_DRIFT_MESSAGES } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -69,7 +71,10 @@ import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ti
 type PipelineResult = "success" | "failure" | "blocked";
 type StepResult = "completed" | "failed" | "blocked";
 type RouteSource = "step_on" | "lane_transition" | "lane_on";
-type MoveReason = "manual" | "routed" | "initial" | "external";
+type MoveReason = "manual" | "routed" | "initial" | "external" | "sla";
+type EscalateTicketSlaResult = "escalated" | "queued" | "notified" | "stale";
+const MAX_LIFETIME_SLA_ESCALATIONS = 25;
+const MIN_SLA_BUDGET_MS = 60_000;
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const formatError = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -1568,6 +1573,10 @@ const make = Effect.gen(function* () {
     // run inside the chunk transaction, so only the tx-safe `deleteByTicket` runs
     // here and the committer defers the live stop to its post-commit phase.
     readonly stopProviderSessionsOnTeardown?: boolean | undefined;
+    // Optional save-lock precondition for the move/queue emission (e.g. SLA
+    // revalidation). Combined with parkedGuard.revalidate when both present —
+    // park revalidate wins for the unpark path; SLA passes this alone.
+    readonly emitPrecondition?: Effect.Effect<void, WorkflowEventStoreError> | undefined;
   }
 
   // The in-lock / in-tx body of a lane entry: revalidation, WIP/admission/queue
@@ -1708,6 +1717,11 @@ const make = Effect.gen(function* () {
           // pre-existing hole this closes (spec: enterLane phantom-lane guard,
           // previously routed-only). `initial` keeps its legacy behavior (the
           // initial lane is validated at ticket creation).
+          // SLA escalations return none so the caller can downgrade to a
+          // notify-only TicketSlaBreached without a phantom move.
+          if (reason === "sla") {
+            return none;
+          }
           if (reason === "manual" || reason === "external") {
             return yield* new WorkflowEventStoreError({
               message: `cannot move ticket to lane '${toLane}' which no longer exists in the board definition`,
@@ -1729,8 +1743,8 @@ const make = Effect.gen(function* () {
         // The unpark path re-checks board-definition drift IN the save lock at
         // append time (see the parkedGuard comment above): pass its revalidate as
         // the emit precondition so a concurrent save cannot slip a changed/removed
-        // action past the append. Other paths carry no precondition.
-        const emitPrecondition = parkedGuard?.revalidate;
+        // action past the append. SLA passes emitPrecondition for the same reason.
+        const emitPrecondition = options.emitPrecondition ?? parkedGuard?.revalidate;
         let acted: "moved" | "queued" = "moved";
         if ((limit !== undefined && admittedCount - selfInTarget >= limit) || dependencyGated) {
           acted = "queued";
@@ -2385,6 +2399,252 @@ const make = Effect.gen(function* () {
         });
       }
       yield* moveToLane(ticketId, currentDetail.ticket.boardId as BoardId, toLane, "manual");
+    });
+
+  /**
+   * SLA sweeper entry point. Never calls public `moveTicket` (hardcodes
+   * "manual"; re-acquiring the non-reentrant admission semaphore deadlocks).
+   * Lock order: admission OUTER → save-lock commit INNER. Returns:
+   * - escalated / queued: breach + move/queue committed
+   * - notified: notify-only breach (no target / vanished target / lifetime cap)
+   * - stale: in-lock guard mismatch, no events
+   */
+  const escalateTicketSla = (input: {
+    readonly ticketId: TicketId;
+    readonly expectedLaneKey: LaneKey;
+    readonly expectedEntryToken: string;
+    readonly nowMs?: Effect.Effect<number>;
+  }): Effect.Effect<EscalateTicketSlaResult, WorkflowEventStoreError> =>
+    Effect.gen(function* () {
+      const currentDetail = yield* read.getTicketDetail(input.ticketId);
+      if (!currentDetail) {
+        return "stale" as const;
+      }
+      const boardId = currentDetail.ticket.boardId as BoardId;
+      const clockMs = input.nowMs ?? Clock.currentTimeMillis;
+
+      type LockOutcome = {
+        readonly result: EscalateTicketSlaResult;
+        readonly starts: ReadonlyArray<PipelineStartAction>;
+        readonly releaseDependentsFor?: TicketId;
+      };
+
+      const lockOutcome = yield* withAdmissionLock(
+        boardId,
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const detail = yield* read.getTicketDetail(input.ticketId);
+            const ticket = detail?.ticket;
+            if (!ticket) {
+              return { result: "stale" as const, starts: [] };
+            }
+
+            // In-lock guard (projection row is authoritative).
+            const status = ticket.status;
+            if (
+              ticket.currentLaneKey !== (input.expectedLaneKey as string) ||
+              ticket.currentLaneEntryToken !== input.expectedEntryToken ||
+              status === "parked" ||
+              status === "queued" ||
+              ticket.currentLaneEntryToken === null
+            ) {
+              return { result: "stale" as const, starts: [] };
+            }
+            // NULL-safe: already breached for this entry?
+            if (ticket.slaBreachedEntryToken === input.expectedEntryToken) {
+              return { result: "stale" as const, starts: [] };
+            }
+
+            // Authoritative terminal_at check (terminal tickets never breach).
+            const termRows = yield* wrapSql(sql<{ readonly terminalAt: string | null }>`
+              SELECT terminal_at AS "terminalAt"
+              FROM projection_ticket
+              WHERE ticket_id = ${input.ticketId}
+            `);
+            if (termRows[0]?.terminalAt !== null && termRows[0]?.terminalAt !== undefined) {
+              return { result: "stale" as const, starts: [] };
+            }
+
+            const currentLane = yield* registry.getLane(boardId, input.expectedLaneKey);
+            if (currentLane === null || currentLane.terminal === true) {
+              return { result: "stale" as const, starts: [] };
+            }
+            // Lifetime cap: count escalations that actually routed (escalatedTo
+            // set on TicketSlaBreached covers both moved and queued paths).
+            const lifetimeRows = yield* wrapSql(sql<{ readonly count: number }>`
+              SELECT COUNT(*) AS count
+              FROM workflow_events
+              WHERE ticket_id = ${input.ticketId}
+                AND event_type = 'TicketSlaBreached'
+                AND json_extract(payload_json, '$.escalatedTo') IS NOT NULL
+            `);
+            const lifetimeCount = lifetimeRows[0]?.count ?? 0;
+            const capHit = lifetimeCount >= MAX_LIFETIME_SLA_ESCALATIONS;
+
+            // Definition revalidation (also repeated as save-lock precondition).
+            const revalidate = Effect.gen(function* () {
+              const lane = yield* registry.getLane(boardId, input.expectedLaneKey);
+              if (lane === null || lane.sla === undefined) {
+                return yield* new WorkflowEventStoreError({
+                  message: "SLA no longer configured on source lane",
+                });
+              }
+              const budgetMs = Duration.toMillis(lane.sla.budget);
+              if (
+                !Number.isFinite(budgetMs) ||
+                !Number.isSafeInteger(budgetMs) ||
+                budgetMs < MIN_SLA_BUDGET_MS
+              ) {
+                return yield* new WorkflowEventStoreError({
+                  message: "SLA budget no longer valid",
+                });
+              }
+              const enteredRows = yield* wrapSql(sql<{ readonly enteredAt: string | null }>`
+                SELECT current_lane_entered_at AS "enteredAt"
+                FROM projection_ticket
+                WHERE ticket_id = ${input.ticketId}
+              `);
+              const enteredIso = enteredRows[0]?.enteredAt;
+              if (enteredIso === null || enteredIso === undefined) {
+                return yield* new WorkflowEventStoreError({
+                  message: "missing lane entry timestamp for SLA",
+                });
+              }
+              const enteredMs = Date.parse(enteredIso);
+              const now = yield* clockMs;
+              if (!Number.isFinite(enteredMs) || now - enteredMs < budgetMs) {
+                return yield* new WorkflowEventStoreError({
+                  message: "SLA budget not exceeded",
+                });
+              }
+              return {
+                budgetMs,
+                enteredIso,
+                escalateTo: lane.sla.escalateTo,
+              } as const;
+            });
+
+            // Expected drift (budget/SLA gone) → stale; other failures propagate.
+            const plan = yield* revalidate.pipe(
+              Effect.catchTag("WorkflowEventStoreError", (error) => {
+                const msg = error.message;
+                if (
+                  msg.includes("SLA ") ||
+                  msg.includes("missing lane entry") ||
+                  msg.includes("SLA budget")
+                ) {
+                  return Effect.succeed(null);
+                }
+                return Effect.fail(error);
+              }),
+            );
+            if (plan === null) {
+              return { result: "stale" as const, starts: [] };
+            }
+
+            let escalateTo = plan.escalateTo;
+            let notifyOnly = escalateTo === undefined || capHit;
+            if (capHit && escalateTo !== undefined) {
+              yield* Effect.logWarning(
+                "SLA lifetime escalation cap hit — downgrading to notify-only breach",
+                { ticketId: input.ticketId, lifetimeCount },
+              );
+            }
+            let targetIsTerminal = false;
+            if (escalateTo !== undefined && !notifyOnly) {
+              const targetLane = yield* registry.getLane(boardId, escalateTo);
+              if (targetLane === null) {
+                yield* Effect.logWarning(
+                  "SLA escalateTo target vanished — downgrading to notify-only breach",
+                  { ticketId: input.ticketId, escalateTo },
+                );
+                notifyOnly = true;
+                escalateTo = undefined;
+              } else {
+                targetIsTerminal = targetLane.terminal === true;
+              }
+            }
+
+            const makeBreachEvent = (withEscalation: boolean) =>
+              ({
+                type: "TicketSlaBreached",
+                ticketId: input.ticketId,
+                payload: {
+                  laneKey: input.expectedLaneKey,
+                  laneEntryToken: input.expectedEntryToken as LaneEntryToken,
+                  budgetMs: plan.budgetMs,
+                  enteredLaneAt: plan.enteredIso as never,
+                  ...(withEscalation && escalateTo !== undefined
+                    ? { escalatedTo: escalateTo }
+                    : {}),
+                },
+              }) as UnstampedWorkflowEventInput;
+
+            if (notifyOnly) {
+              // Notify-only: no supersede — ticket stays in-lane and keeps work.
+              yield* commitMany([makeBreachEvent(false)], revalidate.pipe(Effect.asVoid));
+              return { result: "notified" as const, starts: [] };
+            }
+
+            // Confirmed move/queue path — supersede running work now (in-lock).
+            yield* supersedeRunningWorkFor(input.ticketId);
+
+            // Prefix TicketSlaBreached only on the FIRST emit (the move/queue).
+            // admitNext reuses the same emit for source-lane drain and must NOT
+            // get a second breach event.
+            let breachPrefixed = false;
+            const breachEvent = makeBreachEvent(true);
+            const prefixEmit = (
+              events: ReadonlyArray<UnstampedWorkflowEventInput>,
+              precondition?: Effect.Effect<void, WorkflowEventStoreError>,
+            ) => {
+              if (!breachPrefixed) {
+                breachPrefixed = true;
+                return commitMany([breachEvent, ...events], precondition);
+              }
+              return commitMany(events, precondition);
+            };
+
+            const targetKey = escalateTo as LaneKey;
+            const { starts, acted } = yield* enterLaneCore(
+              input.ticketId,
+              boardId,
+              targetKey,
+              "sla",
+              {
+                supersedeRunningWork: Effect.void,
+                emit: prefixEmit,
+                serialize: (body) => body,
+                emitPrecondition: revalidate.pipe(Effect.asVoid),
+              },
+            );
+
+            if (acted === "none") {
+              // Target refused after recheck — notify-only without escalatedTo.
+              yield* commitMany([makeBreachEvent(false)], revalidate.pipe(Effect.asVoid));
+              return { result: "notified" as const, starts: [] };
+            }
+
+            return {
+              result: (acted === "queued" ? "queued" : "escalated") as EscalateTicketSlaResult,
+              starts,
+              releaseDependentsFor:
+                acted === "moved" && targetIsTerminal ? input.ticketId : undefined,
+            };
+          }),
+        ),
+      );
+
+      // Post-lock starts + terminal dependent release (same as enterLane).
+      if (lockOutcome.starts.length > 0) {
+        yield* runPipelineStarts(lockOutcome.starts as never);
+      }
+      if (lockOutcome.releaseDependentsFor !== undefined) {
+        yield* releaseDependents(lockOutcome.releaseDependentsFor).pipe(
+          Effect.catch(() => Effect.void),
+        );
+      }
+      return lockOutcome.result;
     });
 
   const invokeParkAction: WorkflowEngineShape["invokeParkAction"] = (
@@ -3427,6 +3687,7 @@ const make = Effect.gen(function* () {
     createTicket,
     editTicket,
     moveTicket,
+    escalateTicketSla,
     invokeParkAction,
     createTicketAndEnterUnlocked,
     closeTicketFromSourceUnlocked,

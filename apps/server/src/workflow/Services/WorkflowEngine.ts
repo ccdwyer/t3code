@@ -46,6 +46,17 @@ export interface WorkflowEngineShape {
     ticketId: TicketId,
     toLane: LaneKey,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
+  /**
+   * SLA sweeper op: breach (+ optional escalation move/queue) under admission
+   * OUTER → save INNER. Never re-enters public moveTicket. Returns:
+   * escalated | queued | notified | stale.
+   */
+  readonly escalateTicketSla: (input: {
+    readonly ticketId: TicketId;
+    readonly expectedLaneKey: LaneKey;
+    readonly expectedEntryToken: string;
+    readonly nowMs?: Effect.Effect<number>;
+  }) => Effect.Effect<"escalated" | "queued" | "notified" | "stale", WorkflowEventStoreError>;
   // Unpark: re-resolve the parked ticket's actions from the CURRENT board
   // definition (by `park_origin` fingerprint, never a snapshot), then perform a
   // manual `TicketMovedToLane` into the chosen action's target lane. The

@@ -32,6 +32,7 @@ const makeEngineLayer = (
     createTicket: () => unsupported(),
     editTicket: () => unsupported(),
     moveTicket: () => unsupported(),
+    escalateTicketSla: () => Effect.succeed("stale" as const),
     invokeParkAction: () => unsupported(),
     createTicketAndEnterUnlocked: () => unsupported(),
     closeTicketFromSourceUnlocked: () => unsupported(),

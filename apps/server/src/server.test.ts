@@ -573,6 +573,7 @@ const buildAppUnderTest = (options?: {
       Layer.mock(WorkflowEngine)({
         createTicket: () => Effect.die("unused workflow createTicket"),
         moveTicket: () => Effect.die("unused workflow moveTicket"),
+        escalateTicketSla: () => Effect.succeed("stale" as const),
         runLane: () => Effect.die("unused workflow runLane"),
         resolveApproval: () => Effect.die("unused workflow resolveApproval"),
         cancelStep: () => Effect.die("unused workflow cancelStep"),

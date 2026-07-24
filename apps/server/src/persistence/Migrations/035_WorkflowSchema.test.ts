@@ -14,8 +14,8 @@ import { migrationEntries, runMigrations } from "../Migrations.ts";
  * includes settled_override/settled_at from upstream's 033_ProjectionThreadsSettled,
  * which now precedes this migration (2026-07-22 rebase renumber 033→034). The consolidated migration
  * 035_WorkflowSchema (formerly 033/034; renumbered again when upstream took slot 34) must reproduce it EXACTLY. The dump filters to
- * `tbl_name LIKE 'workflow_%' OR tbl_name = 'projection_threads'` (the objects
- * the workflow feature owns or extends) and normalizes whitespace.
+ * `tbl_name LIKE 'workflow_%' OR tbl_name IN ('projection_threads', 'projection_ticket')`
+ * (the objects the workflow feature owns or extends) and normalizes whitespace.
  *
  * If this test fails, the collapsed schema diverged from the chain — fix the
  * migration, do not weaken the assertion.
@@ -69,6 +69,42 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     name: "idx_projection_threads_shell_archived",
     tbl_name: "projection_threads",
     sql: "CREATE INDEX idx_projection_threads_shell_archived ON projection_threads(deleted_at, archived_at, project_id, thread_id)",
+  },
+  {
+    type: "table",
+    name: "projection_ticket",
+    tbl_name: "projection_ticket",
+    sql: "CREATE TABLE projection_ticket ( ticket_id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT, current_lane_key TEXT NOT NULL, status TEXT NOT NULL, worktree_ref TEXT, baseline_ref TEXT, external_ref TEXT, priority INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, current_lane_entry_token TEXT, current_lane_entered_at TEXT, queued_at TEXT, terminal_at TEXT, token_budget INTEGER, attention_kind TEXT, attention_reason TEXT, parked_substate TEXT, parked_label TEXT, parked_reason TEXT, parked_at TEXT, parked_event_id TEXT, park_origin TEXT, current_step_label TEXT, sla_breached_entry_token TEXT, sla_breached_at TEXT, sla_breached_reason TEXT )",
+  },
+  {
+    type: "index",
+    name: "idx_projection_ticket_board",
+    tbl_name: "projection_ticket",
+    sql: "CREATE INDEX idx_projection_ticket_board ON projection_ticket(board_id)",
+  },
+  {
+    type: "index",
+    name: "idx_projection_ticket_lane_admission",
+    tbl_name: "projection_ticket",
+    sql: "CREATE INDEX idx_projection_ticket_lane_admission ON projection_ticket(board_id, current_lane_key, current_lane_entry_token)",
+  },
+  {
+    type: "index",
+    name: "idx_projection_ticket_lane_entered_at",
+    tbl_name: "projection_ticket",
+    sql: "CREATE INDEX idx_projection_ticket_lane_entered_at ON projection_ticket(board_id, current_lane_key, current_lane_entered_at)",
+  },
+  {
+    type: "index",
+    name: "idx_projection_ticket_lane_queue",
+    tbl_name: "projection_ticket",
+    sql: "CREATE INDEX idx_projection_ticket_lane_queue ON projection_ticket(board_id, current_lane_key, queued_at)",
+  },
+  {
+    type: "index",
+    name: "idx_projection_ticket_terminal_retention",
+    tbl_name: "projection_ticket",
+    sql: "CREATE INDEX idx_projection_ticket_terminal_retention ON projection_ticket(board_id, current_lane_key, terminal_at)",
   },
   {
     type: "table",
@@ -225,6 +261,11 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
 const GOLDEN_PROJECTION_THREADS_COLUMNS =
   "thread_id,project_id,title,branch,worktree_path,latest_turn_id,created_at,updated_at,deleted_at,runtime_mode,interaction_mode,model_selection_json,archived_at,latest_user_message_at,pending_approval_count,pending_user_input_count,has_actionable_proposed_plan,settled_override,settled_at,hidden";
 
+// projection_ticket is owned by 035 but excluded from the workflow_% GOLDEN
+// dump filter (historical). Column-order gate mirrors GOLDEN_PROJECTION_THREADS.
+const GOLDEN_PROJECTION_TICKET_COLUMNS =
+  "ticket_id,board_id,title,description,current_lane_key,status,worktree_ref,baseline_ref,external_ref,priority,created_at,updated_at,current_lane_entry_token,current_lane_entered_at,queued_at,terminal_at,token_budget,attention_kind,attention_reason,parked_substate,parked_label,parked_reason,parked_at,parked_event_id,park_origin,current_step_label,sla_breached_entry_token,sla_breached_at,sla_breached_reason";
+
 layer("035_WorkflowSchema", (it) => {
   it.effect("migration entry exists at id 34", () =>
     Effect.gen(function* () {
@@ -241,7 +282,10 @@ layer("035_WorkflowSchema", (it) => {
       const rows = yield* sql<MasterRow>`
         SELECT type, name, tbl_name, sql
         FROM sqlite_master
-        WHERE (tbl_name LIKE 'workflow_%' OR tbl_name = 'projection_threads')
+        WHERE (
+          tbl_name LIKE 'workflow_%'
+          OR tbl_name IN ('projection_threads', 'projection_ticket')
+        )
           AND tbl_name != 'workflow_notification_outbox'
           AND tbl_name != 'workflow_agent_session'
           AND sql IS NOT NULL
@@ -424,6 +468,46 @@ layer("035_WorkflowSchema", (it) => {
         assert.isTrue(colNames.has("parked_event_id"), "parked_event_id column missing");
         assert.isTrue(colNames.has("park_origin"), "park_origin column missing");
         assert.isTrue(colNames.has("current_step_label"), "current_step_label column missing");
+      }),
+  );
+
+  it.effect("projection_ticket columns match the golden folded schema (incl. SLA)", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      const cols = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_ticket)`;
+      assert.strictEqual(cols.map((c) => c.name).join(","), GOLDEN_PROJECTION_TICKET_COLUMNS);
+    }),
+  );
+
+  it.effect(
+    "projection_ticket has sla_breached_entry_token, sla_breached_at, sla_breached_reason columns and lane_entered_at index",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations();
+        const cols = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_ticket)`;
+        const colNames = new Set(cols.map((c) => c.name));
+        assert.isTrue(
+          colNames.has("sla_breached_entry_token"),
+          "sla_breached_entry_token column missing",
+        );
+        assert.isTrue(colNames.has("sla_breached_at"), "sla_breached_at column missing");
+        assert.isTrue(colNames.has("sla_breached_reason"), "sla_breached_reason column missing");
+        const indexes = yield* sql<{ readonly name: string }>`
+          PRAGMA index_list(projection_ticket)
+        `;
+        assert.isTrue(
+          indexes.some((idx) => idx.name === "idx_projection_ticket_lane_entered_at"),
+          "idx_projection_ticket_lane_entered_at index missing",
+        );
+        const indexCols = yield* sql<{ readonly name: string }>`
+          PRAGMA index_info('idx_projection_ticket_lane_entered_at')
+        `;
+        assert.strictEqual(
+          indexCols.map((c) => c.name).join(","),
+          "board_id,current_lane_key,current_lane_entered_at",
+        );
       }),
   );
 

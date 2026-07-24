@@ -18,4 +18,17 @@ layer("ticket token migration", (it) => {
       assert.isTrue(columns.some((column) => column.name === "current_lane_entry_token"));
     }),
   );
+
+  it.effect("projection_ticket has SLA breach token and timestamp columns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(projection_ticket)
+      `;
+      const names = new Set(columns.map((column) => column.name));
+      assert.isTrue(names.has("sla_breached_entry_token"));
+      assert.isTrue(names.has("sla_breached_at"));
+      assert.isTrue(names.has("sla_breached_reason"));
+    }),
+  );
 });

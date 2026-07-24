@@ -41,7 +41,8 @@ export type LintCode =
   | "invalid_outbound"
   | "duplicate_outbound_id"
   | "invalid_continue_session"
-  | "invalid_handoff_reference";
+  | "invalid_handoff_reference"
+  | "invalid_sla";
 
 export interface LintError {
   readonly code: LintCode;
@@ -228,6 +229,40 @@ export const lintWorkflowDefinition = (
           laneKey,
           message: `Terminal lane "${laneKey}" retention must be a positive duration`,
         });
+      }
+    }
+
+    if (lane.sla !== undefined) {
+      if (lane.terminal === true) {
+        errors.push({
+          code: "invalid_sla",
+          laneKey,
+          message: `Terminal lane "${laneKey}" cannot define an SLA`,
+        });
+      }
+      const budgetMs = Duration.toMillis(lane.sla.budget);
+      if (!Number.isFinite(budgetMs) || !Number.isSafeInteger(budgetMs) || budgetMs < 60_000) {
+        errors.push({
+          code: "invalid_sla",
+          laneKey,
+          message: `Lane "${laneKey}" SLA budget must be a finite duration of at least 1 minute`,
+        });
+      }
+      if (lane.sla.escalateTo !== undefined) {
+        const escalateTo = lane.sla.escalateTo as string;
+        if (escalateTo === laneKey) {
+          errors.push({
+            code: "invalid_sla",
+            laneKey,
+            message: `Lane "${laneKey}" SLA cannot escalate to itself`,
+          });
+        } else if (!allKeys.has(escalateTo)) {
+          errors.push({
+            code: "invalid_sla",
+            laneKey,
+            message: `Lane "${laneKey}" SLA escalates to missing lane "${escalateTo}"`,
+          });
+        }
       }
     }
 
@@ -627,6 +662,57 @@ export const lintWorkflowDefinition = (
       const next: string | undefined =
         nextTarget !== undefined && !isParkTarget(nextTarget) ? (nextTarget as string) : undefined;
       cursor = next ? byKey.get(next) : undefined;
+    }
+  }
+
+  // SLA escalateTo graph must be acyclic (A→B→A would thrash). Only edges
+  // declared via sla.escalateTo participate — automatic routing cycles are
+  // legitimate and not checked here. Self-targets are already reported above
+  // and omitted from the graph so we don't double-count.
+  {
+    const slaEdges = new Map<string, string>();
+    for (const lane of def.lanes) {
+      if (lane.sla?.escalateTo !== undefined) {
+        const from = lane.key as string;
+        const to = lane.sla.escalateTo as string;
+        if (from !== to) {
+          slaEdges.set(from, to);
+        }
+      }
+    }
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    // Returns a key that participates in a cycle, or null if none.
+    const cycleMemberFrom = (key: string): string | null => {
+      if (visited.has(key)) {
+        return null;
+      }
+      if (visiting.has(key)) {
+        return key;
+      }
+      visiting.add(key);
+      const next = slaEdges.get(key);
+      if (next !== undefined) {
+        const member = cycleMemberFrom(next);
+        if (member !== null) {
+          visiting.delete(key);
+          return member;
+        }
+      }
+      visiting.delete(key);
+      visited.add(key);
+      return null;
+    };
+    for (const key of slaEdges.keys()) {
+      const cycleMember = cycleMemberFrom(key);
+      if (cycleMember !== null) {
+        errors.push({
+          code: "invalid_sla",
+          laneKey: cycleMember,
+          message: `SLA escalation cycle detected involving lane "${cycleMember}"`,
+        });
+        break;
+      }
     }
   }
 

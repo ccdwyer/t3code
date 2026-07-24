@@ -485,6 +485,180 @@ describe("lintWorkflowDefinition", () => {
       );
     }),
   );
+
+  it.effect("accepts valid SLA and rejects terminal, self, missing, sub-minute, and cycles", () =>
+    Effect.gen(function* () {
+      const valid = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "4 hours", escalateTo: "escalation" },
+          },
+          { key: "escalation", name: "Escalation", entry: "manual" },
+          {
+            key: "notify_only",
+            name: "Notify only",
+            entry: "manual",
+            sla: { budget: "1 hour" },
+          },
+          {
+            key: "done",
+            name: "Done",
+            entry: "manual",
+            terminal: true,
+          },
+        ]),
+      );
+      assert.deepEqual(lintWorkflowDefinition(valid, ctx), []);
+
+      // escalateTo a terminal lane is allowed (deliberate give-up).
+      const escalateToTerminal = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "done" },
+          },
+          { key: "done", name: "Done", entry: "manual", terminal: true },
+        ]),
+      );
+      assert.deepEqual(lintWorkflowDefinition(escalateToTerminal, ctx), []);
+
+      const onTerminal = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "done",
+            name: "Done",
+            entry: "manual",
+            terminal: true,
+            sla: { budget: "1 hour", escalateTo: "backlog" },
+          },
+          { key: "backlog", name: "Backlog", entry: "manual" },
+        ]),
+      );
+      assert.deepEqual(
+        lintWorkflowDefinition(onTerminal, ctx).map((error) => error.code),
+        ["invalid_sla"],
+      );
+
+      const selfTarget = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "review" },
+          },
+        ]),
+      );
+      assert.deepEqual(
+        lintWorkflowDefinition(selfTarget, ctx).map((error) => error.code),
+        ["invalid_sla"],
+      );
+
+      const missingTarget = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "ghost" },
+          },
+        ]),
+      );
+      assert.deepEqual(
+        lintWorkflowDefinition(missingTarget, ctx).map((error) => error.code),
+        ["invalid_sla"],
+      );
+
+      const subMinute = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "30 seconds", escalateTo: "escalation" },
+          },
+          { key: "escalation", name: "Escalation", entry: "manual" },
+        ]),
+      );
+      assert.deepEqual(
+        lintWorkflowDefinition(subMinute, ctx).map((error) => error.code),
+        ["invalid_sla"],
+      );
+
+      const cycle = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "a",
+            name: "A",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "b" },
+          },
+          {
+            key: "b",
+            name: "B",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "a" },
+          },
+        ]),
+      );
+      assert.deepEqual(
+        lintWorkflowDefinition(cycle, ctx).map((error) => error.code),
+        ["invalid_sla"],
+      );
+
+      // Predecessor into a cycle: tail→a→b→a must attribute the error to a
+      // cycle member (a or b), not the non-cyclic entry "tail".
+      const prefixIntoCycle = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "tail",
+            name: "Tail",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "a" },
+          },
+          {
+            key: "a",
+            name: "A",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "b" },
+          },
+          {
+            key: "b",
+            name: "B",
+            entry: "manual",
+            sla: { budget: "1 hour", escalateTo: "a" },
+          },
+        ]),
+      );
+      const prefixErrors = lintWorkflowDefinition(prefixIntoCycle, ctx);
+      assert.deepEqual(
+        prefixErrors.map((error) => error.code),
+        ["invalid_sla"],
+      );
+      assert.isTrue(
+        prefixErrors[0]?.laneKey === "a" || prefixErrors[0]?.laneKey === "b",
+        `cycle error should name a cycle member, got ${prefixErrors[0]?.laneKey}`,
+      );
+
+      const oneMinute = yield* decodeWorkflowDefinition(
+        base([
+          {
+            key: "review",
+            name: "Review",
+            entry: "manual",
+            sla: { budget: "1 minute", escalateTo: "escalation" },
+          },
+          { key: "escalation", name: "Escalation", entry: "manual" },
+        ]),
+      );
+      assert.deepEqual(lintWorkflowDefinition(oneMinute, ctx), []);
+    }),
+  );
 });
 
 describe("lintWorkflowDefinition retry + templates", () => {

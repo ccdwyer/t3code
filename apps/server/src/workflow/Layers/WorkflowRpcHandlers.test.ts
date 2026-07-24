@@ -800,6 +800,7 @@ it.effect(
               assert.equal(inputBoardId, boardId);
               operations.push("delete-events");
             }),
+          deleteForTicket: () => Effect.void,
         },
         boardRegistry: {
           register: () => Effect.die("unused"),
@@ -983,6 +984,7 @@ it.effect("workflowRpcHandlers completes deleteBoard retry after a mid-cascade f
           Effect.sync(() => {
             eventRows = 0;
           }),
+        deleteForTicket: () => Effect.void,
       },
       boardRegistry: {
         register: () => Effect.die("unused"),

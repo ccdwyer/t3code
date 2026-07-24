@@ -64,6 +64,8 @@ export default Effect.gen(function* () {
   // parked_event_id / park_origin / current_step_label folded in on
   // 2026-07-22 for the park-in-place sub-states feature (all TEXT, nullable,
   // no defaults).
+  // sla_breached_entry_token / sla_breached_at / sla_breached_reason folded in
+  // for lane SLA timers (all TEXT, nullable, no defaults).
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_ticket (
       ticket_id TEXT PRIMARY KEY,
@@ -91,7 +93,10 @@ export default Effect.gen(function* () {
       parked_at TEXT,
       parked_event_id TEXT,
       park_origin TEXT,
-      current_step_label TEXT
+      current_step_label TEXT,
+      sla_breached_entry_token TEXT,
+      sla_breached_at TEXT,
+      sla_breached_reason TEXT
     )
   `;
 
@@ -440,6 +445,12 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_projection_ticket_terminal_retention
     ON projection_ticket(board_id, current_lane_key, terminal_at)
+  `;
+  // SLA sweeper: per-lane cutoffs filter on (board_id, current_lane_key,
+  // current_lane_entered_at) plus token/status predicates in the query.
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_projection_ticket_lane_entered_at
+    ON projection_ticket(board_id, current_lane_key, current_lane_entered_at)
   `;
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_projection_ticket_dependency_depends_on

@@ -3232,6 +3232,10 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               attentionReason: row.attentionReason,
               updatedAt: row.updatedAt,
               parkedAt: row.parkedAt,
+              // Tasks 3/7 wire real breach fields from the read model; until
+              // then keep the additive NullOr keys populated with null.
+              slaBreachedAt: null,
+              slaBreachedReason: null,
             }),
           );
         }),

@@ -638,6 +638,12 @@ const make = Effect.gen(function* () {
           // change (parked-while-suspended invariant).
           break;
         }
+        case "TicketSlaBreached": {
+          // Full projection writes (sla_breached_* columns) land in the
+          // Phase-A projection task; exhaustiveness needs the arm now that
+          // the event is on the wire union.
+          break;
+        }
         default: {
           event satisfies never;
           break;

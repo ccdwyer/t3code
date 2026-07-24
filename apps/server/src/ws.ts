@@ -378,6 +378,7 @@ const WORKFLOW_RPC_REQUIRED_SCOPE_ENTRIES = [
   [WORKFLOW_WS_METHODS.runLane, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.resolveApproval, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.answerTicketStep, AuthWorkflowOperateScope],
+  [WORKFLOW_WS_METHODS.steerTicketStep, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.postTicketMessage, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.editTicketMessage, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.setProjectScriptTrust, AuthWorkflowOperateScope],

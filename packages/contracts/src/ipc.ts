@@ -1416,6 +1416,12 @@ export interface EnvironmentApi {
       readonly text?: string | undefined;
       readonly attachments?: ReadonlyArray<TicketAttachment> | undefined;
     }) => Promise<void>;
+    steerTicketStep: (input: {
+      readonly ticketId: TicketId;
+      readonly stepRunId: StepRunId;
+      readonly messageId: MessageId;
+      readonly text: string;
+    }) => Promise<{ readonly accepted: true }>;
     postTicketMessage: (input: {
       readonly ticketId: TicketId;
       readonly text?: string | undefined;

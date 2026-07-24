@@ -174,6 +174,11 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
         }),
       resolveApproval: (input) => run(w.resolveApproval, input),
       answerTicketStep: (input) => run(w.answerTicketStep, input),
+      steerTicketStep: (input) =>
+        run(w.steerTicketStep, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
       postTicketMessage: (input) =>
         run(w.postTicketMessage, input).then((result) => {
           refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });

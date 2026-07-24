@@ -84,6 +84,7 @@ vi.mock("../state/workflow", () => {
       runLane: command,
       resolveApproval: command,
       answerTicketStep: command,
+      steerTicketStep: command,
       postTicketMessage: command,
       editTicketMessage: command,
       setProjectScriptTrust: command,

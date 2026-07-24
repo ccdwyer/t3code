@@ -931,6 +931,62 @@ describe("WorkflowEvent", () => {
     }),
   );
 
+  it.effect("decodes StepSteered and steer-related view fields", () =>
+    Effect.gen(function* () {
+      const steered = yield* decodeWorkflowEvent({
+        type: "StepSteered",
+        eventId: "evt-steer-1",
+        ticketId: "t-1",
+        streamVersion: 6,
+        occurredAt: "2026-06-07T06:00:00.000Z",
+        payload: {
+          stepRunId: "sr-1",
+          messageId: "msg-steer-1",
+          text: "Also update the tests",
+        },
+      });
+      assert.equal(steered.type, "StepSteered");
+      if (steered.type === "StepSteered") {
+        assert.equal(steered.payload.stepRunId, "sr-1");
+        assert.equal(steered.payload.messageId, "msg-steer-1");
+        assert.equal(steered.payload.text, "Also update the tests");
+      }
+
+      const message = yield* decodeWorkflowTicketMessageView({
+        messageId: "msg-steer-1",
+        ticketId: "t-1",
+        stepRunId: "sr-1",
+        author: "user",
+        body: "Also update the tests",
+        attachments: [],
+        createdAt: "2026-06-07T06:00:00.000Z",
+        kind: "steering",
+      });
+      assert.equal(message.kind, "steering");
+
+      const step = yield* decodeWorkflowStepRunView({
+        stepRunId: "sr-1",
+        stepKey: "implement",
+        stepType: "agent",
+        status: "running",
+        waitingReason: null,
+        blockedReason: null,
+        scriptThreadId: null,
+        terminalId: null,
+        scriptStatus: null,
+        exitCode: null,
+        signal: null,
+        steerCount: 1,
+        lastSteeredAt: "2026-06-07T06:00:00.000Z",
+        canSteer: false,
+        steerBlockedReason: "delivering",
+      });
+      assert.equal(step.steerCount, 1);
+      assert.equal(step.canSteer, false);
+      assert.equal(step.steerBlockedReason, "delivering");
+    }),
+  );
+
   it.effect("decodes queue and admission events", () =>
     Effect.gen(function* () {
       const queued = yield* decodeWorkflowEvent({
@@ -1400,6 +1456,10 @@ describe("board creation contracts", () => {
     assert.equal(
       (WORKFLOW_WS_METHODS as Record<string, string>).answerTicketStep,
       "workflow.answerTicketStep",
+    );
+    assert.equal(
+      (WORKFLOW_WS_METHODS as Record<string, string>).steerTicketStep,
+      "workflow.steerTicketStep",
     );
     assert.equal((WORKFLOW_WS_METHODS as Record<string, string>).editTicket, "workflow.editTicket");
     assert.equal(WORKFLOW_WS_METHODS.deleteTicket, "workflow.deleteTicket");

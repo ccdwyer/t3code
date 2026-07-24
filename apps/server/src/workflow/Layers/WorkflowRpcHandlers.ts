@@ -45,6 +45,7 @@ import type {
   WorkflowCreateWorkflowBoardResult,
   WorkflowGenerateWorkflowDraftInput as WorkflowGenerateWorkflowDraftInputType,
   WorkflowGenerateWorkflowDraftResult,
+  WorkflowSteerTicketStepInput as WorkflowSteerTicketStepInputType,
   ModelSelection as ModelSelectionType,
 } from "@t3tools/contracts";
 import type { WorkSourceConnectionView } from "@t3tools/contracts/workSource";
@@ -2796,6 +2797,7 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
   WORKFLOW_WS_METHODS.runLane,
   WORKFLOW_WS_METHODS.resolveApproval,
   WORKFLOW_WS_METHODS.answerTicketStep,
+  WORKFLOW_WS_METHODS.steerTicketStep,
   WORKFLOW_WS_METHODS.postTicketMessage,
   WORKFLOW_WS_METHODS.editTicketMessage,
   WORKFLOW_WS_METHODS.setProjectScriptTrust,
@@ -2986,6 +2988,14 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
         deps.engine
           .answerTicketStep(input)
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to answer workflow ticket step"))),
+        { "rpc.aggregate": "workflow" },
+      ),
+    // Engine path lands in live-agent-steering task 6; keep the RPC surface
+    // registered so contracts HandlersFrom stays complete after task 1.
+    [WORKFLOW_WS_METHODS.steerTicketStep]: (_input: WorkflowSteerTicketStepInputType) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.steerTicketStep,
+        Effect.fail(new WorkflowRpcError({ message: "steerTicketStep not yet implemented" })),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.postTicketMessage]: (input: {

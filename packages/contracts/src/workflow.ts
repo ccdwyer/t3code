@@ -30,6 +30,8 @@ export const WORKFLOW_WS_METHODS = {
   runLane: "workflow.runLane",
   resolveApproval: "workflow.resolveApproval",
   answerTicketStep: "workflow.answerTicketStep",
+  /** Mid-run guidance into a live agent step (see live-agent-steering SPEC). */
+  steerTicketStep: "workflow.steerTicketStep",
   postTicketMessage: "workflow.postTicketMessage",
   editTicketMessage: "workflow.editTicketMessage",
   setProjectScriptTrust: "workflow.setProjectScriptTrust",
@@ -656,6 +658,17 @@ export const WorkflowEvent = Schema.Union([
       createdAt: IsoDateTime,
     }),
   }),
+  // Committed when a steer is acknowledged by the provider (not at RPC accept).
+  // Envelope matches TicketMessagePosted: ticket id lives on the event base.
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepSteered"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      messageId: MessageId,
+      text: Schema.String,
+    }),
+  }),
   Schema.Struct({
     ...EventBase,
     type: Schema.Literal("TicketMessageEdited"),
@@ -1017,8 +1030,24 @@ export const WorkflowTicketMessageView = Schema.Struct({
   attachments: Schema.Array(TicketAttachment),
   createdAt: IsoDateTime,
   editedAt: Schema.optional(IsoDateTime),
+  // Absent = ordinary discussion; only the server produces "steering".
+  kind: Schema.optional(Schema.Literal("steering")),
 });
 export type WorkflowTicketMessageView = typeof WorkflowTicketMessageView.Type;
+
+/** Client-minted, globally unique message id + guidance text for mid-run steer. */
+export const WorkflowSteerTicketStepInput = Schema.Struct({
+  ticketId: TicketId,
+  stepRunId: StepRunId,
+  messageId: MessageId,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)),
+});
+export type WorkflowSteerTicketStepInput = typeof WorkflowSteerTicketStepInput.Type;
+
+export const WorkflowSteerTicketStepResult = Schema.Struct({
+  accepted: Schema.Literal(true),
+});
+export type WorkflowSteerTicketStepResult = typeof WorkflowSteerTicketStepResult.Type;
 
 export const BoardSnapshot = Schema.Struct({
   projectId: ProjectId,
@@ -1131,6 +1160,13 @@ export const WorkflowStepRunView = Schema.Struct({
   // Latest dispatch thread for agent steps — lets the UI stream the live
   // provider activity for a running step.
   providerThreadId: Schema.optional(ThreadId),
+  // Projection-derived steer stats (committed StepSteered events only).
+  steerCount: Schema.optional(NonNegativeInt),
+  lastSteeredAt: Schema.optional(IsoDateTime),
+  // Server-derived eligibility for the drawer composer (advisory; engine re-checks).
+  canSteer: Schema.optional(Schema.Boolean),
+  // When set, composer is visible but disabled with a reason tooltip.
+  steerBlockedReason: Schema.optional(Schema.Literals(["awaiting_user", "delivering"])),
 });
 export type WorkflowStepRunView = typeof WorkflowStepRunView.Type;
 

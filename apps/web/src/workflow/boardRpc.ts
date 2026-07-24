@@ -114,6 +114,11 @@ export const answerTicketStep = (
   input: Parameters<EnvironmentApi["workflow"]["answerTicketStep"]>[0],
 ) => api.workflow.answerTicketStep(input);
 
+export const steerTicketStep = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["steerTicketStep"]>[0],
+) => api.workflow.steerTicketStep(input);
+
 export const getTicketDiff = (api: EnvironmentApi, ticketId: TicketId) =>
   api.workflow.getTicketDiff({ ticketId });
 

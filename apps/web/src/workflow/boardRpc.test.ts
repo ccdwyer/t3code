@@ -20,6 +20,7 @@ import {
   invokeParkAction,
   listBoards,
   renameBoard,
+  steerTicketStep,
 } from "./boardRpc";
 
 describe("boardRpc", () => {
@@ -51,6 +52,7 @@ describe("boardRpc", () => {
         deleteTicket: vi.fn(async () => undefined),
         renameBoard: vi.fn(async () => undefined),
         answerTicketStep: vi.fn(async () => undefined),
+        steerTicketStep: vi.fn(async () => ({ accepted: true as const })),
         editTicket: vi.fn(async () => undefined),
         invokeParkAction: vi.fn(async () => "moved" as const),
       },
@@ -71,6 +73,14 @@ describe("boardRpc", () => {
       }),
     ).resolves.toBeUndefined();
     await expect(
+      steerTicketStep(api, {
+        ticketId: TicketId.make("ticket-1"),
+        stepRunId: StepRunId.make("step-1"),
+        messageId: "msg-steer-1" as never,
+        text: "Also update the tests",
+      }),
+    ).resolves.toEqual({ accepted: true });
+    await expect(
       editTicket(api, {
         ticketId: TicketId.make("ticket-1"),
         title: "Updated",
@@ -90,6 +100,12 @@ describe("boardRpc", () => {
       stepRunId: StepRunId.make("step-1"),
       text: "Use sandbox.",
       attachments: [],
+    });
+    expect(api.workflow.steerTicketStep).toHaveBeenCalledWith({
+      ticketId: TicketId.make("ticket-1"),
+      stepRunId: StepRunId.make("step-1"),
+      messageId: "msg-steer-1",
+      text: "Also update the tests",
     });
     expect(api.workflow.deleteTicket).toHaveBeenCalledWith({ ticketId: TicketId.make("ticket-1") });
     expect(api.workflow.editTicket).toHaveBeenCalledWith({

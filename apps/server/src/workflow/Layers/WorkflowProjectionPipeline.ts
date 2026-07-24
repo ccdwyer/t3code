@@ -662,6 +662,11 @@ const make = Effect.gen(function* () {
           // change (parked-while-suspended invariant).
           break;
         }
+        case "StepSteered": {
+          // Message + step-run counter projection lands in live-agent-steering
+          // task 7. Keep the switch exhaustive so new contract variants compile.
+          break;
+        }
         case "TicketSlaBreached": {
           // Resolve a human lane label for the reason string. Fall back to the
           // lane key when the registry is unavailable (early startup / tests).

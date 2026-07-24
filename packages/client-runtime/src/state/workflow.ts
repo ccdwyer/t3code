@@ -213,6 +213,11 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       tag: WORKFLOW_WS_METHODS.answerTicketStep,
       concurrency: serialPerEnv,
     }),
+    steerTicketStep: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:steer-ticket-step",
+      tag: WORKFLOW_WS_METHODS.steerTicketStep,
+      concurrency: serialPerEnv,
+    }),
     postTicketMessage: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:workflow:post-ticket-message",
       tag: WORKFLOW_WS_METHODS.postTicketMessage,

@@ -220,6 +220,8 @@ import {
   WorkflowRevertBoardProposalInput,
   WorkflowRevertBoardProposalResult,
   WorkflowEventId,
+  WorkflowSteerTicketStepInput,
+  WorkflowSteerTicketStepResult,
   WORKFLOW_WS_METHODS,
 } from "./workflow.ts";
 
@@ -980,6 +982,12 @@ export const WsWorkflowAnswerTicketStepRpc = Rpc.make(WORKFLOW_WS_METHODS.answer
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });
 
+export const WsWorkflowSteerTicketStepRpc = Rpc.make(WORKFLOW_WS_METHODS.steerTicketStep, {
+  payload: WorkflowSteerTicketStepInput,
+  success: WorkflowSteerTicketStepResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
 export const WsWorkflowPostTicketMessageRpc = Rpc.make(WORKFLOW_WS_METHODS.postTicketMessage, {
   payload: Schema.Struct({
     ticketId: TicketId,
@@ -1349,6 +1357,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowRunLaneRpc,
   WsWorkflowResolveApprovalRpc,
   WsWorkflowAnswerTicketStepRpc,
+  WsWorkflowSteerTicketStepRpc,
   WsWorkflowPostTicketMessageRpc,
   WsWorkflowEditTicketMessageRpc,
   WsWorkflowSetProjectScriptTrustRpc,

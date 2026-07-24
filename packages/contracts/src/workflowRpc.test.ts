@@ -20,6 +20,7 @@ import {
   WorkflowListBoardTemplatesResult,
   WorkflowRpcError,
   WsWorkflowAnswerTicketStepRpc,
+  WsWorkflowSteerTicketStepRpc,
   WsWorkflowCreateTicketRpc,
   WsWorkflowDeleteBoardRpc,
   WsWorkflowEditTicketRpc,
@@ -44,6 +45,9 @@ const decodeBoardStreamItem = Schema.decodeUnknownEffect(BoardStreamItem);
 const decodeAnswerTicketStepPayload = Schema.decodeUnknownEffect(
   WsWorkflowAnswerTicketStepRpc.payloadSchema,
 );
+const decodeSteerTicketStepPayload = Schema.decodeUnknownEffect(
+  WsWorkflowSteerTicketStepRpc.payloadSchema,
+);
 const decodeEditTicketPayload = Schema.decodeUnknownEffect(WsWorkflowEditTicketRpc.payloadSchema);
 const decodeCreateTicketPayload = Schema.decodeUnknownEffect(
   WsWorkflowCreateTicketRpc.payloadSchema,
@@ -64,6 +68,7 @@ describe("workflow RPC contracts", () => {
     assert.equal(WORKFLOW_WS_METHODS.subscribeBoard, "workflow.subscribeBoard");
     assert.equal(WORKFLOW_WS_METHODS.getTicketDiff, "workflow.getTicketDiff");
     assert.equal(WORKFLOW_WS_METHODS.answerTicketStep, "workflow.answerTicketStep");
+    assert.equal(WORKFLOW_WS_METHODS.steerTicketStep, "workflow.steerTicketStep");
     assert.equal(WORKFLOW_WS_METHODS.editTicket, "workflow.editTicket");
     assert.equal(WORKFLOW_WS_METHODS.deleteTicket, "workflow.deleteTicket");
   });
@@ -147,6 +152,7 @@ describe("workflow RPC contracts", () => {
     assert.isDefined(WsWorkflowGetBoardVersionRpc);
     assert.isDefined(WsWorkflowSubscribeBoardRpc);
     assert.isDefined(WsWorkflowAnswerTicketStepRpc);
+    assert.isDefined(WsWorkflowSteerTicketStepRpc);
     assert.isDefined(WsWorkflowEditTicketRpc);
     assert.isDefined(WsWorkflowGetTicketDiffRpc);
     assert.equal(new WorkflowRpcError({ message: "workflow failed" })._tag, "WorkflowRpcError");
@@ -168,6 +174,12 @@ describe("workflow RPC contracts", () => {
           },
         ],
       });
+      const steer = yield* decodeSteerTicketStepPayload({
+        ticketId: "ticket-1",
+        stepRunId: "sr-1",
+        messageId: "msg-steer-1",
+        text: "Also update the tests",
+      });
       const edit = yield* decodeEditTicketPayload({
         ticketId: "ticket-1",
         title: "Clarify provider routing",
@@ -176,6 +188,8 @@ describe("workflow RPC contracts", () => {
 
       assert.equal(answer.text, "Use the sandbox account.");
       assert.equal(answer.attachments?.[0]?.kind, "image");
+      assert.equal(steer.messageId, "msg-steer-1");
+      assert.equal(steer.text, "Also update the tests");
       assert.equal(edit.description, "");
     }),
   );

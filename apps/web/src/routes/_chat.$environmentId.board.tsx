@@ -38,6 +38,7 @@ import { emptyBoardState, type BoardState } from "../workflow/boardState";
 import {
   answerTicketStep,
   createTicket,
+  deleteTicket,
   editTicket,
   editTicketMessage,
   invokeParkAction,
@@ -620,6 +621,23 @@ function WorkflowBoardRouteView() {
       bumpReloadKey: () => setTicketDetailReloadKey((key) => key + 1),
     });
   }, [registry, environmentId]);
+  const handleDeleteTicket = useCallback(async () => {
+    const ticketId = selectedTicketIdRef.current;
+    if (!ticketId || !routeApi) {
+      throw environmentApiUnavailable();
+    }
+    await deleteTicket(routeApi, ticketId);
+    setSelectedTicketId(null);
+    setTicketDetail(null);
+    // Board stream has no ticket-removed delta; re-subscribe for a fresh snapshot.
+    if (boardId) {
+      registry.refresh(workflowEnvironment.board({ environmentId, input: { boardId } }));
+    }
+    toastManager.add({
+      type: "success",
+      title: "Ticket deleted",
+    });
+  }, [boardId, environmentId, registry, routeApi]);
   // Re-subscribe the folded board atom, which replays a fresh server snapshot.
   // Used after a definition save (park config changes emit no ticket event, so
   // the live stream never repairs the rendered actions) and on a park-action
@@ -1003,6 +1021,7 @@ function WorkflowBoardRouteView() {
             onEditMessage={handleEditMessage}
             onApprove={handleApprove}
             onEditTicket={handleEditTicket}
+            onDeleteTicket={handleDeleteTicket}
             onMove={handleDrawerMove}
             onRunLane={handleRunLane}
             onParkAction={handleParkAction}

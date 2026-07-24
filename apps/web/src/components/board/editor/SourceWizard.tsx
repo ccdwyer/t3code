@@ -256,6 +256,7 @@ function StepConnection({
   connectionsError,
   createWorkSourceConnection,
   onChange,
+  onConnectionCreated,
   disabled,
 }: {
   readonly draft: WizardDraft;
@@ -264,6 +265,7 @@ function StepConnection({
   readonly connectionsError: string | null;
   readonly createWorkSourceConnection: SourceWizardCreateConnection | undefined;
   readonly onChange: (next: WizardDraft) => void;
+  readonly onConnectionCreated: (connection: WorkSourceConnectionView) => void;
   readonly disabled: boolean;
 }) {
   const [addingNew, setAddingNew] = useState(false);
@@ -286,6 +288,10 @@ function StepConnection({
         displayName: newDisplayName.trim(),
         token: newToken.trim(),
       });
+      // Surface the new connection in this open wizard immediately (the
+      // parent list is local state; without this the radio list stays stale
+      // until the dialog is reopened).
+      onConnectionCreated(created);
       onChange({ ...draft, connectionRef: created.connectionRef });
       setAddingNew(false);
       setNewDisplayName("");
@@ -867,6 +873,15 @@ export function SourceWizard({
               connectionsError={connectionsError}
               createWorkSourceConnection={createWorkSourceConnection}
               onChange={setDraft}
+              onConnectionCreated={(created) => {
+                setConnections((current) => {
+                  if (current === null) return [created];
+                  if (current.some((c) => c.connectionRef === created.connectionRef)) {
+                    return current;
+                  }
+                  return [...current, created];
+                });
+              }}
               disabled={disabled}
             />
           )}

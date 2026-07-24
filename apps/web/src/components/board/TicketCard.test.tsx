@@ -300,8 +300,11 @@ describe("TicketCard", () => {
     expect(renderTicketCard("idle")).toContain('data-tier="neutral"');
   });
 
-  it("tints the issue tier amber (warning) and the waiting tier blue (info)", () => {
-    expect(renderCard(parkedTicket())).toContain("border-warning/50");
+  it("tints the issue tier red (destructive) and the waiting tier blue (info)", () => {
+    const issueMarkup = renderCard(parkedTicket());
+    expect(issueMarkup).toContain("border-destructive/50");
+    expect(issueMarkup).toContain("text-destructive-foreground");
+    expect(issueMarkup).not.toContain("border-warning/50");
     expect(renderCard(parkedTicket({ parked: waitingPark }))).toContain("border-info/50");
     // Enqueued dims rather than colors.
     expect(renderTicketCard("queued")).toContain("opacity-60");
@@ -346,7 +349,7 @@ describe("TicketCard", () => {
     const markup = renderCard(fresh);
     expect(markup).toContain("Issue encountered");
     expect(markup).not.toContain("Issue encountered ·");
-    expect(markup).toContain('data-status-tone="warning"');
+    expect(markup).toContain('data-status-tone="destructive"');
   });
 
   it("ages the card from the park's own parkedAt, ignoring a freshly bumped updatedAt", () => {

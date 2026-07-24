@@ -122,7 +122,9 @@ import type {
 } from "../Services/WorkflowSourceCommitter.ts";
 import {
   deleteWorkflowBoardOwnedState,
+  deleteWorkflowBoardTicketOwnedState,
   type WorkflowBoardOwnedStateDeletionDeps,
+  type WorkflowBoardTicketStateDeletionDeps,
 } from "../boardDeletion.ts";
 import {
   chunkArray,
@@ -176,6 +178,10 @@ interface WorkflowDeleteBoardInput {
   readonly boardId: BoardId;
 }
 
+interface WorkflowDeleteTicketInput {
+  readonly ticketId: TicketId;
+}
+
 type WorkflowCreateBoardHandlerInput = WorkflowCreateBoardInputType;
 type WorkflowRenameBoardHandlerInput = WorkflowRenameBoardInputType;
 
@@ -201,7 +207,7 @@ interface WorkflowRpcHandlerDeps {
   // paths, which DO have a SqlClient, run the cascade transactionally up front
   // (see WorkflowBoardOwnedStateDeletionDeps).
   readonly sql?: Pick<SqlClient.SqlClient, "withTransaction">;
-  readonly eventStore?: Pick<WorkflowEventStoreShape, "deleteForBoard">;
+  readonly eventStore?: Pick<WorkflowEventStoreShape, "deleteForBoard" | "deleteForTicket">;
   readonly readModel: WorkflowReadModelShape;
   readonly boardRegistry: BoardRegistryShape;
   readonly boardDiscovery: BoardDiscoveryShape;
@@ -212,15 +218,19 @@ interface WorkflowRpcHandlerDeps {
   readonly boardEvents: WorkflowBoardEventsShape;
   readonly saveLocks?: WorkflowBoardSaveLocksShape;
   readonly versionStore: WorkflowBoardVersionStoreShape;
-  readonly worktreeJanitor?: Pick<WorkflowWorktreeJanitorShape, "collectBoardPlan" | "run">;
+  readonly worktreeJanitor?: Pick<
+    WorkflowWorktreeJanitorShape,
+    "collectBoardPlan" | "collectTicketPlan" | "run"
+  >;
   readonly threadJanitor?: Pick<
     WorkflowThreadJanitorShape,
-    "collectBoardThreads" | "deleteThreads"
+    "collectBoardThreads" | "collectTicketThreads" | "deleteThreads"
   >;
   readonly intake?: WorkflowIntakeShape;
   readonly webhook?: Pick<WorkflowWebhookShape, "getConfig" | "deleteForBoard">;
-  // Per-agent session teardown for the board-deletion cascade (A8).
-  readonly agentSessions?: WorkflowBoardOwnedStateDeletionDeps["agentSessions"];
+  // Per-agent session teardown for the board-deletion cascade (A8) and per-ticket delete.
+  readonly agentSessions?: WorkflowBoardOwnedStateDeletionDeps["agentSessions"] &
+    WorkflowBoardTicketStateDeletionDeps["agentSessions"];
   readonly provider?: WorkflowBoardOwnedStateDeletionDeps["provider"];
   readonly predicates?: PredicateEvaluatorShape;
   // Self-improve (E4): no-tool board-proposal generation. Optional — a server
@@ -383,6 +393,7 @@ const toStepRunView = (step: StepRunRow): WorkflowStepRunView => ({
   status: step.status as StepRunStatus,
   waitingReason: step.waitingReason,
   blockedReason: step.blockedReason,
+  ...(step.error === undefined ? {} : { error: step.error }),
   providerResponseKind: step.providerResponseKind,
   scriptThreadId: step.scriptThreadId as never,
   terminalId: step.terminalId,
@@ -1083,6 +1094,86 @@ const deleteBoard = (
     // lock service doesn't implement eviction.
     Effect.tap(() => deps.saveLocks?.evict?.(input.boardId) ?? Effect.void),
   );
+
+/**
+ * User-initiated ticket delete from the ticket drawer. Reuses the same cascade
+ * as terminal-retention sweep (`deleteWorkflowBoardTicketOwnedState`): cancel
+ * pipelines, drop projection/event rows, and best-effort tear down agent
+ * sessions / worktrees / hidden threads.
+ */
+const deleteTicket = (
+  deps: Pick<
+    WorkflowRpcHandlerDeps,
+    | "readModel"
+    | "engine"
+    | "eventStore"
+    | "saveLocks"
+    | "worktreeJanitor"
+    | "threadJanitor"
+    | "agentSessions"
+    | "provider"
+    | "sql"
+  >,
+  input: WorkflowDeleteTicketInput,
+): Effect.Effect<void, WorkflowRpcError> =>
+  Effect.gen(function* () {
+    const detail = yield* deps.readModel
+      .getTicketDetail(input.ticketId)
+      .pipe(Effect.mapError(toWorkflowRpcError("Failed to load workflow ticket")));
+    if (!detail) {
+      return yield* workflowRpcError(`Workflow ticket ${input.ticketId} was not found`);
+    }
+
+    const boardId = BoardId.make(detail.ticket.boardId);
+    const saveLocks: WorkflowBoardTicketStateDeletionDeps["saveLocks"] = {
+      withSaveLock: deps.saveLocks?.withSaveLock ?? ((_boardId, effect) => effect as typeof effect),
+    };
+
+    yield* deleteWorkflowBoardTicketOwnedState(
+      {
+        saveLocks,
+        engine: deps.engine,
+        eventStore: deps.eventStore ?? { deleteForTicket: () => Effect.void },
+        readModel: deps.readModel,
+        sql: deps.sql ?? { withTransaction: (effect) => effect },
+        ...(deps.worktreeJanitor === undefined
+          ? {}
+          : {
+              worktreeJanitor: {
+                collectTicketPlan: deps.worktreeJanitor.collectTicketPlan,
+                run: deps.worktreeJanitor.run,
+              },
+            }),
+        ...(deps.threadJanitor === undefined
+          ? {}
+          : {
+              threadJanitor: {
+                collectTicketThreads: deps.threadJanitor.collectTicketThreads,
+                deleteThreads: deps.threadJanitor.deleteThreads,
+              },
+            }),
+        ...(deps.agentSessions?.listByTicket === undefined ||
+        deps.agentSessions.deleteByTicket === undefined
+          ? {}
+          : {
+              agentSessions: {
+                listByTicket: deps.agentSessions.listByTicket,
+                deleteByTicket: deps.agentSessions.deleteByTicket,
+              },
+            }),
+        ...(deps.provider === undefined ? {} : { provider: deps.provider }),
+        scheduleCleanup: (cleanup) =>
+          cleanup.pipe(
+            Effect.annotateLogs({ ticketId: input.ticketId }),
+            Effect.ignoreCause({ log: true }),
+            Effect.forkDetach,
+            Effect.asVoid,
+          ),
+      },
+      boardId,
+      input.ticketId,
+    ).pipe(Effect.mapError(toWorkflowRpcError("Failed to delete workflow ticket")));
+  });
 
 const getBoardDefinition = (
   deps: Pick<WorkflowRpcHandlerDeps, "boardRegistry" | "readModel">,
@@ -2670,6 +2761,7 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
   WORKFLOW_WS_METHODS.saveBoardDefinition,
   WORKFLOW_WS_METHODS.createTicket,
   WORKFLOW_WS_METHODS.editTicket,
+  WORKFLOW_WS_METHODS.deleteTicket,
   WORKFLOW_WS_METHODS.moveTicket,
   WORKFLOW_WS_METHODS.invokeParkAction,
   WORKFLOW_WS_METHODS.runLane,
@@ -2807,6 +2899,10 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to edit workflow ticket"))),
         { "rpc.aggregate": "workflow" },
       ),
+    [WORKFLOW_WS_METHODS.deleteTicket]: (input: WorkflowDeleteTicketInput) =>
+      deps.observeRpcEffect(WORKFLOW_WS_METHODS.deleteTicket, deleteTicket(deps, input), {
+        "rpc.aggregate": "workflow",
+      }),
     [WORKFLOW_WS_METHODS.moveTicket]: (input: {
       readonly ticketId: TicketId;
       readonly toLane: LaneKey;

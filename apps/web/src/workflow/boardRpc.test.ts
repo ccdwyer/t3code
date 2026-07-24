@@ -15,6 +15,7 @@ import {
   answerTicketStep,
   createBoard,
   deleteBoard,
+  deleteTicket,
   editTicket,
   invokeParkAction,
   listBoards,
@@ -47,6 +48,7 @@ describe("boardRpc", () => {
           snapshot,
         })),
         deleteBoard: vi.fn(async () => undefined),
+        deleteTicket: vi.fn(async () => undefined),
         renameBoard: vi.fn(async () => undefined),
         answerTicketStep: vi.fn(async () => undefined),
         editTicket: vi.fn(async () => undefined),
@@ -75,6 +77,7 @@ describe("boardRpc", () => {
         description: "",
       }),
     ).resolves.toBeUndefined();
+    await expect(deleteTicket(api, TicketId.make("ticket-1"))).resolves.toBeUndefined();
     await expect(
       invokeParkAction(api, TicketId.make("ticket-1"), 0, WorkflowEventId.make("event-1")),
     ).resolves.toBe("moved");
@@ -88,6 +91,7 @@ describe("boardRpc", () => {
       text: "Use sandbox.",
       attachments: [],
     });
+    expect(api.workflow.deleteTicket).toHaveBeenCalledWith({ ticketId: TicketId.make("ticket-1") });
     expect(api.workflow.editTicket).toHaveBeenCalledWith({
       ticketId: TicketId.make("ticket-1"),
       title: "Updated",

@@ -765,6 +765,66 @@ layer("WorkflowReadModel", (it) => {
     }),
   );
 
+  it.effect("returns the error for failed step runs", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const base = {
+        ticketId: "t-failed-detail" as never,
+        occurredAt: "2026-07-23T23:45:00.000Z" as never,
+      };
+
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "TicketCreated",
+        eventId: "failed-detail-a" as never,
+        streamVersion: 0,
+        payload: {
+          boardId: "b-1" as never,
+          title: "Failed detail" as never,
+          laneKey: "implementation" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "PipelineStarted",
+        eventId: "failed-detail-b" as never,
+        streamVersion: 1,
+        payload: {
+          pipelineRunId: "pr-failed-detail" as never,
+          laneKey: "implementation" as never,
+          laneEntryToken: "tok-failed-detail" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "StepStarted",
+        eventId: "failed-detail-c" as never,
+        streamVersion: 2,
+        payload: {
+          pipelineRunId: "pr-failed-detail" as never,
+          stepRunId: "sr-failed-detail" as never,
+          stepKey: "review" as never,
+          stepType: "agent",
+        },
+      });
+      yield* pipeline.projectEvent({
+        ...base,
+        type: "StepFailed",
+        eventId: "failed-detail-d" as never,
+        streamVersion: 3,
+        payload: {
+          stepRunId: "sr-failed-detail" as never,
+          error: "session/set_model rejected grok-composer-2.5-fast",
+        },
+      });
+
+      const detail = yield* read.getTicketDetail("t-failed-detail" as never);
+      assert.equal(detail?.steps[0]?.status, "failed");
+      assert.equal(detail?.steps[0]?.error, "session/set_model rejected grok-composer-2.5-fast");
+    }),
+  );
+
   it.effect("returns script terminal metadata in ticket detail", () =>
     Effect.gen(function* () {
       const read = yield* WorkflowReadModel;

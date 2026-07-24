@@ -72,12 +72,25 @@ function subscribeThreadRaw(
   _options?: { readonly onResubscribe?: () => void },
 ): () => void {
   const atom = environmentThreads.streamRaw({ environmentId, input });
+  // Register the listener before mounting. Subscription streams may emit their
+  // snapshot synchronously during mount; mounting first loses that one-shot
+  // frame and leaves consumers such as AgentSessionDialog stuck on "Loading".
+  const unsubscribe = registry.subscribe(
+    atom,
+    (result) => {
+      if (AsyncResult.isSuccess(result)) {
+        callback(result.value);
+      }
+    },
+    { immediate: true },
+  );
+  // Another board surface (usually StepActivityFeed) may already hold this raw
+  // atom mounted, in which case its retained value is only the latest event,
+  // not the initial full snapshot AgentSessionDialog needs. Restart the stream
+  // after attaching this listener so every new consumer receives a fresh
+  // transcript snapshot before the live tail.
+  registry.refresh(atom);
   const unmount = registry.mount(atom);
-  const unsubscribe = registry.subscribe(atom, (result) => {
-    if (AsyncResult.isSuccess(result)) {
-      callback(result.value);
-    }
-  });
   return () => {
     unsubscribe();
     unmount();
@@ -97,12 +110,18 @@ function attachTerminalHistoryRaw(
   _options?: { readonly onResubscribe?: () => void },
 ): () => void {
   const atom = terminalEnvironment.attachHistory({ environmentId, input });
+  // As above, history can arrive synchronously while the stream mounts.
+  const unsubscribe = registry.subscribe(
+    atom,
+    (result) => {
+      if (AsyncResult.isSuccess(result)) {
+        callback(result.value);
+      }
+    },
+    { immediate: true },
+  );
+  registry.refresh(atom);
   const unmount = registry.mount(atom);
-  const unsubscribe = registry.subscribe(atom, (result) => {
-    if (AsyncResult.isSuccess(result)) {
-      callback(result.value);
-    }
-  });
   return () => {
     unsubscribe();
     unmount();

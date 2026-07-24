@@ -1,8 +1,15 @@
-import type { BoardId, EnvironmentId, ProjectId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type BoardId,
+  type EnvironmentApi,
+  type ProjectId,
+} from "@t3tools/contracts";
 import { useNavigate, useParams, useLocation } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../state/environments";
+import { deleteBoard } from "../workflow/boardRpc";
+import { useWorkflowApi } from "../workflow/useWorkflowApi";
 import {
   filterEligibleWorkflowProjects,
   useWorkflowSidebarEntries,
@@ -13,6 +20,7 @@ import {
   SidebarV2WorkflowBoardRow,
   SidebarV2WorkflowProjectErrorRow,
 } from "./SidebarV2WorkflowRow";
+import { stackedThreadToast, toastManager } from "./ui/toast";
 
 export interface WorkflowSidebarListProps {
   readonly projects: ReadonlyArray<WorkflowSidebarEligibleProject>;
@@ -34,6 +42,10 @@ export function WorkflowSidebarList(props: WorkflowSidebarListProps) {
   const { projects, scopedProject, onRequestAddWorkflow } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const navigate = useNavigate();
+  // Boards are primary-env only in v1. Placeholder is unused until a board row
+  // exists (which requires a real primary environment).
+  const workflowApi = useWorkflowApi(primaryEnvironmentId ?? EnvironmentId.make("unconnected"));
+  const fullApi = useMemo(() => ({ workflow: workflowApi }) as EnvironmentApi, [workflowApi]);
 
   const eligibleProjects = useMemo(
     () =>
@@ -79,6 +91,48 @@ export function WorkflowSidebarList(props: WorkflowSidebarListProps) {
       });
     },
     [navigate],
+  );
+
+  const handleDelete = useCallback(
+    async (input: {
+      readonly environmentId: EnvironmentId;
+      readonly projectId: ProjectId;
+      readonly boardId: BoardId;
+      readonly name: string;
+    }) => {
+      try {
+        await deleteBoard(fullApi, input.boardId);
+        refreshProject(input.projectId);
+        // If the deleted board is open, leave the board route so the dead
+        // boardId search param cannot keep loading a removed definition.
+        if (
+          activeRouteBoard !== null &&
+          activeRouteBoard.environmentId === input.environmentId &&
+          activeRouteBoard.boardId === input.boardId
+        ) {
+          void navigate({
+            to: "/$environmentId/board",
+            params: { environmentId: input.environmentId },
+            search: {},
+          });
+        }
+        toastManager.add({
+          type: "success",
+          title: "Workflow deleted",
+          description: `"${input.name}" was removed.`,
+        });
+      } catch (error: unknown) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Couldn't delete workflow",
+            description: error instanceof Error ? error.message : "An unknown error occurred.",
+          }),
+        );
+        throw error;
+      }
+    },
+    [activeRouteBoard, fullApi, navigate, refreshProject],
   );
 
   const handleRetry = useCallback(
@@ -142,6 +196,7 @@ export function WorkflowSidebarList(props: WorkflowSidebarListProps) {
               boardId: row.boardId,
             })}
             onActivate={handleActivate}
+            onDelete={handleDelete}
           />
         );
       })}

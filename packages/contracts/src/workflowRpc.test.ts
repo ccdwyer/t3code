@@ -65,6 +65,7 @@ describe("workflow RPC contracts", () => {
     assert.equal(WORKFLOW_WS_METHODS.getTicketDiff, "workflow.getTicketDiff");
     assert.equal(WORKFLOW_WS_METHODS.answerTicketStep, "workflow.answerTicketStep");
     assert.equal(WORKFLOW_WS_METHODS.editTicket, "workflow.editTicket");
+    assert.equal(WORKFLOW_WS_METHODS.deleteTicket, "workflow.deleteTicket");
   });
 
   it.effect("decodes board snapshots for subscription streams", () =>

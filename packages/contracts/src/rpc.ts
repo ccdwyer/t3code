@@ -932,6 +932,12 @@ export const WsWorkflowEditTicketRpc = Rpc.make(WORKFLOW_WS_METHODS.editTicket, 
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });
 
+export const WsWorkflowDeleteTicketRpc = Rpc.make(WORKFLOW_WS_METHODS.deleteTicket, {
+  payload: Schema.Struct({ ticketId: TicketId }),
+  success: Schema.Void,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
 export const WsWorkflowMoveTicketRpc = Rpc.make(WORKFLOW_WS_METHODS.moveTicket, {
   payload: Schema.Struct({ ticketId: TicketId, toLane: LaneKey }),
   success: Schema.Void,
@@ -1337,6 +1343,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowSubscribeBoardRpc,
   WsWorkflowCreateTicketRpc,
   WsWorkflowEditTicketRpc,
+  WsWorkflowDeleteTicketRpc,
   WsWorkflowMoveTicketRpc,
   WsWorkflowInvokeParkActionRpc,
   WsWorkflowRunLaneRpc,

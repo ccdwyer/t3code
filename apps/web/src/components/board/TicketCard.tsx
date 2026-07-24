@@ -144,11 +144,11 @@ const ticketCardVariants = cva(
   {
     variants: {
       // Color signals, not noise: a subtle border/ring in the tier hue, never a
-      // full fill. Issue borrows the amber `warning` family; waiting borrows the
-      // blue `info` family (the theme carries no dedicated violet token).
+      // full fill. Issue uses the destructive family; waiting uses the blue
+      // `info` family (the theme carries no dedicated violet token).
       tier: {
         neutral: "border-border/70",
-        issue: "border-warning/50 ring-1 ring-warning/25",
+        issue: "border-destructive/50 ring-1 ring-destructive/25",
         waiting: "border-info/50 ring-1 ring-info/25",
         processing: "border-border/70",
         enqueued: "border-border/70 opacity-60",
@@ -240,13 +240,9 @@ export function TicketCard({
   let statusClassName: string | undefined;
   if (parked !== undefined) {
     statusLabel = aging === null ? parked.label : `${parked.label} · ${aging.durationLabel}`;
-    const escalated = aging?.level === "alert";
-    statusTone = escalated ? "destructive" : tier === "issue" ? "warning" : "info";
-    statusClassName = escalated
-      ? "text-destructive-foreground"
-      : tier === "issue"
-        ? "text-warning-foreground"
-        : "text-info-foreground";
+    const destructive = tier === "issue" || aging?.level === "alert";
+    statusTone = destructive ? "destructive" : "info";
+    statusClassName = destructive ? "text-destructive-foreground" : "text-info-foreground";
   } else if (aging !== null) {
     statusLabel = aging.label;
     statusTone = aging.level === "alert" ? "destructive" : "warning";

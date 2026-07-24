@@ -104,28 +104,33 @@ describe("resolveWorkflowSidebarAttentionPill", () => {
     expect(resolveWorkflowSidebarAttentionPill({ count: 0, dominantKind: null })).toBeNull();
   });
 
-  it("formats count label and error tone for blocked", () => {
-    const pill = resolveWorkflowSidebarAttentionPill({ count: 1, dominantKind: "blocked" });
-    expect(pill?.label).toBe("1 need you");
-    expect(pill?.className).toBe(attentionKindToneClass("blocked"));
-    expect(pill?.className).toContain("text-red");
+  it("uses an accessible label and red ring for issue attention", () => {
+    const indicator = resolveWorkflowSidebarAttentionPill({
+      count: 1,
+      dominantKind: "blocked",
+    });
+    expect(indicator?.label).toBe("1 item needs your attention; includes an issue");
+    expect(indicator?.className).toBe(attentionKindToneClass("blocked"));
+    expect(indicator?.className).toContain("border-red");
+  });
 
-    const multi = resolveWorkflowSidebarAttentionPill({
+  it("uses a yellow ring for waiting attention", () => {
+    const indicator = resolveWorkflowSidebarAttentionPill({
       count: 4,
       dominantKind: "waiting_for_approval",
     });
-    expect(multi?.label).toBe("4 need you");
-    expect(multi?.className).toContain("text-amber");
+    expect(indicator?.label).toBe("4 items need your attention");
+    expect(indicator?.className).toContain("border-yellow");
   });
 });
 
 describe("attentionKindToneClass", () => {
-  it("maps each kind to a distinct calm tone family", () => {
-    expect(attentionKindToneClass("waiting_for_approval")).toContain("amber");
-    expect(attentionKindToneClass("waiting_for_input")).toContain("indigo");
-    expect(attentionKindToneClass("blocked")).toContain("red");
-    expect(attentionKindToneClass("parked_issue")).toContain("amber");
-    expect(attentionKindToneClass("parked_waiting")).toContain("sky");
-    expect(attentionKindToneClass(null)).toContain("muted");
+  it("maps issue kinds to red and every waiting kind to yellow", () => {
+    expect(attentionKindToneClass("waiting_for_approval")).toContain("border-yellow");
+    expect(attentionKindToneClass("waiting_for_input")).toContain("border-yellow");
+    expect(attentionKindToneClass("blocked")).toContain("border-red");
+    expect(attentionKindToneClass("parked_issue")).toContain("border-red");
+    expect(attentionKindToneClass("parked_waiting")).toContain("border-yellow");
+    expect(attentionKindToneClass(null)).toContain("border-yellow");
   });
 });

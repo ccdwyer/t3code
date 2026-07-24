@@ -28,31 +28,42 @@ function boardRow(overrides: Partial<WorkflowSidebarBoardRow> = {}): WorkflowSid
   };
 }
 
+const noopDelete = async () => undefined;
+
 describe("SidebarV2WorkflowBoardRow", () => {
-  it("renders name, project title, and attention pill", () => {
+  it("renders name, project title, issue attention ring, and delete control", () => {
     const markup = renderToStaticMarkup(
       <SidebarV2WorkflowBoardRow
         row={boardRow({
           attention: { count: 2, dominantKind: "blocked" },
-          attentionPill: { label: "2 need you", className: "text-red-700" },
+          attentionPill: {
+            label: "2 items need your attention; includes an issue",
+            className: "border-red-500",
+          },
         })}
         isActive={false}
         onActivate={() => undefined}
+        onDelete={noopDelete}
       />,
     );
     expect(markup).toContain("Delivery");
     expect(markup).toContain("Alpha");
-    expect(markup).toContain("2 need you");
-    expect(markup).toContain("text-red-700");
+    expect(markup).toContain("2 items need your attention; includes an issue");
+    expect(markup).toContain("border-dashed");
+    expect(markup).toContain("border-red-500");
+    expect(markup).not.toContain(">2 need you<");
+    expect(markup).toContain(`sidebar-v2-workflow-delete-${boardId}`);
+    expect(markup).toContain("Delete workflow Delivery");
   });
 
-  it("marks entry-error boards destructive and non-navigable", () => {
+  it("marks entry-error boards destructive and non-navigable but still offers delete", () => {
     const onActivate = vi.fn();
     const markup = renderToStaticMarkup(
       <SidebarV2WorkflowBoardRow
         row={boardRow({ entryError: "decode failed" })}
         isActive={false}
         onActivate={onActivate}
+        onDelete={noopDelete}
       />,
     );
     expect(markup).toContain('data-entry-error="true"');
@@ -61,11 +72,17 @@ describe("SidebarV2WorkflowBoardRow", () => {
     expect(markup).toContain("aria-disabled");
     // No click handler when entryError — onActivate must not be wired via onClick.
     expect(markup).not.toContain('role="button"');
+    expect(markup).toContain(`sidebar-v2-workflow-delete-${boardId}`);
   });
 
   it("highlights the active board by data-active", () => {
     const markup = renderToStaticMarkup(
-      <SidebarV2WorkflowBoardRow row={boardRow()} isActive onActivate={() => undefined} />,
+      <SidebarV2WorkflowBoardRow
+        row={boardRow()}
+        isActive
+        onActivate={() => undefined}
+        onDelete={noopDelete}
+      />,
     );
     expect(markup).toContain('data-active="true"');
     expect(markup).toContain("bg-sidebar-row-active");
@@ -73,7 +90,12 @@ describe("SidebarV2WorkflowBoardRow", () => {
 
   it("clears active styling when not active", () => {
     const markup = renderToStaticMarkup(
-      <SidebarV2WorkflowBoardRow row={boardRow()} isActive={false} onActivate={() => undefined} />,
+      <SidebarV2WorkflowBoardRow
+        row={boardRow()}
+        isActive={false}
+        onActivate={() => undefined}
+        onDelete={noopDelete}
+      />,
     );
     expect(markup).toContain('data-active="false"');
     expect(markup).not.toContain("bg-sidebar-row-active");

@@ -251,7 +251,7 @@ describe("NeedsYouStrip", () => {
     expect(markup).not.toContain('data-testid="needs-you-actions"');
   });
 
-  it("tints the issue tier amber and the waiting tier blue, matching TicketCard's tokens", () => {
+  it("tints the issue tier red and the waiting tier blue, matching TicketCard's tokens", () => {
     const markup = renderToStaticMarkup(
       <NeedsYouStrip
         tickets={[
@@ -262,7 +262,8 @@ describe("NeedsYouStrip", () => {
         onParkAction={vi.fn(async () => {})}
       />,
     );
-    expect(markup).toContain("bg-warning");
+    expect(markup).toContain("bg-destructive");
+    expect(markup).not.toContain("bg-warning");
     expect(markup).toContain("bg-info");
   });
 });

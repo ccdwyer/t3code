@@ -10,6 +10,7 @@ import type { ProviderServiceShape } from "../provider/Services/ProviderService.
 import { BoardRegistry } from "./Services/BoardRegistry.ts";
 import type { WorkflowAgentSessionRow } from "./Services/WorkflowAgentSessionStore.ts";
 import { WorkflowBoardVersionStore } from "./Services/WorkflowBoardVersionStore.ts";
+import type { WorkflowEventStoreError } from "./Services/Errors.ts";
 import { WorkflowEventStore } from "./Services/WorkflowEventStore.ts";
 import { WorkflowReadModel } from "./Services/WorkflowReadModel.ts";
 import {
@@ -289,6 +290,62 @@ it.effect("collects hidden dispatch threads before the cascade and deletes them 
       "delete:thread-a+thread-b",
     ]);
   }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
+
+it.effect(
+  "can acknowledge deletion after the durable cascade while external cleanup is deferred",
+  () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+      const sql = yield* SqlClient.SqlClient;
+      let scheduledCleanup: Effect.Effect<void, WorkflowEventStoreError> | undefined;
+      const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
+
+      yield* deleteWorkflowBoardTicketOwnedState(
+        {
+          saveLocks: {
+            withSaveLock: (_boardId, effect) => effect,
+          },
+          engine: {
+            cancelTicketPipelines: () => record("cascade:cancel"),
+          },
+          eventStore: {
+            deleteForTicket: () => record("cascade:events"),
+          },
+          readModel: {
+            deleteTicketState: () => record("cascade:read"),
+          },
+          sql,
+          worktreeJanitor: {
+            collectTicketPlan: () =>
+              Effect.succeed({ repoRoot: "/repo", ticketIds: ["ticket-deferred" as never] }),
+            run: () => record("cleanup:worktree"),
+          },
+          threadJanitor: {
+            collectTicketThreads: () => Effect.succeed(["thread-deferred"]),
+            deleteThreads: () => record("cleanup:threads"),
+          },
+          scheduleCleanup: (cleanup) =>
+            Effect.sync(() => {
+              scheduledCleanup = cleanup;
+            }),
+        },
+        "board-ticket-cascade" as never,
+        "ticket-deferred" as never,
+      );
+
+      assert.deepEqual(yield* Ref.get(calls), ["cascade:cancel", "cascade:events", "cascade:read"]);
+      assert.isDefined(scheduledCleanup);
+
+      yield* scheduledCleanup!;
+      assert.deepEqual(yield* Ref.get(calls), [
+        "cascade:cancel",
+        "cascade:events",
+        "cascade:read",
+        "cleanup:worktree",
+        "cleanup:threads",
+      ]);
+    }).pipe(Effect.provide(SqlitePersistenceMemory)),
 );
 
 it.effect("rolls back events and read-model rows when the ticket cascade fails", () =>

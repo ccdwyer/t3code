@@ -93,6 +93,140 @@ describe("isTicketSourceOwned", () => {
 });
 
 describe("TicketDrawer", () => {
+  it("explains a blocked ticket and does not present its current step as live", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...ticketDetail,
+          ticket: {
+            ...ticketDetail.ticket,
+            status: "blocked",
+            attentionKind: "blocked",
+            attentionReason: "Review provider did not start before the dispatch deadline.",
+          },
+          steps: [
+            {
+              stepRunId: "step-review",
+              stepKey: "review",
+              stepType: "agent",
+              status: "running",
+              waitingReason: null,
+              blockedReason: null,
+              providerThreadId: "thread-review",
+              startedAt: "2026-07-23T23:15:39.000Z",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="ticket-blocked-banner"');
+    expect(markup).toContain("Review provider did not start before the dispatch deadline.");
+    expect(markup).toContain(">blocked<");
+    expect(markup).not.toContain("Waiting for the agent to start");
+  });
+
+  it("includes the failed step cause in a blocked ticket's technical details", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...ticketDetail,
+          ticket: {
+            ...ticketDetail.ticket,
+            status: "blocked",
+            attentionKind: "blocked",
+            attentionReason: "pipeline failure with no route",
+          },
+          steps: [
+            {
+              stepRunId: "step-review",
+              stepKey: "review",
+              stepType: "agent",
+              status: "failed",
+              waitingReason: null,
+              blockedReason: null,
+              error: "session/set_model rejected grok-composer-2.5-fast",
+              startedAt: "2026-07-23T23:45:00.000Z",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("pipeline failure with no route");
+    expect(markup).toContain("Technical details");
+    expect(markup).toContain("session/set_model rejected grok-composer-2.5-fast");
+  });
+
+  it("presents an abandoned running step as superseded when a newer step has started", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...ticketDetail,
+          ticket: {
+            ...ticketDetail.ticket,
+            status: "running",
+            currentStepLabel: "implement",
+          },
+          steps: [
+            {
+              stepRunId: "step-review",
+              stepKey: "review",
+              stepType: "agent",
+              status: "running",
+              waitingReason: null,
+              blockedReason: null,
+              providerThreadId: "thread-review",
+              startedAt: "2026-07-23T23:15:39.000Z",
+            },
+            {
+              stepRunId: "step-implement",
+              stepKey: "implement",
+              stepType: "agent",
+              status: "running",
+              waitingReason: null,
+              blockedReason: null,
+              providerThreadId: "thread-implement",
+              startedAt: "2026-07-23T23:29:59.000Z",
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+
+    expect(markup.match(/>superseded</g)?.length).toBe(1);
+    expect(markup.match(/>running</g)?.length).toBe(1);
+    expect(markup.match(/Waiting for the agent to start/g)?.length).toBe(1);
+  });
+
+  it("offers a delete control when onDeleteTicket is provided", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={ticketDetail}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onDeleteTicket={async () => undefined}
+      />,
+    );
+    // Confirm dialog content only mounts when open (portal); the trigger is
+    // enough to prove the surface is wired.
+    expect(markup).toContain("ticket-delete");
+    expect(markup).toContain('aria-label="Delete ticket Review release blockers"');
+  });
+
+  it("hides the delete control when onDeleteTicket is omitted", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer detail={ticketDetail} onApprove={async () => undefined} onRunLane={() => {}} />,
+    );
+    expect(markup).not.toContain("ticket-delete");
+  });
+
   it("renders ticket metadata, the message thread, the reply composer, and approval gates", () => {
     const markup = renderToStaticMarkup(
       <TicketDrawer detail={ticketDetail} onApprove={async () => undefined} onRunLane={() => {}} />,
@@ -515,6 +649,10 @@ describe("TicketDrawer parked banner", () => {
 
     expect(markup).toContain('data-testid="ticket-parked-banner"');
     expect(markup).toContain('data-tier="issue"');
+    expect(markup).toContain("border-destructive/40");
+    expect(markup).toContain("bg-destructive/8");
+    expect(markup).toContain("text-destructive-foreground");
+    expect(markup).not.toContain("border-warning/40");
     expect(markup).toContain('data-testid="ticket-parked-label"');
     expect(markup).toContain("Issue encountered");
     expect(markup).toContain('data-testid="ticket-parked-reason"');

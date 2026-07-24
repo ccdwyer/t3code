@@ -147,7 +147,9 @@ describe("buildWorkflowSidebarEntries", () => {
       entryError: null,
     });
     expect(built.boards[0]?.attention).toEqual({ count: 2, dominantKind: "blocked" });
-    expect(built.boards[0]?.attentionPill?.label).toBe("2 need you");
+    expect(built.boards[0]?.attentionPill?.label).toBe(
+      "2 items need your attention; includes an issue",
+    );
     expect(built.isEmpty).toBe(false);
     expect(built.pending).toBe(false);
     expect(built.errorsByProject.size).toBe(0);

@@ -1396,6 +1396,7 @@ export interface EnvironmentApi {
       readonly dependsOn?: ReadonlyArray<TicketId> | undefined;
       readonly tokenBudget?: number | null | undefined;
     }) => Promise<void>;
+    deleteTicket: (input: { readonly ticketId: TicketId }) => Promise<void>;
     moveTicket: (input: { readonly ticketId: TicketId; readonly toLane: LaneKey }) => Promise<void>;
     // Unpark a parked ticket via one of its re-resolved actions. Compare-and-act
     // on `parkedEventId`: a stale/superseded invocation resolves to `"stale"`

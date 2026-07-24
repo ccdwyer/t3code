@@ -16,10 +16,20 @@ import {
   PencilIcon,
   PlayIcon,
   SendIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
@@ -110,6 +120,7 @@ export interface TicketDrawerDetail {
         }
       | undefined;
     readonly attentionKind?: string | undefined;
+    readonly attentionReason?: string | undefined;
     readonly currentStepLabel?: string | undefined;
     // Park-in-place details — present while status is "parked".
     readonly parked?: TicketDrawerParkedView | undefined;
@@ -122,6 +133,7 @@ export interface TicketDrawerDetail {
     readonly status: string;
     readonly waitingReason: string | null;
     readonly blockedReason?: string | null | undefined;
+    readonly error?: string | null | undefined;
     readonly providerResponseKind?: "request" | "user-input" | null | undefined;
     readonly scriptThreadId?: string | null | undefined;
     readonly terminalId?: string | null | undefined;
@@ -190,6 +202,7 @@ export function TicketDrawer({
   onEditMessage,
   onApprove,
   onEditTicket,
+  onDeleteTicket,
   onMove,
   onRunLane,
   onParkAction,
@@ -205,6 +218,7 @@ export function TicketDrawer({
   readonly onEditMessage?: ((messageId: string, body: string) => Promise<void>) | undefined;
   readonly onApprove: (stepRunId: string, approved: boolean) => Promise<void>;
   readonly onEditTicket?: ((input: TicketDrawerEditInput) => Promise<void>) | undefined;
+  readonly onDeleteTicket?: (() => Promise<void>) | undefined;
   readonly onMove?: ((toLane: string) => void) | undefined;
   readonly onRunLane: () => void;
   readonly onParkAction?:
@@ -219,6 +233,9 @@ export function TicketDrawer({
 }) {
   const sourceOwned = isTicketSourceOwned(detail);
   const [fullscreen, setFullscreen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [editingTicket, setEditingTicket] = useState(false);
   const [draftTitle, setDraftTitle] = useState(detail.ticket.title);
   const [draftDescription, setDraftDescription] = useState(detail.ticket.description ?? "");
@@ -301,6 +318,22 @@ export function TicketDrawer({
       setEditError(error instanceof Error ? error.message : "Could not save ticket.");
     } finally {
       setEditSubmitting(false);
+    }
+  };
+
+  const confirmDeleteTicket = async () => {
+    if (!onDeleteTicket) {
+      return;
+    }
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await onDeleteTicket();
+      setDeleteConfirmOpen(false);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "Could not delete ticket.");
+    } finally {
+      setDeleteSubmitting(false);
     }
   };
 
@@ -446,6 +479,21 @@ export function TicketDrawer({
                   Edit ticket
                 </Button>
               ) : null}
+              {onDeleteTicket ? (
+                <Button
+                  size="xs"
+                  variant="destructive-outline"
+                  data-testid="ticket-delete"
+                  aria-label={`Delete ticket ${detail.ticket.title}`}
+                  onClick={() => {
+                    setDeleteError(null);
+                    setDeleteConfirmOpen(true);
+                  }}
+                >
+                  <Trash2Icon className="size-3.5" />
+                  Delete
+                </Button>
+              ) : null}
               <Button
                 size="icon-xs"
                 variant="ghost"
@@ -474,6 +522,9 @@ export function TicketDrawer({
           onParkAction={onParkAction}
           parkActionPending={parkActionPending}
         />
+      ) : null}
+      {!fullscreen && detail.ticket.status === "blocked" ? (
+        <TicketBlockedBanner reason={ticketBlockedReason(detail)} />
       ) : null}
 
       {/*
@@ -551,6 +602,14 @@ export function TicketDrawer({
           onParkAction={onParkAction}
           parkActionPending={parkActionPending}
           now={now}
+          onRequestDelete={
+            onDeleteTicket
+              ? () => {
+                  setDeleteError(null);
+                  setDeleteConfirmOpen(true);
+                }
+              : undefined
+          }
           onClose={() => setFullscreen(false)}
         />
       ) : (
@@ -662,10 +721,10 @@ export function TicketDrawer({
                 <span className="text-xs text-muted-foreground">{detail.steps.length}</span>
               </div>
               <ol className="space-y-2">
-                {detail.steps.map((step) => (
+                {detail.steps.map((step, index) => (
                   <TicketStepRow
                     key={step.stepRunId}
-                    step={step}
+                    step={presentTicketStep(detail, index)}
                     api={api}
                     projectId={projectId}
                     approvalSubmittingStepRunId={approvalSubmittingStepRunId}
@@ -734,12 +793,41 @@ export function TicketDrawer({
           </footer>
         </>
       )}
+
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete ticket &ldquo;{detail.ticket.title}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the ticket, its step history, messages, and agent sessions
+              from the board.
+              {sourceOwned
+                ? " This ticket is synced from an external work source and may reappear on the next source pull."
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError ? <p className="px-6 text-sm text-destructive">{deleteError}</p> : null}
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={deleteSubmitting} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              disabled={deleteSubmitting || !onDeleteTicket}
+              data-testid="ticket-delete-confirm"
+              onClick={() => void confirmDeleteTicket()}
+            >
+              {deleteSubmitting ? "Deleting…" : "Delete ticket"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </aside>
   );
 }
 
 /**
- * The parked-ticket banner: tier-colored (warning for "issue", info for
+ * The parked-ticket banner: tier-colored (destructive for "issue", info for
  * "waiting" — the same token families as the card/strip), with the label
  * prominent, the full reason (the drawer has room, unlike the card's
  * `line-clamp-2`), an age readout, and the re-resolved recovery actions.
@@ -805,7 +893,7 @@ function TicketParkedBanner({
     <div
       className={cn(
         "shrink-0 border-b px-4 py-3",
-        isIssue ? "border-warning/40 bg-warning/8" : "border-info/40 bg-info/8",
+        isIssue ? "border-destructive/40 bg-destructive/8" : "border-info/40 bg-info/8",
       )}
       data-testid="ticket-parked-banner"
       data-tier={parked.substate}
@@ -813,7 +901,7 @@ function TicketParkedBanner({
       <p
         className={cn(
           "text-sm font-semibold",
-          isIssue ? "text-warning-foreground" : "text-info-foreground",
+          isIssue ? "text-destructive-foreground" : "text-info-foreground",
         )}
         data-testid="ticket-parked-label"
       >
@@ -886,6 +974,62 @@ function TicketParkedBanner({
       )}
     </div>
   );
+}
+
+function TicketBlockedBanner({ reason }: { readonly reason?: string | undefined }) {
+  const { summary, details } = blockedReasonParts(reason);
+  return (
+    <div
+      className="shrink-0 border-b border-destructive/40 bg-destructive/8 px-4 py-3"
+      data-testid="ticket-blocked-banner"
+    >
+      <p className="text-sm font-semibold text-destructive-foreground">Blocked</p>
+      <p
+        className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground"
+        data-testid="ticket-blocked-reason"
+      >
+        {summary}
+      </p>
+      {details ? (
+        <details className="mt-2 text-[11px] text-muted-foreground">
+          <summary className="cursor-pointer font-medium text-destructive-foreground">
+            Technical details
+          </summary>
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-destructive/25 bg-background/55 p-2 leading-4">
+            {details}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function blockedReasonParts(reason?: string | undefined): {
+  readonly summary: string;
+  readonly details: string | null;
+} {
+  const normalized = reason?.trim();
+  if (!normalized) {
+    return {
+      summary: "This ticket is blocked, but no reason was reported.",
+      details: null,
+    };
+  }
+  const [summary = normalized, ...detailLines] = normalized.split("\n");
+  const details = detailLines.join("\n").trim();
+  return { summary, details: details || null };
+}
+
+function ticketBlockedReason(detail: TicketDrawerDetail): string | undefined {
+  const ticketReason = detail.ticket.attentionReason?.trim();
+  const stepError = [...detail.steps]
+    .toReversed()
+    .find((step) => step.error?.trim())
+    ?.error?.trim();
+  if (!stepError || ticketReason?.includes(stepError)) {
+    return ticketReason;
+  }
+  return ticketReason ? `${ticketReason}\n${stepError}` : stepError;
 }
 
 function TicketAttachmentPreview({ attachment }: { readonly attachment: TicketDrawerAttachment }) {
@@ -1359,6 +1503,43 @@ function TicketReplyComposer({
 
 type StepRowStep = TicketDrawerDetail["steps"][number];
 
+const OPEN_STEP_STATUSES = new Set(["pending", "dispatch_requested", "running", "awaiting_user"]);
+
+function presentTicketStep(detail: TicketDrawerDetail, index: number): StepRowStep {
+  const step = detail.steps[index];
+  if (step === undefined || !OPEN_STEP_STATUSES.has(step.status)) {
+    return step as StepRowStep;
+  }
+
+  const hasLaterStartedStep = detail.steps
+    .slice(index + 1)
+    .some((candidate) => candidate.startedAt !== undefined);
+  if (hasLaterStartedStep) {
+    return {
+      ...step,
+      status: "superseded",
+      waitingReason: null,
+      blockedReason: null,
+    };
+  }
+
+  if (detail.ticket.status === "blocked") {
+    return {
+      ...step,
+      status: "blocked",
+      waitingReason: null,
+      blockedReason:
+        (detail.ticket.attentionReason
+          ? blockedReasonParts(detail.ticket.attentionReason).summary
+          : null) ||
+        step.blockedReason ||
+        "This step stopped because the ticket is blocked.",
+    };
+  }
+
+  return step;
+}
+
 /** A single step row `<li>`. Shared between the drawer and the fullscreen right
  *  column. The `liClassName` lets each context supply its own padding. */
 function TicketStepRow({
@@ -1387,8 +1568,8 @@ function TicketStepRow({
     <li
       className={cn(
         "rounded-md border border-border/60 bg-background/70",
-        (step.status === "awaiting_user" || step.status === "blocked") &&
-          "border-warning/45 bg-warning/5",
+        step.status === "awaiting_user" && "border-warning/45 bg-warning/5",
+        step.status === "blocked" && "border-destructive/45 bg-destructive/5",
         liClassName,
       )}
     >
@@ -1411,6 +1592,11 @@ function TicketStepRow({
       ) : null}
       {step.blockedReason ? (
         <p className="mt-2 text-xs leading-5 text-muted-foreground">{step.blockedReason}</p>
+      ) : null}
+      {step.error && step.error !== step.blockedReason ? (
+        <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-5 text-destructive-foreground">
+          {step.error}
+        </p>
       ) : null}
       {step.output !== undefined && step.output !== null ? (
         <div className="mt-2" data-testid={stepOutputTestId}>
@@ -1588,6 +1774,7 @@ export function TicketFullscreen({
   onParkAction,
   parkActionPending = false,
   now,
+  onRequestDelete,
   onClose,
 }: {
   readonly api?: EnvironmentApi | undefined;
@@ -1619,6 +1806,7 @@ export function TicketFullscreen({
     | undefined;
   readonly parkActionPending?: boolean | undefined;
   readonly now: number;
+  readonly onRequestDelete?: (() => void) | undefined;
   readonly onClose: () => void;
 }) {
   const ticket = detail.ticket;
@@ -1680,6 +1868,18 @@ export function TicketFullscreen({
               Edit ticket
             </Button>
           ) : null}
+          {onRequestDelete ? (
+            <Button
+              size="xs"
+              variant="destructive-outline"
+              data-testid="ticket-delete"
+              aria-label={`Delete ticket ${ticket.title}`}
+              onClick={onRequestDelete}
+            >
+              <Trash2Icon className="size-3.5" />
+              Delete
+            </Button>
+          ) : null}
           <Button
             size="icon-xs"
             variant="ghost"
@@ -1705,6 +1905,9 @@ export function TicketFullscreen({
           onParkAction={onParkAction}
           parkActionPending={parkActionPending}
         />
+      ) : null}
+      {ticket.status === "blocked" ? (
+        <TicketBlockedBanner reason={ticketBlockedReason(detail)} />
       ) : null}
 
       {/* Body — two-column on wide screens. Columns own their scroll; the
@@ -1829,10 +2032,10 @@ export function TicketFullscreen({
                 <span className="text-xs text-muted-foreground">{detail.steps.length}</span>
               </div>
               <ol className="space-y-2">
-                {detail.steps.map((step) => (
+                {detail.steps.map((step, index) => (
                   <TicketStepRow
                     key={step.stepRunId}
-                    step={step}
+                    step={presentTicketStep(detail, index)}
                     api={api}
                     projectId={projectId}
                     approvalSubmittingStepRunId={approvalState.approvalSubmittingStepRunId}
@@ -1954,10 +2157,10 @@ function formatStepBadgeLabel(step: TicketDrawerDetail["steps"][number]): string
 }
 
 function stepBadgeVariant(step: TicketDrawerDetail["steps"][number]) {
-  if (step.status === "awaiting_user" || step.status === "blocked") {
+  if (step.status === "awaiting_user") {
     return "warning";
   }
-  if (step.status === "failed" || step.scriptStatus === "timeout") {
+  if (step.status === "blocked" || step.status === "failed" || step.scriptStatus === "timeout") {
     return "error";
   }
   if (step.status === "completed") {

@@ -178,7 +178,10 @@ function NeedsYouEntry({
     >
       <span
         aria-hidden="true"
-        className={cn("size-2 shrink-0 rounded-full", tier === "issue" ? "bg-warning" : "bg-info")}
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          tier === "issue" ? "bg-destructive" : "bg-info",
+        )}
       />
       <button
         type="button"

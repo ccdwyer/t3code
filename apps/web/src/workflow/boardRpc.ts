@@ -82,6 +82,9 @@ export const editTicket = (
   input: Parameters<EnvironmentApi["workflow"]["editTicket"]>[0],
 ) => api.workflow.editTicket(input);
 
+export const deleteTicket = (api: EnvironmentApi, ticketId: TicketId) =>
+  api.workflow.deleteTicket({ ticketId });
+
 export const moveTicket = (api: EnvironmentApi, ticketId: TicketId, toLane: LaneKey) =>
   api.workflow.moveTicket({ ticketId, toLane });
 

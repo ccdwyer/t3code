@@ -8,6 +8,7 @@ import type { WorkflowAgentSessionStoreShape } from "./Services/WorkflowAgentSes
 import type { WorkflowBoardSaveLocksShape } from "./Services/WorkflowBoardSaveLocks.ts";
 import type { WorkflowBoardVersionStoreShape } from "./Services/WorkflowBoardVersionStore.ts";
 import type { WorkflowEngineShape } from "./Services/WorkflowEngine.ts";
+import type { WorkflowEventStoreError } from "./Services/Errors.ts";
 import type { WorkflowEventStoreShape } from "./Services/WorkflowEventStore.ts";
 import type { WorkflowReadModelShape } from "./Services/WorkflowReadModel.ts";
 import type { WorkflowThreadJanitorShape } from "./Services/WorkflowThreadJanitor.ts";
@@ -51,6 +52,15 @@ export interface WorkflowBoardTicketStateDeletionDeps {
   // are dropped and their live provider sessions stopped (best-effort).
   readonly agentSessions?: Pick<WorkflowAgentSessionStoreShape, "listByTicket" | "deleteByTicket">;
   readonly provider?: Pick<ProviderServiceShape, "stopSession">;
+  /**
+   * Optional scheduling boundary for slow, best-effort external cleanup after
+   * the durable ticket cascade commits. Retention/recovery callers omit this
+   * and await cleanup; the interactive delete RPC detaches it so the UI is not
+   * held open by provider shutdown or Git worktree/thread removal.
+   */
+  readonly scheduleCleanup?: (
+    cleanup: Effect.Effect<void, WorkflowEventStoreError>,
+  ) => Effect.Effect<void>;
 }
 
 const noCleanup = Effect.succeed(null);
@@ -147,21 +157,25 @@ export const deleteWorkflowBoardTicketOwnedStateWhen = <E, R>(
         );
         if (deleted) {
           // Git/filesystem cleanup stays outside the DB transaction but under
-          // the board save lock so a concurrent re-create of the same ticket
-          // worktree cannot interleave with its removal.
-          if (deps.provider !== undefined && agentSessionRows.length > 0) {
-            const provider = deps.provider;
-            yield* Effect.forEach(
-              agentSessionRows,
-              (row) =>
-                provider
-                  .stopSession({ threadId: row.threadId as ThreadId })
-                  .pipe(Effect.catch(() => Effect.void)),
-              { discard: true },
-            );
-          }
-          yield* deps.worktreeJanitor?.run(cleanupPlan) ?? Effect.void;
-          yield* deps.threadJanitor?.deleteThreads(threadIds) ?? Effect.void;
+          // the DB transaction. Interactive deletion schedules this work after
+          // commit so provider/Git latency is not part of the RPC response;
+          // retention/recovery callers omit scheduleCleanup and still await it.
+          const cleanup = Effect.gen(function* () {
+            if (deps.provider !== undefined && agentSessionRows.length > 0) {
+              const provider = deps.provider;
+              yield* Effect.forEach(
+                agentSessionRows,
+                (row) =>
+                  provider
+                    .stopSession({ threadId: row.threadId as ThreadId })
+                    .pipe(Effect.catch(() => Effect.void)),
+                { discard: true },
+              );
+            }
+            yield* deps.worktreeJanitor?.run(cleanupPlan) ?? Effect.void;
+            yield* deps.threadJanitor?.deleteThreads(threadIds) ?? Effect.void;
+          });
+          yield* deps.scheduleCleanup?.(cleanup) ?? cleanup;
         }
         return deleted;
       }),

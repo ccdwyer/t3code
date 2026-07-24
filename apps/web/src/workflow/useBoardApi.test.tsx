@@ -27,15 +27,28 @@ import { environmentThreads } from "../state/threads";
 import { terminalEnvironment } from "../state/terminal";
 import { useBoardApi } from "./useBoardApi";
 
-function makeFakeRegistry() {
+function makeFakeRegistry(input?: {
+  readonly emitOnMount?: unknown;
+  readonly emitOnRefresh?: unknown;
+}) {
   const unmount = vi.fn();
   const unsubscribe = vi.fn();
   let listener: ((result: unknown) => void) | undefined;
   const registry = {
-    mount: vi.fn(() => unmount),
+    mount: vi.fn(() => {
+      if (input?.emitOnMount !== undefined) {
+        listener?.(input.emitOnMount);
+      }
+      return unmount;
+    }),
     subscribe: vi.fn((_atom: unknown, next: (result: unknown) => void) => {
       listener = next;
       return unsubscribe;
+    }),
+    refresh: vi.fn(() => {
+      if (input?.emitOnRefresh !== undefined) {
+        listener?.(input.emitOnRefresh);
+      }
     }),
   } as unknown as AtomRegistry.AtomRegistry;
   return {
@@ -101,6 +114,39 @@ describe("useBoardApi", () => {
     teardown();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(unmount).toHaveBeenCalledTimes(1);
+  });
+
+  it("subscribeThread observes a snapshot emitted synchronously while the stream mounts", () => {
+    const snapshotItem = { kind: "snapshot", snapshot: { thread: { messages: [] } } };
+    const { registry } = makeFakeRegistry({
+      emitOnMount: AsyncResult.success(snapshotItem),
+    });
+    const api = renderBoardApi(registry);
+    const callback = vi.fn();
+
+    api.orchestration.subscribeThread(
+      { threadId: ThreadId.make("thread-mount-snapshot") },
+      callback,
+    );
+
+    expect(callback).toHaveBeenCalledWith(snapshotItem);
+  });
+
+  it("subscribeThread refreshes an already-mounted raw stream to recover its full snapshot", () => {
+    const snapshotItem = { kind: "snapshot", snapshot: { thread: { messages: [] } } };
+    const { registry } = makeFakeRegistry({
+      emitOnRefresh: AsyncResult.success(snapshotItem),
+    });
+    const api = renderBoardApi(registry);
+    const callback = vi.fn();
+
+    api.orchestration.subscribeThread(
+      { threadId: ThreadId.make("thread-shared-stream") },
+      callback,
+    );
+
+    expect(registry.refresh).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith(snapshotItem);
   });
 
   it("attachHistory mounts the raw atom, forwards events, and tears down", () => {

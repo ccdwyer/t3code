@@ -1,12 +1,22 @@
 import type { BoardId, EnvironmentId, ProjectId } from "@t3tools/contracts";
-import { AlertTriangleIcon, RefreshCwIcon, SquareKanbanIcon } from "lucide-react";
-import { memo, useCallback, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { AlertTriangleIcon, RefreshCwIcon, SquareKanbanIcon, Trash2Icon } from "lucide-react";
+import { memo, useCallback, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { cn } from "~/lib/utils";
 import type {
   WorkflowSidebarBoardRow,
   WorkflowSidebarProjectErrorRow,
 } from "../workflow/useWorkflowSidebarEntries";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
+import { Button } from "./ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export interface SidebarV2WorkflowBoardRowProps {
@@ -16,6 +26,17 @@ export interface SidebarV2WorkflowBoardRowProps {
     readonly environmentId: EnvironmentId;
     readonly boardId: BoardId;
   }) => void;
+  /**
+   * Delete the board. Called only after the user confirms in the dialog.
+   * Resolves on success; reject to keep the dialog open with the error path
+   * handled by the caller (toast).
+   */
+  readonly onDelete: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId;
+    readonly boardId: BoardId;
+    readonly name: string;
+  }) => Promise<void>;
 }
 
 export interface SidebarV2WorkflowProjectErrorRowProps {
@@ -24,14 +45,16 @@ export interface SidebarV2WorkflowProjectErrorRowProps {
 }
 
 /**
- * Slim workflow board row for Sidebar v2. Read-navigate only (no rename/delete
- * in v1). entryError boards are destructive + non-navigable.
+ * Slim workflow board row for Sidebar v2. Navigate on click; hover-reveal
+ * delete with a confirmation dialog (mirrors v1 SidebarBoardRow).
  */
 export const SidebarV2WorkflowBoardRow = memo(function SidebarV2WorkflowBoardRow(
   props: SidebarV2WorkflowBoardRowProps,
 ) {
-  const { row, isActive, onActivate } = props;
+  const { row, isActive, onActivate, onDelete } = props;
   const hasEntryError = row.entryError !== null && row.entryError.length > 0;
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const activate = useCallback(() => {
     if (hasEntryError) return;
@@ -48,6 +71,29 @@ export const SidebarV2WorkflowBoardRow = memo(function SidebarV2WorkflowBoardRow
     [activate],
   );
 
+  const openDeleteConfirmation = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDeleteConfirmOpen(true);
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    setIsDeleting(true);
+    try {
+      await onDelete({
+        environmentId: row.environmentId,
+        projectId: row.projectId,
+        boardId: row.boardId,
+        name: row.name,
+      });
+      setDeleteConfirmOpen(false);
+    } catch {
+      // Caller toasts; keep the dialog open so the user can retry or cancel.
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [onDelete, row.boardId, row.environmentId, row.name, row.projectId]);
+
   return (
     <li className="list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]">
       <div
@@ -58,7 +104,7 @@ export const SidebarV2WorkflowBoardRow = memo(function SidebarV2WorkflowBoardRow
         data-entry-error={hasEntryError ? "true" : "false"}
         aria-disabled={hasEntryError ? true : undefined}
         className={cn(
-          "group/v2-workflow-row relative flex h-9 w-full items-center gap-2.5 overflow-hidden rounded-md px-2.5 text-left outline-none select-none",
+          "group/v2-workflow-row relative flex h-9 w-full items-center gap-2.5 overflow-hidden rounded-md px-2.5 pr-1 text-left outline-none select-none",
           hasEntryError
             ? "cursor-default text-destructive"
             : isActive
@@ -104,7 +150,7 @@ export const SidebarV2WorkflowBoardRow = memo(function SidebarV2WorkflowBoardRow
               render={
                 <span
                   aria-label="This board's file failed to load"
-                  className="ml-auto inline-flex size-5 shrink-0 items-center justify-center text-destructive"
+                  className="inline-flex size-5 shrink-0 items-center justify-center text-destructive"
                 >
                   <AlertTriangleIcon className="size-3.5" />
                 </span>
@@ -116,17 +162,67 @@ export const SidebarV2WorkflowBoardRow = memo(function SidebarV2WorkflowBoardRow
             </TooltipPopup>
           </Tooltip>
         ) : row.attentionPill ? (
-          <span
-            data-testid={`sidebar-v2-workflow-attention-${row.boardId}`}
-            className={cn(
-              "ml-auto shrink-0 text-[11px] font-medium tabular-nums",
-              row.attentionPill.className,
-            )}
-          >
-            {row.attentionPill.label}
-          </span>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  data-testid={`sidebar-v2-workflow-attention-${row.boardId}`}
+                  aria-label={row.attentionPill.label}
+                  className={cn(
+                    "size-3 shrink-0 rounded-full border-2 border-dashed",
+                    row.attentionPill.className,
+                  )}
+                />
+              }
+            />
+            <TooltipPopup side="right">{row.attentionPill.label}</TooltipPopup>
+          </Tooltip>
         ) : null}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                data-testid={`sidebar-v2-workflow-delete-${row.boardId}`}
+                aria-label={`Delete workflow ${row.name}`}
+                className={cn(
+                  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive/40",
+                  // Hover/focus reveal on pointer devices; always available on touch.
+                  "opacity-0 pointer-events-none group-hover/v2-workflow-row:pointer-events-auto group-hover/v2-workflow-row:opacity-100 group-focus-within/v2-workflow-row:pointer-events-auto group-focus-within/v2-workflow-row:opacity-100 max-sm:pointer-events-auto max-sm:opacity-100",
+                )}
+                onClick={openDeleteConfirmation}
+              >
+                <Trash2Icon className="size-3.5" />
+              </button>
+            }
+          />
+          <TooltipPopup side="right">Delete workflow</TooltipPopup>
+        </Tooltip>
       </div>
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete workflow &ldquo;{row.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes the board file, its tickets, and version history for{" "}
+              {row.projectTitle}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={isDeleting} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              disabled={isDeleting}
+              data-testid={`sidebar-v2-workflow-delete-confirm-${row.boardId}`}
+              onClick={() => void confirmDelete()}
+            >
+              {isDeleting ? "Deleting…" : "Delete workflow"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </li>
   );
 });

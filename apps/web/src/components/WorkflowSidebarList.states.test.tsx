@@ -33,6 +33,12 @@ vi.mock("../state/environments", () => ({
   usePrimaryEnvironmentId: () => EnvironmentId.make("environment-primary"),
 }));
 
+vi.mock("../workflow/useWorkflowApi", () => ({
+  useWorkflowApi: () => ({
+    deleteBoard: vi.fn(async () => undefined),
+  }),
+}));
+
 vi.mock("../workflow/useWorkflowSidebarEntries", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../workflow/useWorkflowSidebarEntries")>();
   return {
@@ -165,10 +171,13 @@ describe("WorkflowSidebarList (real component)", () => {
     expect(markup).toContain(`sidebar-v2-workflow-project-retry-${projectB}`);
   });
 
-  it("renders board rows with attention badges", () => {
+  it("renders board rows with attention badges and a delete control", () => {
     const row = boardRow({
       attention: { count: 2, dominantKind: "blocked" },
-      attentionPill: { label: "2 need you", className: "text-red-700" },
+      attentionPill: {
+        label: "2 items need your attention; includes an issue",
+        className: "border-red-500",
+      },
     });
     entriesMock.snapshot = entriesState({
       boards: [row],
@@ -177,9 +186,12 @@ describe("WorkflowSidebarList (real component)", () => {
     const markup = renderList();
     expect(markup).toContain("sidebar-v2-workflows-list");
     expect(markup).toContain(`sidebar-v2-workflow-row-${boardId}`);
+    expect(markup).toContain(`sidebar-v2-workflow-delete-${boardId}`);
     expect(markup).toContain("Delivery");
     expect(markup).toContain("Alpha");
     expect(markup).toContain(`sidebar-v2-workflow-attention-${boardId}`);
-    expect(markup).toContain("2 need you");
+    expect(markup).toContain("border-dashed");
+    expect(markup).toContain("border-red-500");
+    expect(markup).not.toContain(">2 need you<");
   });
 });

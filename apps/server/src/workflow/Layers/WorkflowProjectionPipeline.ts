@@ -152,6 +152,22 @@ const make = Effect.gen(function* () {
                 ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
           `;
+          yield* sql`
+            UPDATE projection_step_run
+            SET status = 'superseded',
+                waiting_reason = NULL,
+                provider_response_kind = NULL,
+                finished_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+              AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user')
+          `;
+          yield* sql`
+            UPDATE projection_pipeline_run
+            SET status = 'superseded',
+                finished_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+              AND status = 'running'
+          `;
           break;
         }
         case "TicketEdited": {
@@ -246,6 +262,22 @@ const make = Effect.gen(function* () {
                 updated_at = ${event.occurredAt},
                 ${PARKED_CLEAR}
             WHERE ticket_id = ${event.ticketId}
+          `;
+          yield* sql`
+            UPDATE projection_step_run
+            SET status = 'superseded',
+                waiting_reason = NULL,
+                provider_response_kind = NULL,
+                finished_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+              AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user')
+          `;
+          yield* sql`
+            UPDATE projection_pipeline_run
+            SET status = 'superseded',
+                finished_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+              AND status = 'running'
           `;
           break;
         }
@@ -349,6 +381,17 @@ const make = Effect.gen(function* () {
             SET current_step_label = NULL
             WHERE ticket_id = ${event.ticketId}
           `;
+          if (event.payload.result === "superseded") {
+            yield* sql`
+              UPDATE projection_step_run
+              SET status = 'superseded',
+                  waiting_reason = NULL,
+                  provider_response_kind = NULL,
+                  finished_at = ${event.occurredAt}
+              WHERE pipeline_run_id = ${event.payload.pipelineRunId}
+                AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user')
+            `;
+          }
           break;
         }
         case "StepStarted": {

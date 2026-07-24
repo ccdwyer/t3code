@@ -67,6 +67,80 @@ layer("WorkflowProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("a lane move supersedes open step and pipeline projections", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* WorkflowProjectionPipeline;
+      const sql = yield* SqlClient.SqlClient;
+      const ticketId = "t-move-supersedes" as never;
+
+      yield* pipeline.projectEvent({
+        type: "TicketCreated",
+        eventId: "move-supersedes-a" as never,
+        ticketId,
+        streamVersion: 0,
+        occurredAt: "2026-07-23T23:15:00.000Z" as never,
+        payload: {
+          boardId: "b-move-supersedes" as never,
+          title: "Move while review is starting" as never,
+          laneKey: "implementation" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "PipelineStarted",
+        eventId: "move-supersedes-b" as never,
+        ticketId,
+        streamVersion: 1,
+        occurredAt: "2026-07-23T23:15:01.000Z" as never,
+        payload: {
+          pipelineRunId: "pipeline-move-supersedes" as never,
+          laneKey: "implementation" as never,
+          laneEntryToken: "token-old-lane" as never,
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "StepStarted",
+        eventId: "move-supersedes-c" as never,
+        ticketId,
+        streamVersion: 2,
+        occurredAt: "2026-07-23T23:15:02.000Z" as never,
+        payload: {
+          pipelineRunId: "pipeline-move-supersedes" as never,
+          stepRunId: "step-move-supersedes" as never,
+          stepKey: "review" as never,
+          stepType: "agent",
+        },
+      });
+      yield* pipeline.projectEvent({
+        type: "TicketMovedToLane",
+        eventId: "move-supersedes-d" as never,
+        ticketId,
+        streamVersion: 3,
+        occurredAt: "2026-07-23T23:16:00.000Z" as never,
+        payload: {
+          toLane: "backlog" as never,
+          laneEntryToken: "token-new-lane" as never,
+          reason: "manual",
+        },
+      });
+
+      const steps = yield* sql<{ readonly status: string; readonly finishedAt: string | null }>`
+        SELECT status, finished_at AS "finishedAt"
+        FROM projection_step_run
+        WHERE step_run_id = 'step-move-supersedes'
+      `;
+      const runs = yield* sql<{ readonly status: string; readonly finishedAt: string | null }>`
+        SELECT status, finished_at AS "finishedAt"
+        FROM projection_pipeline_run
+        WHERE pipeline_run_id = 'pipeline-move-supersedes'
+      `;
+
+      assert.equal(steps[0]?.status, "superseded");
+      assert.equal(steps[0]?.finishedAt, "2026-07-23T23:16:00.000Z");
+      assert.equal(runs[0]?.status, "superseded");
+      assert.equal(runs[0]?.finishedAt, "2026-07-23T23:16:00.000Z");
+    }),
+  );
+
   it.effect("projects ticket descriptions, edits, and ticket messages", () =>
     Effect.gen(function* () {
       const pipeline = yield* WorkflowProjectionPipeline;

@@ -81,10 +81,7 @@ export function groupAttentionByBoard(input: {
   return result;
 }
 
-/**
- * Map a dominant attention kind + count into the calm right-slot pill.
- * Zero count → null (nothing rendered).
- */
+/** Map a dominant attention kind + count into the compact right-slot indicator. */
 export function resolveWorkflowSidebarAttentionPill(
   summary: WorkflowSidebarAttentionSummary | null | undefined,
 ): WorkflowSidebarAttentionPill | null {
@@ -92,31 +89,28 @@ export function resolveWorkflowSidebarAttentionPill(
     return null;
   }
 
-  const label = summary.count === 1 ? "1 need you" : `${summary.count} need you`;
+  const itemLabel = summary.count === 1 ? "1 item needs" : `${summary.count} items need`;
+  const includesIssue =
+    summary.dominantKind === "blocked" || summary.dominantKind === "parked_issue";
+  const label = `${itemLabel} your attention${includesIssue ? "; includes an issue" : ""}`;
   const className = attentionKindToneClass(summary.dominantKind);
   return { label, className };
 }
 
-/** Tone classes for the dominant attention kind (color signals, not noise). */
+/** Waiting is yellow; blocked or parked issue attention escalates to red. */
 export function attentionKindToneClass(
   kind: WorkflowSidebarAttentionKind | null | undefined,
 ): string {
   switch (kind) {
-    case "waiting_for_approval":
-      return "text-amber-700 dark:text-amber-300";
-    case "waiting_for_input":
-      return "text-indigo-600 dark:text-indigo-300";
     case "blocked":
-      return "text-red-700 dark:text-red-300";
     case "parked_issue":
-      // Parked issue: warning/amber family (matches board ticket tier "issue").
-      return "text-amber-700 dark:text-amber-300";
+      return "border-red-500 dark:border-red-400";
+    case "waiting_for_approval":
+    case "waiting_for_input":
     case "parked_waiting":
-      // Parked waiting: info/sky family (board waiting tier).
-      return "text-sky-700 dark:text-sky-300";
     case null:
     case undefined:
-      return "text-muted-foreground";
+      return "border-yellow-500 dark:border-yellow-400";
   }
 }
 

@@ -232,6 +232,7 @@ export interface StepRunRow {
   readonly status: string;
   readonly waitingReason: string | null;
   readonly blockedReason: string | null;
+  readonly error?: string | null;
   readonly providerResponseKind: "request" | "user-input" | null;
   readonly scriptThreadId: string | null;
   readonly terminalId: string | null;

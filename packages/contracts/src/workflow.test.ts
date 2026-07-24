@@ -1259,6 +1259,7 @@ describe("board creation contracts", () => {
       "workflow.answerTicketStep",
     );
     assert.equal((WORKFLOW_WS_METHODS as Record<string, string>).editTicket, "workflow.editTicket");
+    assert.equal(WORKFLOW_WS_METHODS.deleteTicket, "workflow.deleteTicket");
   });
 
   it.effect("decodes workflow editor result contracts", () =>

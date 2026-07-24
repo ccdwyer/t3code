@@ -25,6 +25,11 @@ type WorkflowApi = EnvironmentApi["workflow"];
  * — the board route reads `workflowEnvironment.board(...)` (the folded
  * subscription atom) directly. `subscribeBoard` here is a best-effort bridge for
  * facade completeness over the raw stream atom.
+ *
+ * Freshness: query atoms use SWR with a multi-second stale window. Imperative
+ * reads through this facade always `registry.refresh` first so mutations
+ * (create/delete work sources, save board definition, ticket step thread
+ * assignment, etc.) are visible without a full app reload.
  */
 export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
   const registry = useContext(RegistryContext);
@@ -47,49 +52,138 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
 
     // Reads are QUERY atom families (not commands) — mount + read the atom via
     // executeAtomQuery rather than runAtomCommand (a family has no `.run`).
+    // Refresh first: SWR will otherwise serve a pre-mutation value for up to
+    // staleTime (default 30s) even when revalidateOnMount is true, because
+    // getResult can resolve the still-fresh cached success without waiting.
     const readQuery = <A, E, I>(
       family: (target: {
         readonly environmentId: EnvironmentId;
         readonly input: I;
       }) => Atom.Atom<AsyncResult.AsyncResult<A, E>>,
       input: I,
-    ): Promise<A> =>
-      executeAtomQuery(registry, family({ environmentId, input }), { reportFailure: false }).then(
-        (result) => {
-          if (AsyncResult.isSuccess(result)) {
-            return result.value;
-          }
-          throw squashAtomCommandFailure(result);
-        },
-      );
+    ): Promise<A> => {
+      const atom = family({ environmentId, input });
+      registry.refresh(atom);
+      return executeAtomQuery(registry, atom, { reportFailure: false }).then((result) => {
+        if (AsyncResult.isSuccess(result)) {
+          return result.value;
+        }
+        throw squashAtomCommandFailure(result);
+      });
+    };
+
+    const refreshQuery = <I>(
+      family: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: I;
+      }) => Atom.Atom<unknown>,
+      input: I,
+    ): void => {
+      registry.refresh(family({ environmentId, input }));
+    };
 
     const w = workflowEnvironment;
 
+    // After a connection mutation, drop the list cache so every consumer (settings,
+    // source wizard, import dialog) sees the new set on the next read/open.
+    const afterWorkSourceConnectionMutation = <A>(result: A): A => {
+      refreshQuery(w.listWorkSourceConnections, {});
+      return result;
+    };
+
+    const afterOutboundConnectionMutation = <A>(result: A): A => {
+      refreshQuery(w.listOutboundConnections, {});
+      return result;
+    };
+
+    // Definition / board shape changes must not leave getBoardDefinition or
+    // listBoards serving the pre-save value (e.g. "no sources" after source save).
+    const afterBoardDefinitionMutation = <A>(result: A, boardId: BoardId): A => {
+      refreshQuery(w.getBoardDefinition, { boardId });
+      refreshQuery(w.getBoard, { boardId });
+      refreshQuery(w.listBoardVersions, { boardId });
+      return result;
+    };
+
     return {
       listBoards: (input) => readQuery(w.listBoards, input),
-      createBoard: (input) => run(w.createBoard, input),
-      importBoard: (input) => run(w.importBoard, input),
-      createWorkflowBoard: (input) => run(w.createWorkflowBoard, input),
+      createBoard: (input) =>
+        run(w.createBoard, input).then((result) => {
+          refreshQuery(w.listBoards, { projectId: input.projectId });
+          return result;
+        }),
+      importBoard: (input) =>
+        run(w.importBoard, input).then((result) => {
+          refreshQuery(w.listBoards, { projectId: input.projectId });
+          return result;
+        }),
+      createWorkflowBoard: (input) =>
+        run(w.createWorkflowBoard, input).then((result) => {
+          refreshQuery(w.listBoards, { projectId: input.projectId });
+          return result;
+        }),
       generateWorkflowDraft: (input) => run(w.generateWorkflowDraft, input),
       listBoardTemplates: (input) => readQuery(w.listBoardTemplates, input),
-      deleteBoard: (input) => run(w.deleteBoard, input),
-      renameBoard: (input) => run(w.renameBoard, input),
+      deleteBoard: (input) =>
+        run(w.deleteBoard, input).then((result) => {
+          // listBoards is project-scoped; callers re-list after delete. Still
+          // drop definition/board caches for the removed id.
+          refreshQuery(w.getBoardDefinition, { boardId: input.boardId });
+          refreshQuery(w.getBoard, { boardId: input.boardId });
+          return result;
+        }),
+      renameBoard: (input) =>
+        run(w.renameBoard, input).then((result) =>
+          afterBoardDefinitionMutation(result, input.boardId),
+        ),
       getBoard: (input) => readQuery(w.getBoard, input),
       getBoardDefinition: (input) => readQuery(w.getBoardDefinition, input),
-      saveBoardDefinition: (input) => run(w.saveBoardDefinition, input),
+      saveBoardDefinition: (input) =>
+        run(w.saveBoardDefinition, input).then((result) =>
+          afterBoardDefinitionMutation(result, input.boardId),
+        ),
       listBoardVersions: (input) => readQuery(w.listBoardVersions, input),
       getBoardVersion: (input) => readQuery(w.getBoardVersion, input),
       subscribeBoard: (input, callback, options) =>
         subscribeBoardRaw(registry, environmentId, input, callback, options),
       createTicket: (input) => run(w.createTicket, input),
-      editTicket: (input) => run(w.editTicket, input),
-      moveTicket: (input) => run(w.moveTicket, input),
-      invokeParkAction: (input) => run(w.invokeParkAction, input),
-      runLane: (input) => run(w.runLane, input),
+      editTicket: (input) =>
+        run(w.editTicket, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
+      deleteTicket: (input) =>
+        run(w.deleteTicket, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
+      moveTicket: (input) =>
+        run(w.moveTicket, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
+      invokeParkAction: (input) =>
+        run(w.invokeParkAction, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
+      runLane: (input) =>
+        run(w.runLane, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
       resolveApproval: (input) => run(w.resolveApproval, input),
       answerTicketStep: (input) => run(w.answerTicketStep, input),
-      postTicketMessage: (input) => run(w.postTicketMessage, input),
-      editTicketMessage: (input) => run(w.editTicketMessage, input),
+      postTicketMessage: (input) =>
+        run(w.postTicketMessage, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
+      editTicketMessage: (input) =>
+        run(w.editTicketMessage, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
       setProjectScriptTrust: (input) => run(w.setProjectScriptTrust, input),
       cancelStep: (input) => run(w.cancelStep, input),
       getTicketDetail: (input) => readQuery(w.getTicketDetail, input),
@@ -101,11 +195,15 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
       getBoardMetrics: (input) => readQuery(w.getBoardMetrics, input),
       dryRunBoard: (input) => run(w.dryRunBoard, input),
       listWorkSourceConnections: (input) => readQuery(w.listWorkSourceConnections, input),
-      createWorkSourceConnection: (input) => run(w.createWorkSourceConnection, input),
-      deleteWorkSourceConnection: (input) => run(w.deleteWorkSourceConnection, input),
+      createWorkSourceConnection: (input) =>
+        run(w.createWorkSourceConnection, input).then(afterWorkSourceConnectionMutation),
+      deleteWorkSourceConnection: (input) =>
+        run(w.deleteWorkSourceConnection, input).then(afterWorkSourceConnectionMutation),
       listOutboundConnections: (input) => readQuery(w.listOutboundConnections, input),
-      createOutboundConnection: (input) => run(w.createOutboundConnection, input),
-      deleteOutboundConnection: (input) => run(w.deleteOutboundConnection, input),
+      createOutboundConnection: (input) =>
+        run(w.createOutboundConnection, input).then(afterOutboundConnectionMutation),
+      deleteOutboundConnection: (input) =>
+        run(w.deleteOutboundConnection, input).then(afterOutboundConnectionMutation),
       proposeBoardImprovement: (input) => run(w.proposeBoardImprovement, input),
       listBoardProposals: (input) => readQuery(w.listBoardProposals, input),
       getBoardProposal: (input) => readQuery(w.getBoardProposal, input),
@@ -131,12 +229,20 @@ function subscribeBoardRaw(
   _options?: { onResubscribe?: () => void },
 ): () => void {
   const atom = workflowEnvironment.boardRaw({ environmentId, input });
+  // Board snapshots can be emitted synchronously during mount. Attach the
+  // listener first so the route never misses the snapshot or an immediately
+  // following ticket delta (which otherwise leaves drawer steps stale).
+  const unsubscribe = registry.subscribe(
+    atom,
+    (result) => {
+      if (AsyncResult.isSuccess(result)) {
+        callback(result.value);
+      }
+    },
+    { immediate: true },
+  );
+  registry.refresh(atom);
   const unmount = registry.mount(atom);
-  const unsubscribe = registry.subscribe(atom, (result) => {
-    if (AsyncResult.isSuccess(result)) {
-      callback(result.value);
-    }
-  });
   return () => {
     unsubscribe();
     unmount();

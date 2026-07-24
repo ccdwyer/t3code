@@ -974,6 +974,7 @@ const make = Effect.gen(function* () {
             WHEN step.status = 'blocked' THEN step.error
             ELSE NULL
           END AS "blockedReason",
+          step.error,
           script.script_thread_id AS "scriptThreadId",
           script.terminal_id AS "terminalId",
           script.status AS "scriptStatus",

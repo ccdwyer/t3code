@@ -27,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -218,7 +219,10 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { serverSettings?: Partial<ServerSettings> }) {
+  async function createHarness(options?: {
+    serverSettings?: Partial<ServerSettings>;
+    hiddenThread?: boolean;
+  }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -282,6 +286,7 @@ describe("ProviderRuntimeIngestion", () => {
         branch: null,
         worktreePath: null,
         createdAt,
+        hidden: options?.hiddenThread ?? false,
       }),
     );
     await Effect.runPromise(
@@ -313,6 +318,12 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readThreadDetail: () =>
+        Effect.runPromise(
+          snapshotQuery
+            .getThreadDetailById(ThreadId.make("thread-1"))
+            .pipe(Effect.map(Option.getOrUndefined)),
+        ),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
@@ -943,6 +954,54 @@ describe("ProviderRuntimeIngestion", () => {
       (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-1",
     );
     expect(message?.text).toBe("hello world");
+    expect(message?.streaming).toBe(false);
+  });
+
+  it("maps assistant messages for hidden workflow threads", async () => {
+    const harness = await createHarness({ hiddenThread: true });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-hidden-message-delta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-hidden"),
+      itemId: asItemId("item-hidden"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "captured hidden output",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-hidden-message-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-hidden"),
+      itemId: asItemId("item-hidden"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + 2000;
+    let thread = await harness.readThreadDetail();
+    while (
+      !thread?.messages.some(
+        (message) => message.id === "assistant:item-hidden" && !message.streaming,
+      ) &&
+      (await Effect.runPromise(Clock.currentTimeMillis)) < deadline
+    ) {
+      await Effect.runPromise(Effect.yieldNow);
+      thread = await harness.readThreadDetail();
+    }
+
+    const message = thread?.messages.find((entry) => entry.id === "assistant:item-hidden");
+    expect(message?.text).toBe("captured hidden output");
     expect(message?.streaming).toBe(false);
   });
 

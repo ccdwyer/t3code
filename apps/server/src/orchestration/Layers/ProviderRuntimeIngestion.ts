@@ -1293,10 +1293,15 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      const thread = yield* resolveThreadShell(event.threadId);
+      // Workflow dispatches use hidden orchestration threads. Shell queries
+      // intentionally exclude hidden threads, so fall back to the detail query
+      // before deciding that an event belongs to an unknown thread.
+      const visibleThread = yield* resolveThreadShell(event.threadId);
+      const hiddenThread = visibleThread ? undefined : yield* resolveThreadDetail(event.threadId);
+      const thread = visibleThread ?? hiddenThread;
       if (!thread) return;
 
-      let loadedThreadDetail: OrchestrationThread | null | undefined;
+      let loadedThreadDetail: OrchestrationThread | null | undefined = hiddenThread;
       const getLoadedThreadDetail = () =>
         Effect.gen(function* () {
           if (loadedThreadDetail !== undefined) {

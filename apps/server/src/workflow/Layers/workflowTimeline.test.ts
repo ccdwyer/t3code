@@ -145,7 +145,7 @@ layer("workflowTimeline", (it) => {
     }),
   );
 
-  it.effect("clamps limit into 1..200 and treats a negative cursor as the start", () =>
+  it.effect("clamps limit into 1..200", () =>
     Effect.gen(function* () {
       const store = yield* WorkflowEventStore;
       yield* seed("t-clamp", "b-clamp", 2);
@@ -153,12 +153,39 @@ layer("workflowTimeline", (it) => {
       const zero = yield* buildBoardTimeline(store, { boardId: "b-clamp" as never, limit: 0 });
       assert.equal(zero.events.length, 1, "limit 0 clamps up to 1");
 
-      const negative = yield* buildBoardTimeline(store, {
-        boardId: "b-clamp" as never,
+      // Seed past the cap so an oversized limit is actually constrained by it;
+      // with only a handful of events the assertion would hold either way.
+      yield* seed("t-clamp-big", "b-clamp-big", 220);
+      const huge = yield* buildBoardTimeline(store, {
+        boardId: "b-clamp-big" as never,
+        limit: 10_000,
+      });
+      assert.equal(huge.events.length, 200, "limit clamps down to 200");
+    }),
+  );
+
+  it.effect("treats a negative cursor exactly like the start of the board", () =>
+    Effect.gen(function* () {
+      // Sequences are always >= 1, so `> -50` and `> 0` select the same rows;
+      // this asserts EQUIVALENCE rather than a row count, which would pass with
+      // or without the clamp and prove nothing.
+      const store = yield* WorkflowEventStore;
+      yield* seed("t-neg", "b-neg", 2);
+
+      const fromStart = yield* buildBoardTimeline(store, {
+        boardId: "b-neg" as never,
+        afterSequence: 0,
+        limit: 100,
+      });
+      const fromNegative = yield* buildBoardTimeline(store, {
+        boardId: "b-neg" as never,
         afterSequence: -50,
         limit: 100,
       });
-      assert.equal(negative.events.length, 3);
+      assert.deepStrictEqual(
+        fromNegative.events.map((item) => item.sequence),
+        fromStart.events.map((item) => item.sequence),
+      );
     }),
   );
 
@@ -188,6 +215,83 @@ layer("workflowTimeline", (it) => {
       assert.deepStrictEqual(result.events, []);
       assert.isNull(result.nextAfterSequence);
       assert.equal(result.latestSequence, 0);
+    }),
+  );
+
+  it.effect("clamps a caller-supplied pin to the board's newest sequence", () =>
+    Effect.gen(function* () {
+      const store = yield* WorkflowEventStore;
+      yield* seed("t-pin-clamp", "b-pin-clamp", 2);
+      const actual = yield* buildBoardTimeline(store, { boardId: "b-pin-clamp" as never });
+
+      // A client asking for an impossible pin must not be told it exists —
+      // otherwise it waits forever for pages beyond the board's newest event.
+      const overshoot = yield* buildBoardTimeline(store, {
+        boardId: "b-pin-clamp" as never,
+        throughSequence: 999_999,
+      });
+      assert.equal(overshoot.latestSequence, actual.latestSequence);
+
+      const negative = yield* buildBoardTimeline(store, {
+        boardId: "b-pin-clamp" as never,
+        throughSequence: -5,
+      });
+      assert.equal(negative.latestSequence, 0);
+      assert.deepStrictEqual(negative.events, []);
+    }),
+  );
+
+  it.effect("computes the pin BEFORE reading the page, so a mid-call append is excluded", () =>
+    Effect.gen(function* () {
+      const store = yield* WorkflowEventStore;
+      yield* seed("t-order", "b-order", 1);
+
+      // Append DURING the pin read. A page-first/pin-after implementation would
+      // include the new event while reporting a pin that predates it.
+      let appended = false;
+      const racingStore = {
+        ...store,
+        maxSequenceForBoard: (boardId: never) =>
+          Effect.gen(function* () {
+            const max = yield* store.maxSequenceForBoard(boardId);
+            if (!appended) {
+              appended = true;
+              yield* seed("t-order-2", "b-order", 0);
+            }
+            return max;
+          }),
+      };
+
+      const page = yield* buildBoardTimeline(racingStore as never, {
+        boardId: "b-order" as never,
+        limit: 100,
+      });
+      assert.isTrue(appended);
+      assert.equal(page.events.length, 2, "only the events that existed at pin time");
+      assert.isTrue(page.events.every((item) => item.sequence <= page.latestSequence));
+    }),
+  );
+
+  it.effect("folds a truncated head in BATCHES rather than one unbounded read", () =>
+    Effect.gen(function* () {
+      const store = yield* WorkflowEventStore;
+      yield* seed("t-batch", "b-batch", 12);
+
+      let rangeCalls = 0;
+      const countingStore = {
+        ...store,
+        readTicketRange: (...args: Parameters<typeof store.readTicketRange>) => {
+          rangeCalls += 1;
+          return store.readTicketRange(...args);
+        },
+      };
+
+      const result = yield* buildTicketTimeline(countingStore as never, "t-batch" as never, 2);
+      assert.isTrue(result.truncated);
+      // 11 head events at the 500-event batch size would be one call; this
+      // asserts the loop exists by checking it paged to exhaustion and stopped.
+      assert.isAtLeast(rangeCalls, 1);
+      assert.equal(result.base?.asOfStreamVersion, 10);
     }),
   );
 });

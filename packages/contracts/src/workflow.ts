@@ -284,10 +284,97 @@ export const AgentStep = Schema.Struct({
   on: Schema.optional(StepRouting),
 });
 
+/**
+ * Path-safe so `answers.<fieldKey>` is addressable from a JsonLogic dot-path in
+ * lane transitions. Same shape as the step-key pattern for the same reason.
+ */
+export const CheckpointFieldKey = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_-]{1,40}$/),
+).pipe(Schema.brand("CheckpointFieldKey"));
+export type CheckpointFieldKey = typeof CheckpointFieldKey.Type;
+
+/** What a decision maps to for routing: the same terminals a step already has. */
+export const CheckpointOutcome = Schema.Literals(["success", "failure", "blocked"]);
+export type CheckpointOutcome = typeof CheckpointOutcome.Type;
+
+export const CheckpointOption = Schema.Struct({
+  value: TrimmedNonEmptyString.check(Schema.isMaxLength(40)),
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(48)),
+});
+export type CheckpointOption = typeof CheckpointOption.Type;
+
+export const CheckpointDecisionOption = Schema.Struct({
+  ...CheckpointOption.fields,
+  outcome: CheckpointOutcome,
+  hint: Schema.optional(Schema.String.check(Schema.isMaxLength(160))),
+});
+export type CheckpointDecisionOption = typeof CheckpointDecisionOption.Type;
+
+export const CheckpointFormField = Schema.Union([
+  Schema.Struct({
+    // Rendered as the submit buttons; its chosen option carries the outcome.
+    kind: Schema.Literal("decision"),
+    key: CheckpointFieldKey,
+    label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+    options: Schema.NonEmptyArray(CheckpointDecisionOption),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("select"),
+    key: CheckpointFieldKey,
+    label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    options: Schema.NonEmptyArray(CheckpointOption),
+    required: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("text"),
+    key: CheckpointFieldKey,
+    label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    placeholder: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
+    required: Schema.optional(Schema.Boolean),
+    maxLength: Schema.optional(Schema.Int),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("checklist"),
+    key: CheckpointFieldKey,
+    label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    items: Schema.NonEmptyArray(CheckpointOption),
+    /** At least one item checked before a success outcome is allowed. */
+    required: Schema.optional(Schema.Boolean),
+    /** Every item checked before a success outcome is allowed. */
+    requireAll: Schema.optional(Schema.Boolean),
+  }),
+]);
+export type CheckpointFormField = typeof CheckpointFormField.Type;
+
+export const CheckpointForm = Schema.Struct({
+  fields: Schema.NonEmptyArray(CheckpointFormField),
+});
+export type CheckpointForm = typeof CheckpointForm.Type;
+
+/**
+ * Answer values: select/text produce a string, checklist an array of checked
+ * option values.
+ *
+ * The caps are schema-level on purpose — they bound decode cost before any
+ * handler code runs. The engine still re-validates per-field limits against the
+ * form SNAPSHOT, because these bounds are the outer envelope, not the form's
+ * own rules.
+ */
+export const CheckpointAnswerValue = Schema.Union([
+  Schema.String.check(Schema.isMaxLength(2000)),
+  Schema.Array(Schema.String.check(Schema.isMaxLength(40))).check(Schema.isMaxLength(15)),
+]);
+export type CheckpointAnswerValue = typeof CheckpointAnswerValue.Type;
+
+export const CheckpointAnswers = Schema.Record(CheckpointFieldKey, CheckpointAnswerValue);
+export type CheckpointAnswers = typeof CheckpointAnswers.Type;
+
 export const ApprovalStep = Schema.Struct({
   key: StepKey,
   type: Schema.Literal("approval"),
   prompt: Schema.optional(Schema.String),
+  /** Turns the bare Approve/Reject pair into a structured checkpoint. */
+  form: Schema.optional(CheckpointForm),
   on: Schema.optional(StepRouting),
 });
 
@@ -995,12 +1082,29 @@ export const WorkflowEvent = Schema.Union([
       providerRequestId: Schema.optional(ApprovalRequestId),
       providerResponseKind: Schema.optional(Schema.Literals(["request", "user-input"])),
       providerQuestionId: Schema.optional(Schema.String),
+      /**
+       * The step's form as of pipeline execution. THIS event is the authority
+       * for rendering and validating this wait — never the current board
+       * definition, which may have been edited since. Mirrors actionsSnapshot
+       * on TicketParked.
+       */
+      formSnapshot: Schema.optional(CheckpointForm),
     }),
   }),
   Schema.Struct({
     ...EventBase,
     type: Schema.Literal("StepUserResolved"),
-    payload: Schema.Struct({ stepRunId: StepRunId }),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      /**
+       * Stamped ONLY for native approval waits. Provider-originated waits get
+       * their real terminal later from the provider turn, and stamping one here
+       * would let boot replay fabricate the wrong terminal.
+       */
+      outcome: Schema.optional(CheckpointOutcome),
+      decision: Schema.optional(Schema.String),
+      answers: Schema.optional(CheckpointAnswers),
+    }),
   }),
   Schema.Struct({
     ...EventBase,
@@ -1187,7 +1291,13 @@ export const WorkflowGetTicketTimelineResult = Schema.Struct({
   /** Newest window, returned in ASCENDING order so the client folds forward. */
   events: Schema.Array(WorkflowTimelineItem),
   truncated: Schema.Boolean,
-  /** Present exactly when `truncated` — the state to fold forward from. */
+  /**
+   * The state to fold forward from, present when `truncated` AND the head could
+   * be folded. It can be absent on a truncated timeline whose head contains no
+   * TicketCreated — a partial stream. Clients must render the event list without
+   * an as-of state in that case rather than assuming the pair always arrives
+   * together.
+   */
   base: Schema.optional(WorkflowTimelineBase),
 });
 
@@ -1486,6 +1596,11 @@ export const WorkflowStepRunView = Schema.Struct({
   stepRunId: StepRunId,
   stepKey: StepKey,
   stepType: WorkflowStepType,
+  // Checkpoint form: the snapshot is present from the awaiting event onward, and
+  // the decision/answers once a reviewer has submitted.
+  form: Schema.optional(CheckpointForm),
+  formDecision: Schema.optional(Schema.String),
+  formAnswers: Schema.optional(CheckpointAnswers),
   attempt: Schema.optional(Schema.Int),
   status: StepRunStatus,
   waitingReason: Schema.NullOr(Schema.String),

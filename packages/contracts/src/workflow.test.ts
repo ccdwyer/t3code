@@ -804,6 +804,104 @@ describe("WorkflowEvent", () => {
     }),
   );
 
+  it.effect("decodes a pre-checkpoint StepAwaitingUser / StepUserResolved pair", () =>
+    Effect.gen(function* () {
+      // Every wait persisted before checkpoint forms looks like this. The new
+      // fields must not make old streams undecodable.
+      const awaiting = yield* decodeWorkflowEvent({
+        type: "StepAwaitingUser",
+        eventId: "evt-await",
+        ticketId: "t-1",
+        streamVersion: 3,
+        occurredAt: "2026-07-25T00:00:00.000Z",
+        payload: { stepRunId: "sr-1", waitingReason: "approval" },
+      });
+      assert.equal(awaiting.type, "StepAwaitingUser");
+      if (awaiting.type === "StepAwaitingUser") {
+        assert.isUndefined(awaiting.payload.formSnapshot);
+      }
+
+      const resolved = yield* decodeWorkflowEvent({
+        type: "StepUserResolved",
+        eventId: "evt-resolved",
+        ticketId: "t-1",
+        streamVersion: 4,
+        occurredAt: "2026-07-25T00:00:01.000Z",
+        payload: { stepRunId: "sr-1" },
+      });
+      assert.equal(resolved.type, "StepUserResolved");
+      if (resolved.type === "StepUserResolved") {
+        assert.isUndefined(resolved.payload.outcome);
+        assert.isUndefined(resolved.payload.answers);
+      }
+    }),
+  );
+
+  it.effect("decodes a checkpoint wait and its structured resolution", () =>
+    Effect.gen(function* () {
+      const awaiting = yield* decodeWorkflowEvent({
+        type: "StepAwaitingUser",
+        eventId: "evt-await-form",
+        ticketId: "t-1",
+        streamVersion: 3,
+        occurredAt: "2026-07-25T00:00:00.000Z",
+        payload: {
+          stepRunId: "sr-1",
+          waitingReason: "approval",
+          formSnapshot: {
+            fields: [
+              {
+                kind: "decision",
+                key: "verdict",
+                options: [
+                  { value: "ship", label: "Ship it", outcome: "success" },
+                  { value: "changes", label: "Needs changes", outcome: "failure" },
+                ],
+              },
+              { kind: "text", key: "why", label: "Why?" },
+            ],
+          },
+        },
+      });
+      assert.equal(awaiting.type, "StepAwaitingUser");
+
+      const resolved = yield* decodeWorkflowEvent({
+        type: "StepUserResolved",
+        eventId: "evt-resolved-form",
+        ticketId: "t-1",
+        streamVersion: 4,
+        occurredAt: "2026-07-25T00:00:01.000Z",
+        payload: {
+          stepRunId: "sr-1",
+          outcome: "failure",
+          decision: "changes",
+          answers: { why: "tests missing", checks: ["a", "b"] },
+        },
+      });
+      assert.equal(resolved.type, "StepUserResolved");
+      if (resolved.type === "StepUserResolved") {
+        assert.equal(resolved.payload.outcome, "failure");
+        assert.equal(resolved.payload.decision, "changes");
+        assert.deepStrictEqual(resolved.payload.answers?.["checks" as never], ["a", "b"]);
+      }
+    }),
+  );
+
+  it.effect("rejects a field key that could not be addressed from a JsonLogic path", () =>
+    Effect.gen(function* () {
+      const bad = yield* decodeWorkflowEvent({
+        type: "StepUserResolved",
+        eventId: "evt-bad-key",
+        ticketId: "t-1",
+        streamVersion: 4,
+        occurredAt: "2026-07-25T00:00:01.000Z",
+        // A dot would break `answers.<key>` addressing in lane transitions.
+        payload: { stepRunId: "sr-1", answers: { "why.not": "x" } },
+      }).pipe(Effect.flip);
+      assert.isDefined(bad);
+    }),
+  );
+
   it.effect("decodes a pre-replay TicketCreated event that carries no forkOf", () =>
     Effect.gen(function* () {
       // Every event persisted before time-travel replay looks exactly like this.

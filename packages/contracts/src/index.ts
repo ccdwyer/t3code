@@ -32,4 +32,5 @@ export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./workflow.ts";
 export * from "./workflowReplay.ts";
+export * from "./checkpointForm.ts";
 export * from "./outbound.ts";

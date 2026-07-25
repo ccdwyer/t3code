@@ -3108,13 +3108,18 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
     [WORKFLOW_WS_METHODS.getTicketTimeline]: (input: typeof WorkflowGetTicketTimelineInput.Type) =>
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.getTicketTimeline,
-        buildTicketTimeline(deps.eventStore ?? {}, input.ticketId),
+        buildTicketTimeline(
+          deps.eventStore ?? {},
+          input.ticketId,
+          undefined,
+          deps.sql?.withTransaction,
+        ),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.getBoardTimeline]: (input: typeof WorkflowGetBoardTimelineInput.Type) =>
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.getBoardTimeline,
-        buildBoardTimeline(deps.eventStore ?? {}, input),
+        buildBoardTimeline(deps.eventStore ?? {}, input, deps.sql?.withTransaction),
         {
           "rpc.aggregate": "workflow",
         },

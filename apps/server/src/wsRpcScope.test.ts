@@ -1,4 +1,4 @@
-import { WsRpcGroup } from "@t3tools/contracts";
+import { AuthWorkflowReadScope, WORKFLOW_WS_METHODS, WsRpcGroup } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 
 import { RPC_REQUIRED_SCOPE } from "./ws.ts";
@@ -21,5 +21,22 @@ it("every WsRpcGroup method has a declared authorization scope in RPC_REQUIRED_S
     missing,
     [],
     `The following WsRpcGroup methods are missing from RPC_REQUIRED_SCOPE:\n  ${missing.join("\n  ")}`,
+  );
+});
+
+/**
+ * The generic guard above only proves a scope EXISTS. These read-only history
+ * methods must specifically require the workflow READ scope: a mis-wire to the
+ * operate scope would silently demand write permission to look at history, and
+ * a mis-wire the other way would expose it to anyone.
+ */
+it("the timeline reads require the workflow read scope specifically", () => {
+  assert.strictEqual(
+    RPC_REQUIRED_SCOPE.get(WORKFLOW_WS_METHODS.getTicketTimeline),
+    AuthWorkflowReadScope,
+  );
+  assert.strictEqual(
+    RPC_REQUIRED_SCOPE.get(WORKFLOW_WS_METHODS.getBoardTimeline),
+    AuthWorkflowReadScope,
   );
 });

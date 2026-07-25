@@ -114,6 +114,15 @@ export interface TicketRow {
   readonly parkOrigin?: string | null;
   // Current step key label; null when no pipeline step is running.
   readonly currentStepLabel?: string | null;
+  // Fork-join origin on child tickets (JSON from projection_ticket.fork_origin).
+  readonly forkOrigin?: {
+    readonly parentTicketId: string;
+    readonly stepRunId: string;
+    readonly childKey: string;
+    readonly forkDepth: number;
+    readonly rootTicketId: string;
+  } | null;
+  readonly forkRootTicketId?: string | null;
   // SLA breach fields — set while the current lane entry is over budget.
   // Optional so SELECTs that omit the columns remain type-compatible.
   readonly slaBreachedAt?: string | null;

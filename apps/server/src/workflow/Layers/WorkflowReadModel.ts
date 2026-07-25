@@ -1027,6 +1027,8 @@ const make = Effect.gen(function* () {
           sla_breached_at AS "slaBreachedAt",
           sla_breached_reason AS "slaBreachedReason",
           sla_breached_entry_token AS "slaBreachedEntryToken",
+          fork_origin AS "forkOriginJson",
+          fork_root_ticket_id AS "forkRootTicketId",
           wsm.source_metadata_json AS "sourceMetadataJson"
         FROM projection_ticket
         LEFT JOIN workflow_pr_state AS pr
@@ -1035,13 +1037,39 @@ const make = Effect.gen(function* () {
           ON wsm.ticket_id = projection_ticket.ticket_id
         WHERE projection_ticket.ticket_id = ${ticketId}
       `);
-      const rawTicket = ticketRows[0];
+      const rawTicket = ticketRows[0] as
+        | (TicketDependencySqlRow & {
+            readonly forkOriginJson?: string | null;
+            readonly forkRootTicketId?: string | null;
+          })
+        | undefined;
       if (!rawTicket) {
         return null;
       }
       yield* warnUnrecognizedPrStates(ticketRows);
       const currentLane = yield* resolveCurrentLane(rawTicket.boardId, rawTicket.currentLaneKey);
-      const ticket: TicketRow = { ...withDependencyFields(rawTicket), currentLane };
+      let forkOrigin: TicketRow["forkOrigin"] = null;
+      if (typeof rawTicket.forkOriginJson === "string" && rawTicket.forkOriginJson.length > 0) {
+        try {
+          const parsed = JSON.parse(rawTicket.forkOriginJson) as TicketRow["forkOrigin"];
+          if (
+            parsed &&
+            typeof parsed.parentTicketId === "string" &&
+            typeof parsed.forkDepth === "number" &&
+            typeof parsed.rootTicketId === "string"
+          ) {
+            forkOrigin = parsed;
+          }
+        } catch {
+          forkOrigin = null;
+        }
+      }
+      const ticket: TicketRow = {
+        ...withDependencyFields(rawTicket),
+        currentLane,
+        forkOrigin,
+        forkRootTicketId: rawTicket.forkRootTicketId ?? null,
+      };
 
       const syncedSource = parseSyncedSource(rawTicket.sourceMetadataJson);
 

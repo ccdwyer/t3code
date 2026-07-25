@@ -1049,17 +1049,9 @@ const make = Effect.gen(function* () {
         const parentDetail = yield* read.getTicketDetail(ticketId);
         const parentTitle = parentDetail?.ticket.title ?? "ticket";
         const parentDescription = parentDetail?.ticket.description ?? "";
-        // Nested-fork lineage: propagate root + depth from parent forkOrigin.
-        const parentOrigin = (
-          parentDetail?.ticket as
-            | {
-                readonly forkOrigin?: {
-                  readonly rootTicketId?: string;
-                  readonly forkDepth?: number;
-                };
-              }
-            | undefined
-        )?.forkOrigin;
+        // Nested-fork lineage: propagate root + depth from parent forkOrigin
+        // (WorkflowReadModel surfaces projection_ticket.fork_origin).
+        const parentOrigin = parentDetail?.ticket.forkOrigin;
         const rootTicketId = (parentOrigin?.rootTicketId ?? (ticketId as string)) as TicketId;
         const forkDepth = nextForkDepth(parentOrigin?.forkDepth);
         if (exceedsForkDepth(forkDepth)) {

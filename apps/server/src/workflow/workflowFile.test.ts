@@ -2072,4 +2072,63 @@ describe("lintWorkflowDefinition handoff references", () => {
       );
     }),
   );
+
+  it("rejects outputContract without captureOutput", () => {
+    const errors = lintWorkflowDefinition(
+      base([
+        {
+          key: "a",
+          name: "A",
+          entry: "auto",
+          pipeline: [
+            {
+              key: "review",
+              type: "agent",
+              agent: { instance: "claude_main", model: "sonnet" },
+              instruction: "review",
+              outputContract: { fields: { verdict: { type: "string" } } },
+            },
+          ],
+          on: { success: "done" },
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ]),
+      ctx,
+    );
+    assert.isTrue(errors.some((e) => e.code === "invalid_output_contract"));
+  });
+
+  it("accepts a valid outputContract with captureOutput", () => {
+    const errors = lintWorkflowDefinition(
+      base([
+        {
+          key: "a",
+          name: "A",
+          entry: "auto",
+          pipeline: [
+            {
+              key: "review",
+              type: "agent",
+              agent: { instance: "claude_main", model: "sonnet" },
+              instruction: "review",
+              captureOutput: true,
+              outputContract: {
+                fields: {
+                  verdict: { type: "enum", values: ["pass", "fail"] },
+                  summary: { type: "string" },
+                },
+              },
+            },
+          ],
+          on: { success: "done" },
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ]),
+      ctx,
+    );
+    assert.deepEqual(
+      errors.filter((e) => e.code === "invalid_output_contract"),
+      [],
+    );
+  });
 });

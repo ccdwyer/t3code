@@ -66,6 +66,12 @@ import {
 import { ticketBaseRef } from "../ticketRefs.ts";
 import { agentKey as deriveAgentKey } from "../agentSessionKey.ts";
 import { appendCaptureOutputInstruction } from "../steerHelpers.ts";
+import {
+  renderContractInstruction,
+  renderRepairPrompt,
+  validateStepOutput,
+  type OutputDiagnostic,
+} from "../stepOutputContract.ts";
 
 const toExecutorError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });
@@ -680,18 +686,34 @@ const make = Effect.gen(function* () {
         appendedDiscussionBlock !== ""
           ? `${instructionWithHandoff}${appendedDiscussionBlock}`
           : instructionWithHandoff;
-      const instruction =
+      const contract =
+        step.captureOutput === true && step.outputContract !== undefined
+          ? step.outputContract
+          : undefined;
+      let instruction =
         step.captureOutput === true
           ? appendCaptureOutputInstruction(instructionWithDiscussion)
           : instructionWithDiscussion;
+      if (contract !== undefined) {
+        instruction = `${instruction}\n\n${renderContractInstruction(contract)}`;
+      }
       if (instruction.length > providerBudget) {
+        if (contract !== undefined) {
+          return {
+            _tag: "failed",
+            error: "output contract prompt exceeds provider budget",
+            retryable: false,
+          } satisfies StepOutcome;
+        }
         yield* Effect.logWarning(
           `workflow step ${step.key} prompt (${instruction.length}) exceeds provider budget (${providerBudget}) after spilling`,
         );
       }
       const runTurn = (
         turnIds: { readonly dispatchId: string; readonly threadId: string },
+        turnInstruction: string,
         titleSuffix: string,
+        dispatchSeq = 0,
       ) =>
         Effect.gen(function* () {
           const started = yield* dispatch.ensureStarted({
@@ -701,7 +723,7 @@ const make = Effect.gen(function* () {
             threadId: turnIds.threadId as never,
             providerInstance: step.agent.instance as string,
             model: step.agent.model as string,
-            instruction,
+            instruction: turnInstruction,
             worktreePath: worktree.path,
             ...(step.agent.options === undefined ? {} : { options: step.agent.options }),
             ...(worktree.projectId === undefined ? {} : { projectId: worktree.projectId }),
@@ -709,6 +731,7 @@ const make = Effect.gen(function* () {
             // Dispatch-time metadata for steer validation (TOCTOU-safe).
             captureOutput: step.captureOutput === true,
             panelSize: step.panel ?? 1,
+            dispatchSeq,
           });
           const terminal = yield* dispatch.awaitTerminal(
             turnIds.dispatchId as never,
@@ -722,12 +745,16 @@ const make = Effect.gen(function* () {
 
       const panelSize = step.panel ?? 0;
       if (panelSize >= 2 && step.captureOutput === true) {
-        return yield* runReviewPanel(ctx, step, panelSize, runTurn);
+        return yield* runReviewPanel(ctx, step, panelSize, (ids, suffix) =>
+          runTurn(ids, instruction, suffix, 0),
+        );
       }
 
       const result = yield* runTurn(
         { dispatchId: dispatchId as string, threadId: threadId as string },
+        instruction,
         "",
+        0,
       );
 
       if (result.terminal.ok) {
@@ -738,17 +765,133 @@ const make = Effect.gen(function* () {
             threadId: threadId as never,
             turnId: result.turnId,
           });
-          if (output === undefined) {
+          const diagnostic: OutputDiagnostic =
+            output === undefined ? { failure: "no_block" } : { output: output as object };
+
+          if (contract === undefined) {
+            if (output === undefined) {
+              return {
+                _tag: "failed",
+                error: "missing or invalid structured output",
+                ...(usage === undefined ? {} : { usage }),
+              } satisfies StepOutcome;
+            }
             return {
-              _tag: "failed",
-              error: "missing or invalid structured output",
+              _tag: "completed",
+              output,
               ...(usage === undefined ? {} : { usage }),
             } satisfies StepOutcome;
           }
+
+          // Contract path: validate → one repair → fail.
+          let errors = validateStepOutput(contract, diagnostic);
+          if (errors.length === 0 && output !== undefined) {
+            return {
+              _tag: "completed",
+              output,
+              ...(usage === undefined ? {} : { usage }),
+            } satisfies StepOutcome;
+          }
+          if (errors.length === 0) {
+            errors = ["no fenced json block found"];
+          }
+
+          yield* committer
+            .commit({
+              type: "StepOutputInvalid",
+              eventId: (yield* ids.eventId()) as never,
+              ticketId: ctx.ticketId,
+              occurredAt: (yield* DateTime.now.pipe(Effect.map(DateTime.formatIso))) as never,
+              payload: {
+                stepRunId: ctx.stepRunId,
+                phase: "initial",
+                errors: errors as [string, ...string[]],
+              },
+            })
+            .pipe(Effect.catch(() => Effect.void));
+
+          const repairPrompt = renderRepairPrompt(contract, diagnostic, errors, providerBudget);
+          if (repairPrompt === null) {
+            return {
+              _tag: "failed",
+              error: `output contract violation (no repair budget): ${errors.join("; ")}`,
+              retryable: false,
+              contractViolation: true,
+              ...(usage === undefined ? {} : { usage }),
+            } satisfies StepOutcome;
+          }
+
+          const repairDispatchId = yield* ids.eventId();
+          const repairResult = yield* runTurn(
+            {
+              dispatchId: repairDispatchId as string,
+              threadId: threadId as string,
+            },
+            repairPrompt,
+            " (output repair)",
+            1,
+          );
+          if ("awaitingUser" in repairResult.terminal) {
+            yield* cleanupStepSession(repairResult.threadId, repairResult.turnId);
+            yield* dispatch.confirmStep(ctx.stepRunId).pipe(Effect.catch(() => Effect.void));
+            const failUsage = yield* readStepUsage(threadId as string);
+            return {
+              _tag: "failed",
+              error: `output contract violation (repair awaited user): ${errors.join("; ")}`,
+              contractViolation: true,
+              ...(failUsage === undefined ? {} : { usage: failUsage }),
+            } satisfies StepOutcome;
+          }
+          if (!repairResult.terminal.ok) {
+            yield* cleanupStepSession(repairResult.threadId, repairResult.turnId);
+            const failUsage = yield* readStepUsage(threadId as string);
+            return {
+              _tag: "failed",
+              error: repairResult.terminal.error ?? "repair turn failed",
+              contractViolation: true,
+              ...(failUsage === undefined ? {} : { usage: failUsage }),
+            } satisfies StepOutcome;
+          }
+
+          const repairedOutput = yield* capturedOutputs.read({
+            stepRunId: ctx.stepRunId,
+            threadId: threadId as never,
+            turnId: repairResult.turnId,
+          });
+          const repairDiagnostic: OutputDiagnostic =
+            repairedOutput === undefined
+              ? { failure: "no_block" }
+              : { output: repairedOutput as object };
+          const repairErrors = validateStepOutput(contract, repairDiagnostic);
+          const finalUsage = yield* readStepUsage(threadId as string);
+          if (repairErrors.length === 0 && repairedOutput !== undefined) {
+            return {
+              _tag: "completed",
+              output: repairedOutput,
+              outputRepaired: true,
+              ...(finalUsage === undefined ? {} : { usage: finalUsage }),
+            } satisfies StepOutcome;
+          }
+          const finalErrors =
+            repairErrors.length > 0 ? repairErrors : (["no fenced json block found"] as const);
+          yield* committer
+            .commit({
+              type: "StepOutputInvalid",
+              eventId: (yield* ids.eventId()) as never,
+              ticketId: ctx.ticketId,
+              occurredAt: (yield* DateTime.now.pipe(Effect.map(DateTime.formatIso))) as never,
+              payload: {
+                stepRunId: ctx.stepRunId,
+                phase: "repair",
+                errors: [...finalErrors] as [string, ...string[]],
+              },
+            })
+            .pipe(Effect.catch(() => Effect.void));
           return {
-            _tag: "completed",
-            output,
-            ...(usage === undefined ? {} : { usage }),
+            _tag: "failed",
+            error: `output contract violation after repair: ${finalErrors.join("; ")}`,
+            contractViolation: true,
+            ...(finalUsage === undefined ? {} : { usage: finalUsage }),
           } satisfies StepOutcome;
         }
         return {

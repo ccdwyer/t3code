@@ -209,6 +209,39 @@ export const StepRouting = Schema.Struct({
 });
 export type StepRouting = typeof StepRouting.Type;
 
+/** Field name for agent-step output contracts (no prototype-ish names). */
+export const StepOutputFieldName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+);
+export type StepOutputFieldName = typeof StepOutputFieldName.Type;
+
+export const StepOutputFieldType = Schema.Literals([
+  "string",
+  "number",
+  "boolean",
+  "enum",
+  "string[]",
+]);
+export type StepOutputFieldType = typeof StepOutputFieldType.Type;
+
+export const StepOutputContractField = Schema.Struct({
+  type: StepOutputFieldType,
+  // Absent = required. `required: false` marks the field optional.
+  required: Schema.optional(Schema.Boolean),
+  // enum only: allowed string values (no triple-backtick — would break fences).
+  values: Schema.optional(
+    Schema.NonEmptyArray(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  ),
+});
+export type StepOutputContractField = typeof StepOutputContractField.Type;
+
+export const StepOutputContract = Schema.Struct({
+  fields: Schema.Record(StepOutputFieldName, StepOutputContractField),
+  // Absent/true = unknown keys allowed. false = reject extras.
+  allowUnknown: Schema.optional(Schema.Boolean),
+});
+export type StepOutputContract = typeof StepOutputContract.Type;
+
 export const AgentStep = Schema.Struct({
   key: StepKey,
   type: Schema.Literal("agent"),
@@ -223,6 +256,8 @@ export const AgentStep = Schema.Struct({
   // take the majority verdict from their captured outputs. Requires
   // captureOutput; lint enforces 2..5.
   panel: Schema.optional(Schema.Int),
+  // Declared shape for captureOutput JSON. Requires captureOutput.
+  outputContract: Schema.optional(StepOutputContract),
   retry: Schema.optional(StepRetryPolicy),
   on: Schema.optional(StepRouting),
 });
@@ -438,6 +473,7 @@ export const WorkflowLintCode = Schema.Union([
   Schema.Literal("invalid_continue_session"),
   Schema.Literal("invalid_handoff_reference"),
   Schema.Literal("invalid_sla"),
+  Schema.Literal("invalid_output_contract"),
 ]);
 export type WorkflowLintCode = typeof WorkflowLintCode.Type;
 
@@ -793,6 +829,8 @@ export const WorkflowEvent = Schema.Union([
       stepRunId: StepRunId,
       output: Schema.optional(Schema.Unknown),
       usage: Schema.optional(WorkflowStepUsage),
+      // True when a contract repair turn produced the final accepted output.
+      outputRepaired: Schema.optional(Schema.Boolean),
     }),
   }),
   Schema.Struct({
@@ -805,6 +843,17 @@ export const WorkflowEvent = Schema.Union([
       // rejections/cancellations; absent means retry-eligible.
       retryable: Schema.optional(Schema.Boolean),
       usage: Schema.optional(WorkflowStepUsage),
+      // Discriminates projection: contract failures keep validation error list.
+      contractViolation: Schema.optional(Schema.Boolean),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepOutputInvalid"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      phase: Schema.Literals(["initial", "repair"]),
+      errors: Schema.NonEmptyArray(Schema.String),
     }),
   }),
   Schema.Struct({
@@ -899,6 +948,7 @@ export const StepOutcome = Schema.Union([
   Schema.TaggedStruct("completed", {
     output: Schema.optional(Schema.Unknown),
     usage: Schema.optional(WorkflowStepUsage),
+    outputRepaired: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("failed", {
     error: Schema.String,
@@ -906,6 +956,7 @@ export const StepOutcome = Schema.Union([
     // cancellations); absent/true failures are eligible for step retry.
     retryable: Schema.optional(Schema.Boolean),
     usage: Schema.optional(WorkflowStepUsage),
+    contractViolation: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("blocked", { reason: Schema.String }),
   Schema.TaggedStruct("awaiting_user", {
@@ -1167,6 +1218,13 @@ export const WorkflowStepRunView = Schema.Struct({
   canSteer: Schema.optional(Schema.Boolean),
   // When set, composer is visible but disabled with a reason tooltip.
   steerBlockedReason: Schema.optional(Schema.Literals(["awaiting_user", "delivering"])),
+  // Output-contract validation surface (repaired chip / error list).
+  outputValidation: Schema.optional(
+    Schema.Struct({
+      repaired: Schema.Boolean,
+      errors: Schema.Array(Schema.String),
+    }),
+  ),
 });
 export type WorkflowStepRunView = typeof WorkflowStepRunView.Type;
 

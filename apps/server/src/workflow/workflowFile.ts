@@ -17,6 +17,7 @@ import {
 } from "./instructionPath.ts";
 import { findHandoffReferences, unknownTicketPlaceholders } from "./instructionTemplate.ts";
 import { inspectJsonLogicRule } from "./jsonLogicRule.ts";
+import { lintContractShape } from "./stepOutputContract.ts";
 
 export type LintCode =
   | "duplicate_lane_key"
@@ -42,7 +43,8 @@ export type LintCode =
   | "duplicate_outbound_id"
   | "invalid_continue_session"
   | "invalid_handoff_reference"
-  | "invalid_sla";
+  | "invalid_sla"
+  | "invalid_output_contract";
 
 export interface LintError {
   readonly code: LintCode;
@@ -359,6 +361,44 @@ export const lintWorkflowDefinition = (
             stepKey,
             message: `Step "${stepKey}" panel requires captureOutput so verdicts can be compared`,
           });
+        }
+      }
+
+      if (step.type === "agent" && step.outputContract !== undefined) {
+        if (step.captureOutput !== true) {
+          errors.push({
+            code: "invalid_output_contract",
+            laneKey,
+            stepKey,
+            message: `Step "${stepKey}" outputContract requires captureOutput`,
+          });
+        }
+        for (const msg of lintContractShape(step.outputContract)) {
+          errors.push({
+            code: "invalid_output_contract",
+            laneKey,
+            stepKey,
+            message: `Step "${stepKey}" ${msg}`,
+          });
+        }
+        if (step.panel !== undefined && step.panel >= 2) {
+          const fields = step.outputContract.fields;
+          const keys = Object.keys(fields);
+          const verdict = fields.verdict;
+          const verdictOk =
+            keys.length === 1 &&
+            verdict !== undefined &&
+            verdict.type === "enum" &&
+            verdict.required !== false &&
+            (verdict.values?.length ?? 0) > 0;
+          if (!verdictOk) {
+            errors.push({
+              code: "invalid_output_contract",
+              laneKey,
+              stepKey,
+              message: `Step "${stepKey}" panel+outputContract must declare exactly one required enum field "verdict"`,
+            });
+          }
         }
       }
 

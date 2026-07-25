@@ -175,6 +175,7 @@ const make = Effect.gen(function* () {
           runtime_mode,
           capture_output,
           panel_size,
+          dispatch_seq,
           status,
           created_at
         )
@@ -193,6 +194,7 @@ const make = Effect.gen(function* () {
           ${req.runtimeMode ?? null},
           ${req.captureOutput === undefined ? null : req.captureOutput ? 1 : 0},
           ${req.panelSize ?? null},
+          ${req.dispatchSeq ?? 0},
           'pending',
           ${createdAt}
         )
@@ -226,7 +228,7 @@ const make = Effect.gen(function* () {
         turn_id AS "turnId"
       FROM workflow_dispatch_outbox
       WHERE step_run_id = ${stepRunId}
-      ORDER BY created_at DESC, dispatch_id DESC
+      ORDER BY dispatch_seq DESC, created_at DESC, dispatch_id DESC
       LIMIT 1
     `).pipe(
       Effect.map((rows) => {

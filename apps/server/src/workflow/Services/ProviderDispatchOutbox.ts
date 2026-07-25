@@ -35,6 +35,8 @@ export interface DispatchRequest {
   /** Dispatch-time step metadata for steer validation (TOCTOU-safe). */
   readonly captureOutput?: boolean;
   readonly panelSize?: number;
+  /** 0 = initial (and panel members); 1 = output-contract repair. */
+  readonly dispatchSeq?: number;
 }
 
 export interface ProviderTurnPortShape {

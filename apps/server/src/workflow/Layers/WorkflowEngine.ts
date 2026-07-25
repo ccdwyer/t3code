@@ -42,6 +42,7 @@ import { PredicateEvaluator } from "../Services/PredicateEvaluator.ts";
 import { ProviderDispatchOutbox, ProviderTurnPort } from "../Services/ProviderDispatchOutbox.ts";
 import { ProviderResponsePort } from "../Services/ProviderResponsePort.ts";
 import { frameSteerText, STEER_REJECTION } from "../steerHelpers.ts";
+import { classifyFallback } from "../failureClass.ts";
 import { ScriptCancelRegistry } from "../Services/ScriptCancelRegistry.ts";
 import { StepExecutor } from "../Services/StepExecutor.ts";
 import { StepUsageReader } from "../Services/StepUsageReader.ts";
@@ -142,12 +143,14 @@ const stepFailedPayload = (
   usage?: WorkflowStepUsage,
   retryable?: boolean,
   contractViolation?: boolean,
+  failureClass?: import("@t3tools/contracts").WorkflowFailureClass,
 ) => ({
   stepRunId,
   error,
   ...(retryable === undefined ? {} : { retryable }),
   ...(usage === undefined ? {} : { usage }),
   ...(contractViolation === undefined ? {} : { contractViolation }),
+  ...(failureClass === undefined ? {} : { failureClass }),
 });
 
 const MAX_TICKET_ANSWER_BODY_LENGTH = MAX_TICKET_MESSAGE_BODY_LENGTH;
@@ -1093,6 +1096,7 @@ const make = Effect.gen(function* () {
             outcome.usage,
             outcome.retryable === false ? false : undefined,
             outcome.contractViolation === true ? true : undefined,
+            outcome.failureClass ?? classifyFallback(outcome.error, outcome.retryable),
           ),
         });
         return { result: "failed", noRetry: outcome.retryable === false, detail: outcome.error };

@@ -650,6 +650,18 @@ export const WorkflowStepUsage = Schema.Struct({
 });
 export type WorkflowStepUsage = typeof WorkflowStepUsage.Type;
 
+/** Closed failure taxonomy for step failures (display + retry policy). */
+export const WorkflowFailureClass = Schema.Literals([
+  "agent_error",
+  "script_failure",
+  "timeout",
+  "human_rejection",
+  "user_cancelled",
+  "infra",
+  "unknown",
+]);
+export type WorkflowFailureClass = typeof WorkflowFailureClass.Type;
+
 export const WorkflowEvent = Schema.Union([
   Schema.Struct({
     ...EventBase,
@@ -845,6 +857,7 @@ export const WorkflowEvent = Schema.Union([
       usage: Schema.optional(WorkflowStepUsage),
       // Discriminates projection: contract failures keep validation error list.
       contractViolation: Schema.optional(Schema.Boolean),
+      failureClass: Schema.optional(WorkflowFailureClass),
     }),
   }),
   Schema.Struct({
@@ -957,6 +970,7 @@ export const StepOutcome = Schema.Union([
     retryable: Schema.optional(Schema.Boolean),
     usage: Schema.optional(WorkflowStepUsage),
     contractViolation: Schema.optional(Schema.Boolean),
+    failureClass: Schema.optional(WorkflowFailureClass),
   }),
   Schema.TaggedStruct("blocked", { reason: Schema.String }),
   Schema.TaggedStruct("awaiting_user", {

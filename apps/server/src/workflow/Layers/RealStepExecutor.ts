@@ -807,6 +807,7 @@ const make = Effect.gen(function* () {
               return {
                 _tag: "failed",
                 error: "missing or invalid structured output",
+                failureClass: "agent_error",
                 ...(usage === undefined ? {} : { usage }),
               } satisfies StepOutcome;
             }
@@ -851,6 +852,7 @@ const make = Effect.gen(function* () {
               error: `output contract violation (no repair budget): ${errors.join("; ")}`,
               retryable: false,
               contractViolation: true,
+              failureClass: "agent_error" as const,
               ...(usage === undefined ? {} : { usage }),
             } satisfies StepOutcome;
           }
@@ -873,6 +875,7 @@ const make = Effect.gen(function* () {
               _tag: "failed",
               error: `output contract violation (repair awaited user): ${errors.join("; ")}`,
               contractViolation: true,
+              failureClass: "agent_error" as const,
               ...(failUsage === undefined ? {} : { usage: failUsage }),
             } satisfies StepOutcome;
           }
@@ -883,6 +886,7 @@ const make = Effect.gen(function* () {
               _tag: "failed",
               error: repairResult.terminal.error ?? "repair turn failed",
               contractViolation: true,
+              failureClass: "agent_error" as const,
               ...(failUsage === undefined ? {} : { usage: failUsage }),
             } satisfies StepOutcome;
           }
@@ -928,6 +932,7 @@ const make = Effect.gen(function* () {
             _tag: "failed",
             error: `output contract violation after repair: ${finalErrors.join("; ")}`,
             contractViolation: true,
+            failureClass: "agent_error" as const,
             ...(finalUsage === undefined ? {} : { usage: finalUsage }),
           } satisfies StepOutcome;
         }
@@ -954,9 +959,13 @@ const make = Effect.gen(function* () {
       // is a harmless no-op.
       yield* cleanupStepSession(result.threadId, result.turnId);
       const failureUsage = yield* readStepUsage(threadId as string);
+      const turnErr = result.terminal.error ?? "turn failed";
+      const failureClass =
+        turnErr === "turn did not reach a terminal state before timeout" ? "infra" : "agent_error";
       return {
         _tag: "failed",
-        error: result.terminal.error ?? "turn failed",
+        error: turnErr,
+        failureClass,
         ...(failureUsage === undefined ? {} : { usage: failureUsage }),
       } satisfies StepOutcome;
     });

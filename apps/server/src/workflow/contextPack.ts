@@ -128,8 +128,23 @@ export const sectionsEqual = (
  * headings, and block-level HTML all require line-start position, so all of them
  * are dead at once — including the ones nobody has thought of yet. It also reads
  * honestly to the agent: this text is quoted material from another lane.
+ *
+ * Quoting runs at RENDER time, so the persisted body and the drawer keep the
+ * agent's original text; only the prompt copy is quoted. That also means the
+ * 8k/24k caps measure unquoted text and the rendered block is somewhat larger.
+ * That is deliberate: the caps govern what is stored and displayed, while the
+ * rendered size is governed by the provider budget, which drops the whole pack
+ * when it does not fit.
  */
-const BODY_QUOTE = "| ";
+/**
+ * U+2502 BOX DRAWINGS LIGHT VERTICAL, not `|` or `> `.
+ *
+ * `> ` would be worse than useless: a blockquote can CONTAIN a heading, so
+ * `> ### notes` still parses as one. A leading `|` is GFM table syntax, which
+ * would make a quoted body render as a mangled table. U+2502 is not markdown
+ * syntax of any kind, so it reads as a quote bar and parses as nothing.
+ */
+const BODY_QUOTE = "\u2502 ";
 
 export const escapeBodyStructure = (body: string): string =>
   body

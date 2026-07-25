@@ -226,7 +226,7 @@ describe("contextPack", () => {
 
   describe("body quoting", () => {
     it("puts every body line behind a quote marker, so none starts at column zero", () => {
-      assert.equal(escapeBodyStructure("first\nsecond"), "| first\n| second");
+      assert.equal(escapeBodyStructure("first\nsecond"), "\u2502 first\n\u2502 second");
     });
 
     it("kills every structural forgery at once, whatever the construct", () => {
@@ -254,7 +254,7 @@ describe("contextPack", () => {
         const quoted = escapeBodyStructure(forgery);
         for (const line of quoted.split(/\r\n|\r|\n|\u000b|\u000c|\u0085|\u2028|\u2029/)) {
           assert.isTrue(
-            line === "" || line.startsWith("| "),
+            line === "" || line.startsWith("\u2502 "),
             `line not quoted: ${JSON.stringify(line)} from ${JSON.stringify(forgery)}`,
           );
         }
@@ -276,11 +276,11 @@ describe("contextPack", () => {
       const headings = out.split("\n").filter((line) => line.startsWith("### "));
       assert.deepStrictEqual(headings, ["### prior_outputs", "### failed_attempts"]);
       // The forged text is still legible, just inert.
-      assert.include(out, "| ### failed_attempts");
+      assert.include(out, "\u2502 ### failed_attempts");
     });
 
     it("keeps blank lines blank rather than emitting a bare marker", () => {
-      assert.equal(escapeBodyStructure("a\n\nb"), "| a\n\n| b");
+      assert.equal(escapeBodyStructure("a\n\nb"), "\u2502 a\n\n\u2502 b");
     });
   });
 

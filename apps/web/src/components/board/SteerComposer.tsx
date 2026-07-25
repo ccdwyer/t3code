@@ -50,9 +50,12 @@ export function SteerComposer({
   const [submitting, setSubmitting] = useState(false);
   // Stable messageId per draft so transport retries exercise server
   // idempotency instead of double-steering. Regenerated on text change or
-  // after a successful accept.
-  const draftMessageIdRef = useRef(randomUUID());
+  // after a successful accept. Lazy init — do not call randomUUID on every render.
+  const draftMessageIdRef = useRef<string | null>(null);
   const draftTextRef = useRef("");
+  if (draftMessageIdRef.current === null) {
+    draftMessageIdRef.current = randomUUID();
+  }
 
   const blocked = step.steerBlockedReason;
   if (!isSteerComposerVisible({ canSteer: step.canSteer, steerBlockedReason: blocked })) {
@@ -77,7 +80,8 @@ export function SteerComposer({
       draftTextRef.current = trimmed;
       draftMessageIdRef.current = randomUUID();
     }
-    const messageId = draftMessageIdRef.current;
+    const messageId = draftMessageIdRef.current ?? randomUUID();
+    draftMessageIdRef.current = messageId;
     const outcome = await runSteerSubmit({
       text: trimmed,
       submit: () =>

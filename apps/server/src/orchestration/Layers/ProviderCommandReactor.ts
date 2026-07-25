@@ -1078,76 +1078,72 @@ const make = Effect.gen(function* () {
       readonly summary: string;
       readonly detail?: string;
       readonly turnId?: TurnId | null;
-    }) => {
-      const messageIdForPayload = steerMessageId ?? event.payload.messageId;
-      const appendViaOrchestration = Effect.all({
-        commandId: serverCommandId("workflow-steer-receipt"),
-        eventId: serverEventId(),
-      }).pipe(
-        Effect.flatMap(({ commandId, eventId }) =>
-          orchestrationEngine.dispatch({
-            type: "thread.activity.append",
-            commandId,
-            threadId: event.payload.threadId,
-            activity: {
-              id: eventId,
-              tone: input.tone,
-              kind: input.kind,
-              summary: input.summary,
-              payload: {
-                messageId: messageIdForPayload,
-                commandId: commandIdStr,
-                ...(input.detail !== undefined ? { detail: input.detail } : {}),
-              },
-              turnId: input.turnId ?? null,
-              createdAt: event.payload.createdAt,
-            },
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-      );
-      // Direct SQL fallback so a durable receipt always lands even if the
-      // orchestration dispatch fails after sendTurn already succeeded.
-      const appendViaSqlFallback = Option.isSome(sqlOption)
-        ? Effect.gen(function* () {
-            const activityId = yield* serverEventId();
-            const payloadJson = JSON.stringify({
+    }) =>
+      Effect.gen(function* () {
+        const messageIdForPayload = steerMessageId ?? event.payload.messageId;
+        // Stable ids across retries so a partial success does not double-append.
+        const commandId = yield* serverCommandId("workflow-steer-receipt");
+        const eventId = yield* serverEventId();
+        const appendViaOrchestration = orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: event.payload.threadId,
+          activity: {
+            id: eventId,
+            tone: input.tone,
+            kind: input.kind,
+            summary: input.summary,
+            payload: {
               messageId: messageIdForPayload,
               commandId: commandIdStr,
               ...(input.detail !== undefined ? { detail: input.detail } : {}),
-            });
-            yield* sqlOption.value`
-              INSERT INTO projection_thread_activities (
-                activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
-              ) VALUES (
-                ${activityId},
-                ${event.payload.threadId},
-                ${input.turnId ?? null},
-                ${input.tone},
-                ${input.kind},
-                ${input.summary},
-                ${payloadJson},
-                ${event.payload.createdAt}
-              )
-            `.pipe(Effect.asVoid);
-          })
-        : Effect.void;
+            },
+            turnId: input.turnId ?? null,
+            createdAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
+        // Direct SQL fallback so a durable receipt always lands even if the
+        // orchestration dispatch fails after sendTurn already succeeded.
+        const appendViaSqlFallback = Option.isSome(sqlOption)
+          ? Effect.gen(function* () {
+              const payloadJson = JSON.stringify({
+                messageId: messageIdForPayload,
+                commandId: commandIdStr,
+                ...(input.detail !== undefined ? { detail: input.detail } : {}),
+              });
+              yield* sqlOption.value`
+                INSERT OR IGNORE INTO projection_thread_activities (
+                  activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+                ) VALUES (
+                  ${eventId},
+                  ${event.payload.threadId},
+                  ${input.turnId ?? null},
+                  ${input.tone},
+                  ${input.kind},
+                  ${input.summary},
+                  ${payloadJson},
+                  ${event.payload.createdAt}
+                )
+              `.pipe(Effect.asVoid);
+            })
+          : Effect.void;
 
-      return appendViaOrchestration.pipe(
-        Effect.retry({ times: 2 }),
-        Effect.catchCause((cause) =>
-          appendViaSqlFallback.pipe(
-            Effect.catchCause((fallbackCause) =>
-              Effect.logError("workflow steer receipt append failed", {
-                kind: input.kind,
-                cause: Cause.pretty(cause),
-                fallbackCause: Cause.pretty(fallbackCause),
-              }),
+        yield* appendViaOrchestration.pipe(
+          Effect.retry({ times: 2 }),
+          Effect.catchCause((cause) =>
+            appendViaSqlFallback.pipe(
+              Effect.catchCause((fallbackCause) =>
+                Effect.logError("workflow steer receipt append failed", {
+                  kind: input.kind,
+                  cause: Cause.pretty(cause),
+                  fallbackCause: Cause.pretty(fallbackCause),
+                }),
+              ),
             ),
           ),
-        ),
-      );
-    };
+        );
+      });
 
     // Tombstone fence: drop steers reaped by the outbox grace reaper.
     if (isWorkflowSteer && steerMessageId !== null && Option.isSome(sqlOption)) {

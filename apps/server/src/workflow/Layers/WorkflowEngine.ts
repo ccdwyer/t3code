@@ -2496,15 +2496,20 @@ const make = Effect.gen(function* () {
             return;
           }
           if (kind === "workflow.steer.delivered") {
-            yield* outbox.ackSteerDelivered(target.dispatchId, input.messageId);
-            yield* commitStepSteeredOnce({
-              dispatchId: target.dispatchId as never,
-              ticketId: input.ticketId,
-              stepRunId: input.stepRunId as never,
-              messageId: input.messageId as never,
-              text: input.text,
-              outbox: outbox as never,
-            });
+            // Only commit StepSteered when the outbox actually staged/acks this
+            // message (false = reservation superseded / tombstoned — do not
+            // write an audit event the outbox refused to own).
+            const staged = yield* outbox.ackSteerDelivered(target.dispatchId, input.messageId);
+            if (staged) {
+              yield* commitStepSteeredOnce({
+                dispatchId: target.dispatchId as never,
+                ticketId: input.ticketId,
+                stepRunId: input.stepRunId as never,
+                messageId: input.messageId as never,
+                text: input.text,
+                outbox: outbox as never,
+              });
+            }
             return;
           }
           // Staged by awaitTerminal while we were waiting.
@@ -3316,21 +3321,19 @@ const make = Effect.gen(function* () {
   const abandonTicketDispatches = (ticketId: TicketId) =>
     Effect.gen(function* () {
       const confirmedAt = yield* nowIso;
-      // Confirm + tombstone any in-flight steer so the reactor fence drops a
-      // late provider delivery after park/move/cancel.
+      // Confirm + tombstone only unacked pending steers. Leave steer_delivered_*
+      // staged so recovery can still append StepSteered for deliveries already
+      // accepted by the provider (park/move must not erase the audit event).
       yield* wrapSql(sql`
         UPDATE workflow_dispatch_outbox
         SET status = 'confirmed',
             confirmed_at = ${confirmedAt},
             steer_tombstone_message_id = COALESCE(
               steer_pending_message_id,
-              steer_delivered_message_id,
               steer_tombstone_message_id
             ),
             steer_pending_message_id = NULL,
-            steer_pending_text = NULL,
-            steer_delivered_message_id = NULL,
-            steer_delivered_text = NULL
+            steer_pending_text = NULL
         WHERE ticket_id = ${ticketId}
           AND status IN ('pending', 'started')
       `);

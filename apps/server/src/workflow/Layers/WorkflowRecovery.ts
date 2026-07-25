@@ -409,6 +409,9 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  // Reset for re-dispatch of the original instruction. Leaves steer_delivered_*
+  // alone so recoverStagedSteerDeliveries (which runs first) can still append
+  // StepSteered for deliveries already acked before the crash.
   const clearSteerColumnsOnReset = (dispatchId: string) =>
     wrapSql(sql`
       UPDATE workflow_dispatch_outbox
@@ -417,8 +420,6 @@ const make = Effect.gen(function* () {
           turn_id = NULL,
           steer_pending_message_id = NULL,
           steer_pending_text = NULL,
-          steer_delivered_message_id = NULL,
-          steer_delivered_text = NULL,
           steer_tombstone_message_id = NULL,
           steer_accepted_at = NULL,
           steer_count = 0
@@ -1249,25 +1250,41 @@ const make = Effect.gen(function* () {
         WHERE event_type = 'StepSteered'
           AND json_extract(payload_json, '$.messageId') = ${row.messageId as string}
       `).pipe(Effect.orElseSucceed(() => [{ n: 0 }]));
-      if ((existing[0]?.n ?? 0) === 0) {
-        const occurredAt = yield* nowIso;
-        yield* committer
-          .commit({
-            type: "StepSteered",
-            eventId: yield* ids.eventId(),
-            ticketId: row.ticketId,
-            occurredAt,
-            payload: {
-              stepRunId: row.stepRunId,
+      if ((existing[0]?.n ?? 0) > 0) {
+        yield* outbox
+          .clearStagedSteerDelivery(row.dispatchId, row.messageId)
+          .pipe(Effect.catch(() => Effect.void));
+        continue;
+      }
+      const occurredAt = yield* nowIso;
+      // Only clear the stage after a successful commit — never drop durability
+      // on a transient write failure.
+      const committed = yield* committer
+        .commit({
+          type: "StepSteered",
+          eventId: yield* ids.eventId(),
+          ticketId: row.ticketId,
+          occurredAt,
+          payload: {
+            stepRunId: row.stepRunId,
+            messageId: row.messageId,
+            text: row.text,
+          },
+        } satisfies WorkflowEventInput)
+        .pipe(
+          Effect.as(true as const),
+          Effect.catch((cause) =>
+            Effect.logWarning("workflow.steer.recover-staged-commit-failed", {
               messageId: row.messageId,
-              text: row.text,
-            },
-          } satisfies WorkflowEventInput)
+              cause,
+            }).pipe(Effect.as(false as const)),
+          ),
+        );
+      if (committed) {
+        yield* outbox
+          .clearStagedSteerDelivery(row.dispatchId, row.messageId)
           .pipe(Effect.catch(() => Effect.void));
       }
-      yield* outbox
-        .clearStagedSteerDelivery(row.dispatchId, row.messageId)
-        .pipe(Effect.catch(() => Effect.void));
     }
   });
 
@@ -1276,6 +1293,9 @@ const make = Effect.gen(function* () {
       yield* recoverWorkflowWip;
       yield* approvals.resume();
       yield* settleInterruptedPanelDispatches;
+      // Drain staged StepSteered BEFORE recoverTerminalDispatches resets
+      // started rows (which used to wipe steer_delivered_* and lose the event).
+      yield* recoverStagedSteerDeliveries;
       yield* recoverTerminalDispatches;
       yield* recoverRunningScriptRuns;
       yield* recoverRunningMergeSteps;
@@ -1284,8 +1304,6 @@ const make = Effect.gen(function* () {
       // confirms rows, and those superseded steps are not this sweep's
       // target (completeRecoveredStep's token guard handles them anyway).
       yield* recoverConfirmedRunningSteps;
-      // Before re-dispatch: commit any staged steers left by a dead ack fiber.
-      yield* recoverStagedSteerDeliveries;
       yield* outbox.recoverPending();
       yield* monitorStartedDispatches;
       yield* resumeStrandedPipelines;

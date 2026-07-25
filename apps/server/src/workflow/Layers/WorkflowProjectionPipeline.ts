@@ -128,7 +128,7 @@ const make = Effect.gen(function* () {
           const forkOriginJson =
             event.payload.forkOrigin === undefined
               ? null
-              : JSON.stringify(event.payload.forkOrigin);
+              : encodeJsonString(event.payload.forkOrigin);
           const forkRoot =
             event.payload.forkOrigin === undefined ? null : event.payload.forkOrigin.rootTicketId;
           yield* sql`
@@ -636,7 +636,7 @@ const make = Effect.gen(function* () {
           break;
         }
         case "StepOutputInvalid": {
-          const errorsJson = JSON.stringify(event.payload.errors);
+          const errorsJson = encodeJsonString(event.payload.errors);
           yield* sql`
             UPDATE projection_step_run
             SET output_validation_errors_json = ${errorsJson},

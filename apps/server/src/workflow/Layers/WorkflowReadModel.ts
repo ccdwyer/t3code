@@ -103,6 +103,21 @@ const encodeProposalDefinition = Schema.encodeSync(WorkflowDefinition);
 // below), so UnknownFromJsonString (not a specific schema) is the right tool.
 const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
+/**
+ * `projection_ticket.fork_origin`. A real schema rather than a hand-rolled
+ * shape check: the previous check validated only parentTicketId, forkDepth and
+ * rootTicketId, so a row missing `stepRunId` or `childKey` was accepted and then
+ * typed as if both were present.
+ */
+const ForkOriginRow = Schema.Struct({
+  parentTicketId: Schema.String,
+  stepRunId: Schema.String,
+  childKey: Schema.String,
+  forkDepth: Schema.Number,
+  rootTicketId: Schema.String,
+});
+const decodeForkOrigin = Schema.decodeUnknownEffect(Schema.fromJsonString(ForkOriginRow));
+
 interface ProposalSqlRow {
   readonly proposalId: string;
   readonly boardId: string;
@@ -1254,22 +1269,12 @@ const make = Effect.gen(function* () {
       }
       yield* warnUnrecognizedPrStates(ticketRows);
       const currentLane = yield* resolveCurrentLane(rawTicket.boardId, rawTicket.currentLaneKey);
-      let forkOrigin: TicketRow["forkOrigin"] = null;
-      if (typeof rawTicket.forkOriginJson === "string" && rawTicket.forkOriginJson.length > 0) {
-        try {
-          const parsed = JSON.parse(rawTicket.forkOriginJson) as TicketRow["forkOrigin"];
-          if (
-            parsed &&
-            typeof parsed.parentTicketId === "string" &&
-            typeof parsed.forkDepth === "number" &&
-            typeof parsed.rootTicketId === "string"
-          ) {
-            forkOrigin = parsed;
-          }
-        } catch {
-          forkOrigin = null;
-        }
-      }
+      // A corrupt or partial row degrades to "no fork origin" rather than
+      // failing the ticket read that carries it.
+      const forkOrigin: TicketRow["forkOrigin"] =
+        typeof rawTicket.forkOriginJson === "string" && rawTicket.forkOriginJson.length > 0
+          ? yield* decodeForkOrigin(rawTicket.forkOriginJson).pipe(Effect.orElseSucceed(() => null))
+          : null;
       const ticket: TicketRow = {
         ...withDependencyFields(rawTicket),
         currentLane,

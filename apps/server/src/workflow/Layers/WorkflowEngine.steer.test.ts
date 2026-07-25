@@ -6,6 +6,7 @@
  */
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -34,6 +35,8 @@ import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 import { STEER_REJECTION } from "../steerHelpers.ts";
+
+const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const idleExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),
@@ -347,7 +350,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
           'info',
           'workflow.steer.delivered',
           'Workflow steer delivered',
-          ${JSON.stringify({ messageId, commandId: `workflow-steer-${messageId}` })},
+          ${encodeJsonString({ messageId, commandId: `workflow-steer-${messageId}` })},
           '2026-07-24T00:00:01.000Z'
         )
       `;
@@ -484,7 +487,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
           'error',
           'workflow.steer.failed',
           'Workflow steer failed',
-          ${JSON.stringify({ messageId, commandId: `workflow-steer-${messageId}` })},
+          ${encodeJsonString({ messageId, commandId: `workflow-steer-${messageId}` })},
           '2026-07-24T00:00:02.000Z'
         )
       `;
@@ -541,7 +544,7 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
           'info',
           'workflow.steer.delivered',
           'Workflow steer delivered',
-          ${JSON.stringify({ messageId })},
+          ${encodeJsonString({ messageId })},
           '2026-07-24T00:00:03.000Z'
         )
       `;

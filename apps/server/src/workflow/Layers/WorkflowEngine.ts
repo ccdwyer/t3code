@@ -1156,7 +1156,7 @@ const make = Effect.gen(function* () {
           stepKey: step.key as string,
           joinRequire,
           onBranchFailure,
-          spawnSeq: Date.now(),
+          spawnSeq: yield* Clock.currentTimeMillis,
           children: childIds.map((s) => ({
             childKey: s.childKey,
             ticketId: s.ticketId,

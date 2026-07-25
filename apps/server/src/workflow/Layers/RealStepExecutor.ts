@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   ProviderInstanceId,
   TrimmedNonEmptyString,
@@ -15,6 +13,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
@@ -80,11 +79,12 @@ import {
   validateStepOutput,
   type OutputDiagnostic,
 } from "../stepOutputContract.ts";
+import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
 import { WorktreeCoordinator, type OverlapGateResult } from "../Services/WorktreeCoordinator.ts";
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { PARALLELISM_HOLD_REASON_ACTIVE, serializeHoldReason } from "../worktreeOverlap.ts";
 
-const execFileAsync = promisify(execFile);
+const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const toExecutorError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });
@@ -131,6 +131,9 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const worktreeCoordinator = yield* Effect.serviceOption(WorktreeCoordinator);
   const boardRegistry = yield* Effect.serviceOption(BoardRegistry);
+  // Optional so test layers without a git driver keep working: an absent driver
+  // is treated exactly like a failed git call — the path cache is left intact.
+  const gitDriverOption = yield* Effect.serviceOption(GitVcsDriver);
   // Optional: token-usage capture is best-effort telemetry, absent in older
   // test stacks.
   const usageReader = Context.getOption(
@@ -292,31 +295,44 @@ const make = Effect.gen(function* () {
           const policy = definition?.settings?.parallelism?.conflictPolicy ?? "off";
           if (policy === "warn" || policy === "serialize") {
             const baseline = ticketBaseRef(ctx.ticketId);
-            const pathsExit = yield* Effect.tryPromise({
-              try: async () => {
-                const { stdout } = await execFileAsync(
-                  "git",
-                  ["-C", worktree.path, "diff", "--name-only", "-z", baseline, postRef],
-                  { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
-                );
-                // -z already delimits; do not trim (paths may have intentional spaces).
-                return stdout.split("\0").filter((p) => p.length > 0);
-              },
-              catch: (cause) => cause,
-            }).pipe(Effect.exit);
-            if (Exit.isSuccess(pathsExit)) {
-              yield* worktreeCoordinator.value
-                .replaceChangedPaths({
-                  ticketId: ctx.ticketId,
-                  sourceRef: postRef,
-                  paths: pathsExit.value,
-                })
-                .pipe(Effect.catch(() => Effect.void));
-            } else {
-              yield* Effect.logWarning("worktree path cache refresh skipped (git failed)", {
+            if (Option.isNone(gitDriverOption)) {
+              // Same outcome as a failed git call: leave the prior cache intact,
+              // which is the fail-closed behavior serialize depends on.
+              yield* Effect.logWarning("worktree path cache refresh skipped (no git driver)", {
                 ticketId: ctx.ticketId,
-                error: String(pathsExit.cause),
               });
+            } else {
+              // Through GitVcsDriver rather than a raw child process: it bounds
+              // the output, carries a typed error, and is the path every other
+              // git call in this codebase takes.
+              const pathsExit = yield* gitDriverOption.value
+                .execute({
+                  operation: "WorkflowStep.refreshChangedPaths",
+                  cwd: worktree.path,
+                  args: ["diff", "--name-only", "-z", baseline, postRef],
+                  maxOutputBytes: 4 * 1024 * 1024,
+                })
+                // -z already delimits; do not trim (paths may have intentional spaces).
+                .pipe(
+                  Effect.map((result) =>
+                    result.stdout.split("\u0000").filter((path) => path.length > 0),
+                  ),
+                  Effect.exit,
+                );
+              if (Exit.isSuccess(pathsExit)) {
+                yield* worktreeCoordinator.value
+                  .replaceChangedPaths({
+                    ticketId: ctx.ticketId,
+                    sourceRef: postRef,
+                    paths: pathsExit.value,
+                  })
+                  .pipe(Effect.catch(() => Effect.void));
+              } else {
+                yield* Effect.logWarning("worktree path cache refresh skipped (git failed)", {
+                  ticketId: ctx.ticketId,
+                  error: String(pathsExit.cause),
+                });
+              }
             }
           }
         }
@@ -464,7 +480,7 @@ const make = Effect.gen(function* () {
         ) {
           const memberErrors = validateStepOutput(step.outputContract, {
             output: output as object,
-            rawBlock: JSON.stringify(output),
+            rawBlock: encodeJsonString(output),
           });
           if (memberErrors.length > 0) {
             votes.push({
@@ -1025,7 +1041,7 @@ const make = Effect.gen(function* () {
           const diagnostic: OutputDiagnostic =
             output === undefined
               ? { failure: "no_block" }
-              : { output: output as object, rawBlock: JSON.stringify(output) };
+              : { output: output as object, rawBlock: encodeJsonString(output) };
 
           if (contract === undefined) {
             if (output === undefined) {
@@ -1126,7 +1142,7 @@ const make = Effect.gen(function* () {
               ? { failure: "no_block" }
               : {
                   output: repairedOutput as object,
-                  rawBlock: JSON.stringify(repairedOutput),
+                  rawBlock: encodeJsonString(repairedOutput),
                 };
           const repairErrors = validateStepOutput(contract, repairDiagnostic);
           const finalUsage = yield* readStepUsage(threadId as string);

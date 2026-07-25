@@ -22,6 +22,8 @@ import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -1107,7 +1109,7 @@ const make = Effect.gen(function* () {
         // orchestration dispatch fails after sendTurn already succeeded.
         const appendViaSqlFallback = Option.isSome(sqlOption)
           ? Effect.gen(function* () {
-              const payloadJson = JSON.stringify({
+              const payloadJson = encodeJsonString({
                 messageId: messageIdForPayload,
                 commandId: commandIdStr,
                 ...(input.detail !== undefined ? { detail: input.detail } : {}),

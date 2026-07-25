@@ -804,6 +804,39 @@ describe("WorkflowEvent", () => {
     }),
   );
 
+  it.effect("decodes a pre-replay TicketCreated event that carries no forkOf", () =>
+    Effect.gen(function* () {
+      // Every event persisted before time-travel replay looks exactly like this.
+      // Adding forkOf must not make old streams undecodable, or replaying any
+      // existing ticket would fail.
+      const event = yield* decodeWorkflowEvent(ticketCreated);
+      assert.equal(event.type, "TicketCreated");
+      if (event.type === "TicketCreated") {
+        assert.isUndefined(event.payload.forkOf);
+      }
+    }),
+  );
+
+  it.effect("decodes a forked TicketCreated event with its provenance", () =>
+    Effect.gen(function* () {
+      const event = yield* decodeWorkflowEvent({
+        ...ticketCreated,
+        eventId: "evt-forked",
+        payload: {
+          ...ticketCreated.payload,
+          forkOf: { sourceTicketId: "t-source", sourceEventId: "evt-source" },
+        },
+      });
+      assert.equal(event.type, "TicketCreated");
+      if (event.type === "TicketCreated") {
+        assert.deepStrictEqual(event.payload.forkOf, {
+          sourceTicketId: "t-source",
+          sourceEventId: "evt-source",
+        });
+      }
+    }),
+  );
+
   it.effect("decodes ticket collaboration message and edit events", () =>
     Effect.gen(function* () {
       const message = yield* decodeWorkflowEvent({

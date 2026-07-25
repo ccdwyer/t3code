@@ -184,7 +184,13 @@ import {
   TicketId,
   WorkflowBoardVersionSummary,
   WorkflowGetBoardDefinitionResult,
+  WorkflowForkFromEventInput,
+  WorkflowForkFromEventResult,
+  WorkflowGetBoardTimelineInput,
+  WorkflowGetBoardTimelineResult,
   WorkflowGetBoardVersionResult,
+  WorkflowGetTicketTimelineInput,
+  WorkflowGetTicketTimelineResult,
   WorkflowImportBoardInput,
   WorkflowImportBoardResult,
   WorkflowCreateWorkflowBoardInput,
@@ -1054,6 +1060,24 @@ export const WsWorkflowGetTicketDetailRpc = Rpc.make(WORKFLOW_WS_METHODS.getTick
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });
 
+export const WsWorkflowGetTicketTimelineRpc = Rpc.make(WORKFLOW_WS_METHODS.getTicketTimeline, {
+  payload: WorkflowGetTicketTimelineInput,
+  success: WorkflowGetTicketTimelineResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
+export const WsWorkflowGetBoardTimelineRpc = Rpc.make(WORKFLOW_WS_METHODS.getBoardTimeline, {
+  payload: WorkflowGetBoardTimelineInput,
+  success: WorkflowGetBoardTimelineResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
+export const WsWorkflowForkFromEventRpc = Rpc.make(WORKFLOW_WS_METHODS.forkTicketFromEvent, {
+  payload: WorkflowForkFromEventInput,
+  success: WorkflowForkFromEventResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
 export const WsWorkflowIntakeTicketsRpc = Rpc.make(WORKFLOW_WS_METHODS.intakeTickets, {
   payload: Schema.Struct({
     boardId: BoardId,
@@ -1389,6 +1413,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowSetProjectScriptTrustRpc,
   WsWorkflowCancelStepRpc,
   WsWorkflowGetTicketDetailRpc,
+  WsWorkflowGetTicketTimelineRpc,
+  WsWorkflowGetBoardTimelineRpc,
+  WsWorkflowForkFromEventRpc,
   WsWorkflowGetTicketDiffRpc,
   WsWorkflowIntakeTicketsRpc,
   WsWorkflowListTicketArtifactsRpc,

@@ -130,6 +130,12 @@ import type {
   WorkflowDefinitionEncoded,
   WorkflowDryRunResult,
   WorkflowDryRunScenario,
+  WorkflowForkFromEventInput,
+  WorkflowForkFromEventResult,
+  WorkflowGetBoardTimelineInput,
+  WorkflowGetBoardTimelineResult,
+  WorkflowGetTicketTimelineInput,
+  WorkflowGetTicketTimelineResult,
   WorkflowTicketDetailView,
   AgentSelection,
   WorkSourceProviderName,
@@ -1448,6 +1454,15 @@ export interface EnvironmentApi {
     }) => Promise<void>;
     cancelStep: (input: { readonly stepRunId: StepRunId }) => Promise<void>;
     getTicketDetail: (input: { readonly ticketId: TicketId }) => Promise<WorkflowTicketDetailView>;
+    getTicketTimeline: (
+      input: typeof WorkflowGetTicketTimelineInput.Type,
+    ) => Promise<typeof WorkflowGetTicketTimelineResult.Type>;
+    getBoardTimeline: (
+      input: typeof WorkflowGetBoardTimelineInput.Type,
+    ) => Promise<typeof WorkflowGetBoardTimelineResult.Type>;
+    forkTicketFromEvent: (
+      input: typeof WorkflowForkFromEventInput.Type,
+    ) => Promise<typeof WorkflowForkFromEventResult.Type>;
     getTicketDiff: (input: { readonly ticketId: TicketId }) => Promise<TicketDiff>;
     intakeTickets: (input: {
       readonly boardId: BoardId;

@@ -38,6 +38,9 @@ export const WORKFLOW_WS_METHODS = {
   setProjectScriptTrust: "workflow.setProjectScriptTrust",
   cancelStep: "workflow.cancelStep",
   getTicketDetail: "workflow.getTicketDetail",
+  getTicketTimeline: "workflow.getTicketTimeline",
+  getBoardTimeline: "workflow.getBoardTimeline",
+  forkTicketFromEvent: "workflow.forkTicketFromEvent",
   getTicketDiff: "workflow.getTicketDiff",
   intakeTickets: "workflow.intakeTickets",
   listTicketArtifacts: "workflow.listTicketArtifacts",
@@ -767,6 +770,12 @@ export const WorkflowEvent = Schema.Union([
       // Soft cap on provider tokens this ticket may consume; agent steps
       // block (not fail) once the roll-up reaches it.
       tokenBudget: Schema.optional(NonNegativeInt),
+      // Present on tickets created by "fork from this event" (time-travel
+      // replay). Distinct from `forkOrigin`, which is the fork-join parent/child
+      // relation: this one records which event of which ticket was replayed.
+      forkOf: Schema.optional(
+        Schema.Struct({ sourceTicketId: TicketId, sourceEventId: WorkflowEventId }),
+      ),
       // Present on fork-spawned children (SPEC fork-join).
       forkOrigin: Schema.optional(
         Schema.Struct({
@@ -1138,6 +1147,88 @@ export const WorkflowEvent = Schema.Union([
 ]);
 export type WorkflowEvent = typeof WorkflowEvent.Type;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Time-travel replay
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One persisted event plus its GLOBAL sequence — the event store's autoincrement
+ * column. `streamVersion` on the event orders within one ticket; `sequence`
+ * orders across the whole board, which is what a board timeline scrubs by.
+ */
+export const WorkflowTimelineItem = Schema.Struct({
+  sequence: Schema.Int,
+  event: WorkflowEvent,
+});
+export type WorkflowTimelineItem = typeof WorkflowTimelineItem.Type;
+
+/**
+ * Ticket state reduced by the SERVER at a truncation boundary.
+ *
+ * A ticket timeline returns only the newest window of events, so the client
+ * cannot fold from the beginning. The server folds everything below the window
+ * and hands back the resulting state to seed the client's reducer; without it a
+ * truncated replay would start from an empty ticket and render nonsense.
+ */
+export const WorkflowTimelineBase = Schema.Struct({
+  laneKey: LaneKey,
+  title: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  tokenBudget: Schema.optional(NonNegativeInt),
+  status: TicketStatus,
+  /** The state reflects every event at or below this per-ticket version. */
+  asOfStreamVersion: Schema.Int,
+  occurredAt: IsoDateTime,
+});
+export type WorkflowTimelineBase = typeof WorkflowTimelineBase.Type;
+
+export const WorkflowGetTicketTimelineInput = Schema.Struct({ ticketId: TicketId });
+export const WorkflowGetTicketTimelineResult = Schema.Struct({
+  /** Newest window, returned in ASCENDING order so the client folds forward. */
+  events: Schema.Array(WorkflowTimelineItem),
+  truncated: Schema.Boolean,
+  /** Present exactly when `truncated` — the state to fold forward from. */
+  base: Schema.optional(WorkflowTimelineBase),
+});
+
+export const WorkflowGetBoardTimelineInput = Schema.Struct({
+  boardId: BoardId,
+  /** Exclusive lower cursor; absent means "from the oldest surviving event". */
+  afterSequence: Schema.optional(Schema.Int),
+  /**
+   * Inclusive upper bound that PINS a scrub session. Without it, events landing
+   * mid-scrub would shift the pages under the user.
+   */
+  throughSequence: Schema.optional(Schema.Int),
+  /** Server clamps to 1..200. */
+  limit: Schema.optional(Schema.Int),
+});
+export const WorkflowGetBoardTimelineResult = Schema.Struct({
+  events: Schema.Array(WorkflowTimelineItem),
+  /** Null means no further pages. */
+  nextAfterSequence: Schema.NullOr(Schema.Int),
+  /** Board MAX(sequence) at call time; 0 when the board has no events. */
+  latestSequence: Schema.Int,
+});
+
+export const WorkflowForkFromEventInput = Schema.Struct({
+  ticketId: TicketId,
+  /** Must belong to `ticketId`; the fork enters the lane held as of this event. */
+  eventId: WorkflowEventId,
+  agentOverride: Schema.optional(AgentSelection),
+  promptAddendum: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_000))),
+  /** Honored ONLY when the as-of lane no longer exists in the board definition. */
+  laneOverride: Schema.optional(LaneKey),
+});
+export const WorkflowForkFromEventResult = Schema.Union([
+  Schema.TaggedStruct("created", { ticketId: TicketId, laneKey: LaneKey }),
+  /** The as-of lane is gone; the client re-submits with a `laneOverride`. */
+  Schema.TaggedStruct("unknown_lane", {
+    asOfLane: LaneKey,
+    validLanes: Schema.Array(LaneKey),
+  }),
+]);
+
 export const StepOutcome = Schema.Union([
   Schema.TaggedStruct("completed", {
     output: Schema.optional(Schema.Unknown),
@@ -1206,6 +1297,10 @@ export const WorkflowCurrentLaneView = Schema.Struct({
 export type WorkflowCurrentLaneView = typeof WorkflowCurrentLaneView.Type;
 
 export const BoardTicketView = Schema.Struct({
+  // Set when this ticket was created by forking another ticket's history.
+  forkOf: Schema.optional(
+    Schema.Struct({ sourceTicketId: TicketId, sourceEventId: WorkflowEventId }),
+  ),
   ticketId: TicketId,
   boardId: BoardId,
   title: Schema.String,

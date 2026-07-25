@@ -169,6 +169,53 @@ layer("ForkJoinCoordinator", (it) => {
     }),
   );
 
+  it.effect("settleChild is the production join path used by engine terminal settle", () =>
+    Effect.gen(function* () {
+      // Engine hooks settleChild on terminal child entry; this test locks the
+      // production coordinator API the engine calls (not a reimplementation).
+      const coord = yield* ForkJoinCoordinator;
+      yield* coord.recordSpawn({
+        stepRunId: "sr-prod" as never,
+        parentTicketId: "parent-prod" as never,
+        boardId: "b1" as never,
+        stepKey: "fanout",
+        joinRequire: 2,
+        onBranchFailure: "waitImpossible",
+        spawnSeq: 99,
+        children: [
+          {
+            childKey: "a",
+            ticketId: "cp-a" as never,
+            laneKey: "impl",
+            title: "A",
+          },
+          {
+            childKey: "b",
+            ticketId: "cp-b" as never,
+            laneKey: "impl",
+            title: "B",
+          },
+        ],
+      });
+      const first = yield* coord.settleChild({
+        childTicketId: "cp-a" as never,
+        outcome: "success",
+      });
+      assert.equal(first.status, "waiting");
+      const second = yield* coord.settleChild({
+        childTicketId: "cp-b" as never,
+        outcome: "success",
+      });
+      assert.equal(second.status, "resolved");
+      if (second.status === "resolved") {
+        assert.equal(second.join.result, "success");
+        assert.equal(second.join.succeeded, 2);
+      }
+      const fork = yield* coord.getUnresolvedForkForParent("parent-prod" as never);
+      assert.isNull(fork);
+    }),
+  );
+
   it.effect("lineage ledger keys on propagated rootTicketId", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

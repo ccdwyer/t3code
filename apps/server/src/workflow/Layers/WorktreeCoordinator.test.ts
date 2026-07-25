@@ -182,6 +182,55 @@ layer("WorktreeCoordinator Phase A", (it) => {
     }),
   );
 
+  it.effect("releaseHoldsBlockedBy clears holds when blocker finishes", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const coord = yield* WorktreeCoordinator;
+
+      yield* sql`
+        INSERT OR IGNORE INTO projection_ticket (
+          ticket_id, board_id, title, current_lane_key, status, created_at, updated_at
+        ) VALUES
+          ('t-blk-a', 'b6', 'A', 'impl', 'running', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+          ('t-blk-b', 'b6', 'B', 'impl', 'running', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z')
+      `;
+      yield* coord.upsertRegistry({
+        ticketId: "t-blk-a" as never,
+        repoRoot: "/tmp/repo6",
+        branch: "workflow/t-blk-a",
+      });
+      yield* coord.upsertRegistry({
+        ticketId: "t-blk-b" as never,
+        repoRoot: "/tmp/repo6",
+        branch: "workflow/t-blk-b",
+      });
+      yield* coord.replaceChangedPaths({
+        ticketId: "t-blk-a" as never,
+        sourceRef: "r",
+        paths: ["x.ts"],
+      });
+      yield* coord.replaceChangedPaths({
+        ticketId: "t-blk-b" as never,
+        sourceRef: "r",
+        paths: ["x.ts"],
+      });
+      yield* coord.evaluateOverlapGate({
+        ticketId: "t-blk-b" as never,
+        boardId: "b6" as never,
+        policy: "serialize",
+        ignorePaths: [],
+        laneKey: "impl",
+        laneEntryToken: "tok",
+        pipelineRunId: "p",
+        stepRunId: "s",
+      });
+      assert.isTrue(yield* coord.hasActiveHold("t-blk-b" as never));
+      const n = yield* coord.releaseHoldsBlockedBy("t-blk-a" as never);
+      assert.isTrue(n >= 1);
+      assert.isFalse(yield* coord.hasActiveHold("t-blk-b" as never));
+    }),
+  );
+
   it.effect("serialize fail-closed when path cache is truncated", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

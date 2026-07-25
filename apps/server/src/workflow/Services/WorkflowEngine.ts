@@ -23,6 +23,7 @@ export type RecoveredStepResult =
       readonly error: string;
       readonly retryable?: boolean;
       readonly usage?: WorkflowStepUsage;
+      readonly failureClass?: import("@t3tools/contracts").WorkflowFailureClass;
     }
   | { readonly _tag: "blocked"; readonly reason: string };
 

@@ -153,11 +153,28 @@ export const StepRetryEscalation = Schema.Struct({
 });
 export type StepRetryEscalation = typeof StepRetryEscalation.Type;
 
+export const StepClassRetryPolicy = Schema.Struct({
+  action: Schema.optional(Schema.Literals(["retry", "backoff", "escalate_model", "give_up"])),
+  backoffMs: Schema.optional(Schema.Int),
+  maxAttempts: Schema.optional(Schema.Int),
+});
+export type StepClassRetryPolicy = typeof StepClassRetryPolicy.Type;
+
+export const StepRetryByClass = Schema.Struct({
+  agent_error: Schema.optional(StepClassRetryPolicy),
+  script_failure: Schema.optional(StepClassRetryPolicy),
+  timeout: Schema.optional(StepClassRetryPolicy),
+  infra: Schema.optional(StepClassRetryPolicy),
+  unknown: Schema.optional(StepClassRetryPolicy),
+});
+export type StepRetryByClass = typeof StepRetryByClass.Type;
+
 export const StepRetryPolicy = Schema.Struct({
   // Total attempts including the first run. Lint enforces 2..5; the engine
   // additionally clamps so a hand-edited file cannot retry unboundedly.
   maxAttempts: Schema.Int,
   escalate: Schema.optional(StepRetryEscalation),
+  byClass: Schema.optional(StepRetryByClass),
 });
 export type StepRetryPolicy = typeof StepRetryPolicy.Type;
 
@@ -952,6 +969,19 @@ export const WorkflowEvent = Schema.Union([
       // Discriminates projection: contract failures keep validation error list.
       contractViolation: Schema.optional(Schema.Boolean),
       failureClass: Schema.optional(WorkflowFailureClass),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepRetryScheduled"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      stepRunId: StepRunId,
+      stepKey: StepKey,
+      failureClass: WorkflowFailureClass,
+      nextAttempt: Schema.Int,
+      maxAttempts: Schema.Int,
+      delayMs: NonNegativeInt,
     }),
   }),
   Schema.Struct({

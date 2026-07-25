@@ -1288,10 +1288,47 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Output-contract repair turns (dispatch_seq = 1) must never re-dispatch after
+   * restart (SPEC: no repair on crash-recovery path). Confirm interrupted repair
+   * rows and fail the step closed with a non-retryable infra class.
+   */
+  const settleInterruptedRepairs = Effect.gen(function* () {
+    const confirmedAt = yield* nowIso;
+    const rows = yield* wrapSql(sql<{
+      readonly stepRunId: string;
+      readonly dispatchId: string;
+    }>`
+      SELECT step_run_id AS "stepRunId", dispatch_id AS "dispatchId"
+      FROM workflow_dispatch_outbox
+      WHERE dispatch_seq = 1
+        AND status != 'confirmed'
+    `);
+    for (const row of rows) {
+      yield* wrapSql(sql`
+        UPDATE workflow_dispatch_outbox
+        SET status = 'confirmed',
+            confirmed_at = ${confirmedAt}
+        WHERE dispatch_id = ${row.dispatchId}
+      `);
+      yield* engine
+        .completeRecoveredStep(row.stepRunId as never, {
+          _tag: "failed",
+          error: "output contract repair interrupted by server restart",
+          retryable: false,
+          failureClass: "infra",
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
+  });
+
   const recover: WorkflowRecoveryShape["recover"] = () =>
     Effect.gen(function* () {
       yield* recoverWorkflowWip;
       yield* approvals.resume();
+      // Repair rows before panel/terminal sweeps so a seq-1 dispatch is never
+      // mistaken for a resumable single-agent turn.
+      yield* settleInterruptedRepairs;
       yield* settleInterruptedPanelDispatches;
       // Drain staged StepSteered BEFORE recoverTerminalDispatches (pre-crash
       // stages) and again after monitorStartedDispatches (stages created by

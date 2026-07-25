@@ -108,6 +108,21 @@ const make = Effect.gen(function* () {
       `);
     });
 
+  const releaseHoldsBlockedBy: WorktreeCoordinatorShape["releaseHoldsBlockedBy"] = (
+    blockerTicketId,
+  ) =>
+    Effect.gen(function* () {
+      const releasedAt = yield* nowIso;
+      yield* wrapSql(sql`
+        UPDATE ticket_parallelism_hold
+        SET released_at = ${releasedAt}
+        WHERE blocked_by_ticket_id = ${blockerTicketId}
+          AND released_at IS NULL
+      `);
+      const changed = yield* wrapSql(sql<{ readonly n: number }>`SELECT changes() AS n`);
+      return changed[0]?.n ?? 0;
+    });
+
   const evaluateOverlapGate: WorktreeCoordinatorShape["evaluateOverlapGate"] = (input) =>
     Effect.gen(function* () {
       const ownPaths = yield* wrapSql(sql<{ readonly path: string }>`
@@ -294,6 +309,7 @@ const make = Effect.gen(function* () {
     evaluateOverlapGate,
     hasActiveHold,
     releaseHold,
+    releaseHoldsBlockedBy,
   } satisfies WorktreeCoordinatorShape;
 });
 

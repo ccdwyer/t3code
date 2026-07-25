@@ -190,6 +190,10 @@ const make = Effect.gen(function* () {
           `;
           break;
         }
+        case "StepRetryScheduled": {
+          // Display/audit; ticket-level retry countdown UI is residual.
+          break;
+        }
         case "TicketMovedToLane": {
           const terminalAt = yield* terminalAtForTicketLane(
             event.ticketId,

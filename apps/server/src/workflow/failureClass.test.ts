@@ -74,6 +74,28 @@ describe("decideRetry", () => {
     ).toEqual({ kind: "retry", delayMs: 0, escalate: true, nextAttempt: 2 });
   });
 
+  it("give_up byClass short-circuits even with attempts remaining", () => {
+    expect(
+      decideRetry({
+        failureClass: "script_failure",
+        attempt: 1,
+        maxAttempts: 5,
+        byClass: { script_failure: { action: "give_up" } },
+      }),
+    ).toEqual({ kind: "give_up" });
+  });
+
+  it("class maxAttempts caps below parent maxAttempts", () => {
+    expect(
+      decideRetry({
+        failureClass: "timeout",
+        attempt: 2,
+        maxAttempts: 5,
+        byClass: { timeout: { action: "retry", maxAttempts: 2 } },
+      }),
+    ).toEqual({ kind: "give_up" });
+  });
+
   it("preserves legacy escalate-on-2 when stepHasEscalate and no byClass", () => {
     expect(
       decideRetry({

@@ -42,7 +42,13 @@ import { PredicateEvaluator } from "../Services/PredicateEvaluator.ts";
 import { ProviderDispatchOutbox, ProviderTurnPort } from "../Services/ProviderDispatchOutbox.ts";
 import { ProviderResponsePort } from "../Services/ProviderResponsePort.ts";
 import { frameSteerText, STEER_REJECTION } from "../steerHelpers.ts";
-import { classifyFallback } from "../failureClass.ts";
+import {
+  classifyFallback,
+  decideRetry,
+  TURN_TIMEOUT_LITERAL,
+  type FailureClass,
+} from "../failureClass.ts";
+import { WorktreeCoordinator } from "../Services/WorktreeCoordinator.ts";
 import { ScriptCancelRegistry } from "../Services/ScriptCancelRegistry.ts";
 import { StepExecutor } from "../Services/StepExecutor.ts";
 import { StepUsageReader } from "../Services/StepUsageReader.ts";
@@ -343,6 +349,13 @@ interface StepRunOutcome {
    * TicketBlocked is still emitted for attention.
    */
   readonly parallelismHold?: boolean;
+  /** Closed taxonomy class for failed outcomes (feeds decideRetry). */
+  readonly failureClass?: FailureClass;
+  /** Explicit retryable flag from StepOutcome when present. */
+  readonly retryable?: boolean;
+  /** Failed step run id — needed for StepRetryScheduled payload. */
+  readonly stepRunId?: StepRunId;
+  readonly stepKey?: StepKey;
 }
 
 // Defensive clamp so a hand-edited workflow file cannot retry unboundedly;
@@ -384,6 +397,7 @@ const make = Effect.gen(function* () {
   const registry = yield* BoardRegistry;
   const routingContextBuilder = yield* WorkflowRoutingContextBuilder;
   const forkJoinOption = yield* Effect.serviceOption(ForkJoinCoordinator);
+  const worktreeCoordOption = yield* Effect.serviceOption(WorktreeCoordinator);
   const sql = yield* SqlClient.SqlClient;
   const boardSemaphores = yield* SynchronizedRef.make<
     Map<string, { readonly semaphore: Semaphore.Semaphore; readonly permits: number }>
@@ -914,12 +928,21 @@ const make = Effect.gen(function* () {
         return {
           _tag: "failed",
           error: "provider requested additional user input",
+          retryable: false,
+          failureClass: "infra",
           ...(usage === undefined ? {} : { usage }),
         } satisfies RecoveredStepResult;
       }
+      const error = result.error ?? "turn failed";
+      const failureClass =
+        error === TURN_TIMEOUT_LITERAL ||
+        error === "turn did not reach a terminal state before timeout"
+          ? ("infra" as const)
+          : ("agent_error" as const);
       return {
         _tag: "failed",
-        error: result.error ?? "turn failed",
+        error,
+        failureClass,
         ...(usage === undefined ? {} : { usage }),
       } satisfies RecoveredStepResult;
     });
@@ -943,6 +966,7 @@ const make = Effect.gen(function* () {
         return {
           _tag: "failed",
           error: "missing or invalid structured output",
+          failureClass: "agent_error",
         } satisfies RecoveredStepResult;
       }
       let turn = captureTurn;
@@ -956,6 +980,7 @@ const make = Effect.gen(function* () {
         return {
           _tag: "failed",
           error: "missing or invalid structured output",
+          failureClass: "agent_error",
         } satisfies RecoveredStepResult;
       }
 
@@ -965,6 +990,7 @@ const make = Effect.gen(function* () {
             return {
               _tag: "failed",
               error: "missing or invalid structured output",
+              failureClass: "agent_error",
             } satisfies RecoveredStepResult;
           }
           return { _tag: "completed", output: captured } satisfies RecoveredStepResult;
@@ -974,6 +1000,7 @@ const make = Effect.gen(function* () {
             ({
               _tag: "failed",
               error: "structured output lookup failed",
+              failureClass: "infra",
             }) satisfies RecoveredStepResult,
         ),
       );
@@ -1236,7 +1263,14 @@ const make = Effect.gen(function* () {
               "human_rejection",
             ),
           });
-          return { result: "failed", noRetry: true, detail: "rejected" };
+          return {
+            result: "failed",
+            noRetry: true,
+            detail: "rejected",
+            failureClass: "human_rejection",
+            stepRunId,
+            stepKey: step.key,
+          };
         }
         if (outcome.providerThreadId !== undefined) {
           const terminalResult = yield* awaitProviderTerminalForStep(
@@ -1245,12 +1279,30 @@ const make = Effect.gen(function* () {
             step,
           );
           if (terminalResult._tag === "failed") {
+            const failureClass =
+              terminalResult.failureClass ??
+              classifyFallback(terminalResult.error, terminalResult.retryable);
             yield* commit({
               type: "StepFailed",
               ticketId,
-              payload: stepFailedPayload(stepRunId, terminalResult.error, terminalResult.usage),
+              payload: stepFailedPayload(
+                stepRunId,
+                terminalResult.error,
+                terminalResult.usage,
+                terminalResult.retryable === false ? false : undefined,
+                undefined,
+                failureClass,
+              ),
             });
-            return { result: "failed", noRetry: false, detail: terminalResult.error };
+            return {
+              result: "failed",
+              noRetry: terminalResult.retryable === false,
+              detail: terminalResult.error,
+              failureClass,
+              retryable: terminalResult.retryable,
+              stepRunId,
+              stepKey: step.key,
+            };
           }
           if (terminalResult._tag === "blocked") {
             yield* commit({
@@ -1281,6 +1333,8 @@ const make = Effect.gen(function* () {
         return { result: "completed", noRetry: false };
       }
       if (outcome._tag === "failed") {
+        const failureClass =
+          outcome.failureClass ?? classifyFallback(outcome.error, outcome.retryable);
         yield* commit({
           type: "StepFailed",
           ticketId,
@@ -1290,10 +1344,18 @@ const make = Effect.gen(function* () {
             outcome.usage,
             outcome.retryable === false ? false : undefined,
             outcome.contractViolation === true ? true : undefined,
-            outcome.failureClass ?? classifyFallback(outcome.error, outcome.retryable),
+            failureClass,
           ),
         });
-        return { result: "failed", noRetry: outcome.retryable === false, detail: outcome.error };
+        return {
+          result: "failed",
+          noRetry: outcome.retryable === false,
+          detail: outcome.error,
+          failureClass,
+          retryable: outcome.retryable,
+          stepRunId,
+          stepKey: step.key,
+        };
       }
       if (outcome._tag === "blocked") {
         yield* commit({
@@ -1440,23 +1502,27 @@ const make = Effect.gen(function* () {
             laneStepKeys,
             attempt,
           );
-          while (stepOutcome.result === "failed" && !stepOutcome.noRetry && attempt < maxAttempts) {
-            // Intra-step retry guard: each retry attempt is a NEW StepStarted +
-            // fresh agent/script work, so re-read the lane-entry token before
-            // dispatching it. A LIVE pipeline is already protected — an external
-            // park interrupts its tracked fiber — but a RECOVERY continuation runs
-            // untracked (not in runningPipelines), so `Fiber.interrupt` is a no-op
-            // and only this token re-read stops the loop from starting attempt 2+
-            // on a since-parked/moved row. Kept UNCONDITIONAL (not recovery-only):
-            // the extra point-read on the live path is negligible and a single
-            // invariant — "every retry dispatch re-checks the token" — is simpler
-            // and safer than a mode flag. On drift, close the run `superseded`
-            // (a PipelineStarted exists for it) and stop, mirroring the recovery
-            // retry guard's `abandonSuperseded`. PipelineCompleted is parked-safe
-            // (it writes only projection_pipeline_run.status, never the ticket
-            // status). ACCEPTED RESIDUAL: attempt 1, already dispatched before this
-            // guard, may finish post-park — the same one-dispatched-step residual
-            // the recovery/inter-step guards accept.
+          // Taxonomy-aware retry: decideRetry is the sole gate (SPEC failure-taxonomy).
+          while (stepOutcome.result === "failed" && !stepOutcome.noRetry) {
+            const failureClass =
+              stepOutcome.failureClass ??
+              classifyFallback(stepOutcome.detail ?? "unknown", stepOutcome.retryable);
+            const byClass =
+              step.type === "agent" || step.type === "script" ? step.retry?.byClass : undefined;
+            const decision = decideRetry({
+              failureClass,
+              attempt,
+              maxAttempts,
+              retryable: stepOutcome.retryable,
+              byClass,
+              error: stepOutcome.detail,
+              stepHasEscalate: step.type === "agent" && step.retry?.escalate !== undefined,
+              mode: "live",
+            });
+            if (decision.kind === "give_up") {
+              break;
+            }
+            // Intra-step retry guard: re-check lane-entry token before attempt N+1.
             if ((yield* currentToken(ticketId)) !== laneEntryToken) {
               yield* commit({
                 type: "PipelineCompleted",
@@ -1465,12 +1531,40 @@ const make = Effect.gen(function* () {
               });
               return;
             }
-            attempt += 1;
+            if (stepOutcome.stepRunId !== undefined && stepOutcome.stepKey !== undefined) {
+              yield* commit({
+                type: "StepRetryScheduled",
+                ticketId,
+                payload: {
+                  pipelineRunId,
+                  stepRunId: stepOutcome.stepRunId,
+                  stepKey: stepOutcome.stepKey,
+                  failureClass,
+                  nextAttempt: decision.nextAttempt,
+                  maxAttempts,
+                  delayMs: decision.delayMs,
+                },
+              } as UnstampedWorkflowEventInput);
+            }
+            if (decision.delayMs > 0) {
+              yield* Effect.sleep(Duration.millis(decision.delayMs));
+              // Token may have rotated during backoff sleep.
+              if ((yield* currentToken(ticketId)) !== laneEntryToken) {
+                yield* commit({
+                  type: "PipelineCompleted",
+                  ticketId,
+                  payload: { pipelineRunId, result: "superseded" },
+                });
+                return;
+              }
+            }
+            attempt = decision.nextAttempt;
+            const nextStep = decision.escalate ? stepForAttempt(step, attempt) : step;
             stepOutcome = yield* runStep(
               ticketId,
               boardId,
               pipelineRunId,
-              stepForAttempt(step, attempt),
+              nextStep,
               laneEntryToken,
               lane.key,
               laneStepKeys,
@@ -1554,6 +1648,12 @@ const make = Effect.gen(function* () {
                   : `pipeline ${result} with no route`,
               },
             });
+            // Fork child blocked → settle failure (unless serialize hold).
+            if (!parallelismHeld) {
+              yield* settleForkChildIfAny(ticketId, "failure").pipe(
+                Effect.catch(() => Effect.void),
+              );
+            }
           }),
         );
       }
@@ -2030,12 +2130,130 @@ const make = Effect.gen(function* () {
             ticketId,
             options.stopProviderSessionsOnTeardown ?? true,
           );
+          // Fork-join: child reaching a terminal lane settles success.
+          yield* settleForkChildIfAny(ticketId, "success").pipe(Effect.catch(() => Effect.void));
+          // Worktree serialize: release tickets held behind this blocker.
+          yield* releaseHoldsBlockedByIfAny(ticketId).pipe(Effect.catch(() => Effect.void));
         }
 
         return { starts, acted };
       }),
     );
   };
+
+  /** Settle parent fork join when a child ticket settles (success/failure/cancelled). */
+  const settleForkChildIfAny = (
+    childTicketId: TicketId,
+    outcome: "success" | "failure" | "cancelled",
+  ): Effect.Effect<void, WorkflowEventStoreError> =>
+    Effect.gen(function* () {
+      if (Option.isNone(forkJoinOption)) {
+        return;
+      }
+      const coord = forkJoinOption.value;
+      const result = yield* coord.settleChild({ childTicketId, outcome });
+      if (result.status === "unknown_child" || result.status === "already_settled") {
+        return;
+      }
+      if (result.status === "waiting") {
+        // Optional audit: child settled event without resolving parent.
+        const child = result.fork.children.find((c) => c.ticketId === childTicketId);
+        if (child !== undefined) {
+          yield* commit({
+            type: "TicketForkChildSettled",
+            ticketId: result.fork.parentTicketId,
+            payload: {
+              stepRunId: result.fork.stepRunId,
+              childTicketId,
+              childKey: child.childKey as never,
+              outcome,
+            },
+          } as UnstampedWorkflowEventInput);
+        }
+        return;
+      }
+      // resolved
+      const child = result.fork.children.find((c) => c.ticketId === childTicketId);
+      if (child !== undefined) {
+        yield* commit({
+          type: "TicketForkChildSettled",
+          ticketId: result.fork.parentTicketId,
+          payload: {
+            stepRunId: result.fork.stepRunId,
+            childTicketId,
+            childKey: child.childKey as never,
+            outcome,
+          },
+        } as UnstampedWorkflowEventInput);
+      }
+      const detached = result.fork.children
+        .filter((c) => c.settledOutcome === null || c.settledOutcome === "unsettled")
+        .map((c) => c.childKey as never);
+      yield* commit({
+        type: "TicketForkResolved",
+        ticketId: result.fork.parentTicketId,
+        payload: {
+          stepRunId: result.fork.stepRunId,
+          result: result.join.result === "success" ? "success" : "failure",
+          succeeded: result.join.succeeded,
+          failed: result.join.failed,
+          cancelled: result.join.cancelled,
+          detached,
+        },
+      } as UnstampedWorkflowEventInput);
+      // Complete the suspended fork step and resume parent routing.
+      if (result.join.result === "success") {
+        yield* commit({
+          type: "StepCompleted",
+          ticketId: result.fork.parentTicketId,
+          payload: stepCompletedPayload(result.fork.stepRunId),
+        });
+        yield* commit({
+          type: "PipelineCompleted",
+          ticketId: result.fork.parentTicketId,
+          payload: {
+            pipelineRunId: "fork-resume" as never,
+            result: "success",
+          },
+        });
+      } else {
+        yield* commit({
+          type: "StepFailed",
+          ticketId: result.fork.parentTicketId,
+          payload: stepFailedPayload(
+            result.fork.stepRunId,
+            `fork join failed: ${result.join.succeeded} of ${result.fork.joinRequire} required`,
+            undefined,
+            false,
+            undefined,
+            "agent_error",
+          ),
+        });
+        yield* commit({
+          type: "PipelineCompleted",
+          ticketId: result.fork.parentTicketId,
+          payload: {
+            pipelineRunId: "fork-resume" as never,
+            result: "failure",
+          },
+        });
+      }
+      // Mark route applied so recovery pass (a) won't re-apply blindly.
+      yield* wrapSql(sql`
+        UPDATE projection_ticket_fork
+        SET route_applied_at = ${yield* nowIso}
+        WHERE step_run_id = ${result.fork.stepRunId}
+          AND route_applied_at IS NULL
+      `).pipe(Effect.catch(() => Effect.void));
+    });
+
+  const releaseHoldsBlockedByIfAny = (blockerTicketId: TicketId) =>
+    Effect.gen(function* () {
+      if (Option.isNone(worktreeCoordOption)) {
+        return;
+      }
+      yield* worktreeCoordOption.value.releaseHoldsBlockedBy(blockerTicketId);
+    });
 
   // Stop whatever the ticket was doing: interrupt the running pipeline fiber,
   // cancel live provider turns so a stale agent cannot keep mutating the worktree
@@ -2077,6 +2295,10 @@ const make = Effect.gen(function* () {
         // Resolution releases queued dependents; failure here must never undo
         // the move itself.
         yield* releaseDependents(ticketId).pipe(Effect.catch(() => Effect.void));
+        // Defense-in-depth: also settle fork/hold outside the core (core already
+        // does this under lock; catch keeps public enterLane total).
+        yield* settleForkChildIfAny(ticketId, "success").pipe(Effect.catch(() => Effect.void));
+        yield* releaseHoldsBlockedByIfAny(ticketId).pipe(Effect.catch(() => Effect.void));
       }
 
       return lockResult.acted;
@@ -3976,9 +4198,8 @@ const make = Effect.gen(function* () {
       let recoveredHoldDetail =
         terminalResult._tag === "blocked" ? terminalResult.reason : undefined;
 
-      // Resume the retry loop across restarts: a failed attempt recovered
-      // mid-policy keeps consuming its remaining attempts (with escalation),
-      // unless the failure was a user rejection/cancellation.
+      // Resume the retry loop across restarts via decideRetry (recovery mode:
+      // never sleeps).
       if (
         finalResult === "failed" &&
         (terminalResult._tag !== "failed" || terminalResult.retryable !== false) &&
@@ -3987,21 +4208,54 @@ const make = Effect.gen(function* () {
       ) {
         const maxAttempts = retryAttemptsForStep(recoveredStep);
         let attempt = recovered.stepStarted.payload.attempt ?? 1;
-        let outcome: StepRunOutcome = { result: "failed", noRetry: false };
-        while (outcome.result === "failed" && !outcome.noRetry && attempt < maxAttempts) {
-          // Each retry attempt is a NEW StepStarted + fresh agent/script work.
-          // Re-check the token immediately before dispatching it: an external park
-          // landing between attempts must stop the loop before it starts new work.
+        let outcome: StepRunOutcome = {
+          result: "failed",
+          noRetry: terminalResult._tag === "failed" && terminalResult.retryable === false,
+          detail: terminalResult._tag === "failed" ? terminalResult.error : undefined,
+          failureClass:
+            terminalResult._tag === "failed"
+              ? (terminalResult.failureClass ??
+                classifyFallback(terminalResult.error, terminalResult.retryable))
+              : undefined,
+          retryable: terminalResult._tag === "failed" ? terminalResult.retryable : undefined,
+          stepRunId,
+          stepKey: recovered.stepStarted.payload.stepKey,
+        };
+        while (outcome.result === "failed" && !outcome.noRetry) {
+          const failureClass =
+            outcome.failureClass ??
+            classifyFallback(outcome.detail ?? "unknown", outcome.retryable);
+          const byClass =
+            recoveredStep.type === "agent" || recoveredStep.type === "script"
+              ? recoveredStep.retry?.byClass
+              : undefined;
+          const decision = decideRetry({
+            failureClass,
+            attempt,
+            maxAttempts,
+            retryable: outcome.retryable,
+            byClass,
+            error: outcome.detail,
+            stepHasEscalate:
+              recoveredStep.type === "agent" && recoveredStep.retry?.escalate !== undefined,
+            mode: "recovery",
+          });
+          if (decision.kind === "give_up") {
+            break;
+          }
           if ((yield* currentToken(recovered.stepStarted.ticketId)) !== laneEntryToken) {
             yield* abandonSuperseded;
             return;
           }
-          attempt += 1;
+          attempt = decision.nextAttempt;
+          const nextStep = decision.escalate
+            ? stepForAttempt(recoveredStep, attempt)
+            : recoveredStep;
           outcome = yield* runStep(
             recovered.stepStarted.ticketId,
             boardId,
             recovered.pipelineStarted.payload.pipelineRunId,
-            stepForAttempt(recoveredStep, attempt),
+            nextStep,
             laneEntryToken,
             lane.key,
             steps.map((s) => s.key),

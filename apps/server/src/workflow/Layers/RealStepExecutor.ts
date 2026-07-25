@@ -892,20 +892,23 @@ const make = Effect.gen(function* () {
       }
       // Everything above is done templating, so the pack text can go in now —
       // it is never itself scanned for placeholders.
-      const spliceCount = instruction.split(sentinel).length - 1;
-      instruction = instruction
-        .split(sentinel)
-        .join(packBlock === "" ? CONTEXT_PACK_EMPTY : packBlock);
-      if (spliceCount > 0 && instruction.length > providerBudget && packBlock !== "") {
+      // Decide against the SPLICED length but drop by re-splicing from the
+      // pre-splice string. Removing the pack by searching for its text in the
+      // finished prompt would also delete any identical text the instruction or
+      // a discussion happened to contain.
+      const preSplice = instruction;
+      const packReplacement = packBlock === "" ? CONTEXT_PACK_EMPTY : packBlock;
+      instruction = preSplice.split(sentinel).join(packReplacement);
+      if (packBlock !== "" && preSplice.includes(sentinel) && instruction.length > providerBudget) {
         // The pack is the one block that can be dropped without losing anything
-        // the user authored. Drop it and re-check before falling through to the
-        // existing warn-only path.
+        // a human wrote, so it goes first — then fall through to the existing
+        // warn-only path if the prompt is still too long.
         yield* Effect.logWarning(
           `workflow step ${step.key} prompt exceeds provider budget (${String(
             providerBudget,
           )}); dropping the handoff context pack`,
         );
-        instruction = instruction.split(packBlock).join(CONTEXT_PACK_EMPTY);
+        instruction = preSplice.split(sentinel).join(CONTEXT_PACK_EMPTY);
       }
       if (instruction.length > providerBudget) {
         if (contract !== undefined) {

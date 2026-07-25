@@ -128,7 +128,11 @@ export const sectionsEqual = (
 export const escapeBodyStructure = (body: string): string =>
   body
     .split(/(\r\n|\r|\n|\u000b|\u000c|\u0085|\u2028|\u2029)/)
-    .map((part) => part.replace(/^(\s*)(#+)/, "$1\\$2"))
+    // The leading-run class covers zero-width and format characters as well as
+    // whitespace: JS `\s` matches none of them, so a body beginning
+    // `<ZWSP>### notes` would slip past a whitespace-only scan while a model
+    // still reads a heading.
+    .map((part) => part.replace(/^([\s\u200b-\u200f\u2060\ufeff]*)(#+)/, "$1\\$2"))
     .join("");
 
 export const renderContextPack = (input: {

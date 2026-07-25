@@ -46,10 +46,11 @@ export interface WorktreeCoordinatorShape {
   /** Mark an active hold released (operator / Phase B auto-release). */
   readonly releaseHold: (ticketId: TicketId) => Effect.Effect<void, WorkflowEventStoreError>;
 
-  /** Auto-release every active hold blocked by this ticket (blocker terminal). */
+  /** Auto-release every active hold blocked by this ticket (blocker terminal).
+   * Returns the ticket ids that were released so callers can resume them. */
   readonly releaseHoldsBlockedBy: (
     blockerTicketId: TicketId,
-  ) => Effect.Effect<number, WorkflowEventStoreError>;
+  ) => Effect.Effect<ReadonlyArray<TicketId>, WorkflowEventStoreError>;
 }
 
 export class WorktreeCoordinator extends Context.Service<

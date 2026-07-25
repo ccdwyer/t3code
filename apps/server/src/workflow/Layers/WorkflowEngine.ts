@@ -2155,27 +2155,12 @@ const make = Effect.gen(function* () {
       if (result.status === "unknown_child" || result.status === "already_settled") {
         return;
       }
-      if (result.status === "waiting") {
-        // Optional audit: child settled event without resolving parent.
+      const emitChildSettled = () => {
         const child = result.fork.children.find((c) => c.ticketId === childTicketId);
-        if (child !== undefined) {
-          yield* commit({
-            type: "TicketForkChildSettled",
-            ticketId: result.fork.parentTicketId,
-            payload: {
-              stepRunId: result.fork.stepRunId,
-              childTicketId,
-              childKey: child.childKey as never,
-              outcome,
-            },
-          } as UnstampedWorkflowEventInput);
+        if (child === undefined) {
+          return Effect.void;
         }
-        return;
-      }
-      // resolved
-      const child = result.fork.children.find((c) => c.ticketId === childTicketId);
-      if (child !== undefined) {
-        yield* commit({
+        return commit({
           type: "TicketForkChildSettled",
           ticketId: result.fork.parentTicketId,
           payload: {
@@ -2185,36 +2170,45 @@ const make = Effect.gen(function* () {
             outcome,
           },
         } as UnstampedWorkflowEventInput);
+      };
+      if (result.status === "waiting") {
+        yield* emitChildSettled();
+        return;
       }
+      // resolved — complete the suspended fork step with the real pipeline id
+      // and apply the fork step's on.success / on.failure route to the parent.
+      yield* emitChildSettled();
       const detached = result.fork.children
         .filter((c) => c.settledOutcome === null || c.settledOutcome === "unsettled")
         .map((c) => c.childKey as never);
+      const joinResult = result.join.result === "success" ? "success" : "failure";
       yield* commit({
         type: "TicketForkResolved",
         ticketId: result.fork.parentTicketId,
         payload: {
           stepRunId: result.fork.stepRunId,
-          result: result.join.result === "success" ? "success" : "failure",
+          result: joinResult,
           succeeded: result.join.succeeded,
           failed: result.join.failed,
           cancelled: result.join.cancelled,
           detached,
         },
       } as UnstampedWorkflowEventInput);
-      // Complete the suspended fork step and resume parent routing.
-      if (result.join.result === "success") {
+
+      const pipelineRows = yield* wrapSql(sql<{ readonly pipelineRunId: string }>`
+        SELECT pipeline_run_id AS "pipelineRunId"
+        FROM projection_step_run
+        WHERE step_run_id = ${result.fork.stepRunId}
+        LIMIT 1
+      `).pipe(Effect.catch(() => Effect.succeed([] as Array<{ pipelineRunId: string }>)));
+      const pipelineRunId = (pipelineRows[0]?.pipelineRunId ??
+        result.fork.stepRunId) as PipelineRunId;
+
+      if (joinResult === "success") {
         yield* commit({
           type: "StepCompleted",
           ticketId: result.fork.parentTicketId,
           payload: stepCompletedPayload(result.fork.stepRunId),
-        });
-        yield* commit({
-          type: "PipelineCompleted",
-          ticketId: result.fork.parentTicketId,
-          payload: {
-            pipelineRunId: "fork-resume" as never,
-            result: "success",
-          },
         });
       } else {
         yield* commit({
@@ -2229,16 +2223,59 @@ const make = Effect.gen(function* () {
             "agent_error",
           ),
         });
+      }
+      yield* commit({
+        type: "PipelineCompleted",
+        ticketId: result.fork.parentTicketId,
+        payload: {
+          pipelineRunId,
+          result: joinResult === "success" ? "success" : "failure",
+        },
+      });
+
+      // Apply fork step routing: re-resolve on.success / on.failure from definition.
+      const parentDetail = yield* read.getTicketDetail(result.fork.parentTicketId);
+      if (parentDetail === null) {
+        return;
+      }
+      const boardId = parentDetail.ticket.boardId as BoardId;
+      const parentLaneKey = parentDetail.ticket.currentLaneKey as LaneKey;
+      const parentToken = parentDetail.ticket.currentLaneEntryToken as LaneEntryToken | null;
+      const definition = yield* registry.getDefinition(boardId);
+      const parentLane = definition?.lanes.find(
+        (l) => (l.key as string) === (parentLaneKey as string),
+      );
+      const forkStep = parentLane?.pipeline?.find(
+        (s) => s.type === "fork" && (s.key as string) === result.fork.stepKey,
+      );
+      const routeTarget =
+        forkStep?.type === "fork"
+          ? joinResult === "success"
+            ? forkStep.on?.success
+            : (forkStep.on?.failure ?? forkStep.on?.success)
+          : undefined;
+
+      if (routeTarget !== undefined && !isParkTarget(routeTarget)) {
+        const toLane = routeTarget as LaneKey;
+        // Public enterLane re-validates token under admission lock.
+        void parentToken;
+        yield* enterLane(result.fork.parentTicketId, boardId, toLane, "routed").pipe(
+          Effect.catch(() => Effect.void),
+        );
+      } else if (joinResult !== "success") {
+        // No failure route: surface blocked for human recovery.
         yield* commit({
-          type: "PipelineCompleted",
+          type: "TicketBlocked",
           ticketId: result.fork.parentTicketId,
           payload: {
-            pipelineRunId: "fork-resume" as never,
-            result: "failure",
+            reason: truncateReason(
+              `fork join failed: ${result.join.succeeded} of ${result.fork.joinRequire} required`,
+            ),
           },
         });
       }
-      // Mark route applied so recovery pass (a) won't re-apply blindly.
+
+      // Stamp route_applied_at only after the apply attempt (live or blocked).
       yield* wrapSql(sql`
         UPDATE projection_ticket_fork
         SET route_applied_at = ${yield* nowIso}
@@ -2252,7 +2289,11 @@ const make = Effect.gen(function* () {
       if (Option.isNone(worktreeCoordOption)) {
         return;
       }
-      yield* worktreeCoordOption.value.releaseHoldsBlockedBy(blockerTicketId);
+      const released = yield* worktreeCoordOption.value.releaseHoldsBlockedBy(blockerTicketId);
+      // Resume each held ticket's lane pipeline from step 0 (SPEC resume).
+      for (const ticketId of released) {
+        yield* runLane(ticketId).pipe(Effect.catch(() => Effect.void));
+      }
     });
 
   // Stop whatever the ticket was doing: interrupt the running pipeline fiber,

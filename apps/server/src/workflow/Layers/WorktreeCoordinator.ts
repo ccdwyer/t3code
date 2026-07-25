@@ -112,6 +112,15 @@ const make = Effect.gen(function* () {
     blockerTicketId,
   ) =>
     Effect.gen(function* () {
+      const held = yield* wrapSql(sql<{ readonly ticketId: string }>`
+        SELECT ticket_id AS "ticketId"
+        FROM ticket_parallelism_hold
+        WHERE blocked_by_ticket_id = ${blockerTicketId}
+          AND released_at IS NULL
+      `);
+      if (held.length === 0) {
+        return [] as ReadonlyArray<TicketId>;
+      }
       const releasedAt = yield* nowIso;
       yield* wrapSql(sql`
         UPDATE ticket_parallelism_hold
@@ -119,8 +128,7 @@ const make = Effect.gen(function* () {
         WHERE blocked_by_ticket_id = ${blockerTicketId}
           AND released_at IS NULL
       `);
-      const changed = yield* wrapSql(sql<{ readonly n: number }>`SELECT changes() AS n`);
-      return changed[0]?.n ?? 0;
+      return held.map((r) => r.ticketId as TicketId);
     });
 
   const evaluateOverlapGate: WorktreeCoordinatorShape["evaluateOverlapGate"] = (input) =>

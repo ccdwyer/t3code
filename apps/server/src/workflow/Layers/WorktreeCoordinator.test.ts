@@ -225,8 +225,9 @@ layer("WorktreeCoordinator Phase A", (it) => {
         stepRunId: "s",
       });
       assert.isTrue(yield* coord.hasActiveHold("t-blk-b" as never));
-      const n = yield* coord.releaseHoldsBlockedBy("t-blk-a" as never);
-      assert.isTrue(n >= 1);
+      const released = yield* coord.releaseHoldsBlockedBy("t-blk-a" as never);
+      assert.isTrue(released.length >= 1);
+      assert.equal(released[0], "t-blk-b");
       assert.isFalse(yield* coord.hasActiveHold("t-blk-b" as never));
     }),
   );

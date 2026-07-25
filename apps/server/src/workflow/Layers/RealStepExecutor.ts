@@ -736,8 +736,22 @@ const make = Effect.gen(function* () {
       // a human-written note is never re-expanded, and the description's
       // inline-or-spill decision is computed against the sentinel rather than the
       // pack body, so a pack can never make the description spill earlier.
+      // The haystack must include every text that gets spliced in AFTER the
+      // sentinel is chosen — above all the ticket description, which the
+      // templating below inlines. A sentinel that already occurs in the
+      // description would be replaced along with ours, corrupting the
+      // description and double-injecting the pack.
+      const packHaystackDetail = yield* read
+        .getTicketDetail(ctx.ticketId)
+        .pipe(Effect.orElseSucceed(() => null));
       const sentinel = makeContextPackSentinel(
-        `${resolvedInstruction}\n${discussion}\n${packBlock}`,
+        [
+          resolvedInstruction,
+          discussion,
+          packBlock,
+          packHaystackDetail?.ticket.title ?? "",
+          packHaystackDetail?.ticket.description ?? "",
+        ].join("\n"),
         ctx.stepRunId as string,
       );
       const placeholderResult = substituteContextPackPlaceholder(resolvedInstruction, sentinel);
@@ -898,6 +912,18 @@ const make = Effect.gen(function* () {
       // a discussion happened to contain.
       const preSplice = instruction;
       const packReplacement = packBlock === "" ? CONTEXT_PACK_EMPTY : packBlock;
+      // Handoff expansions ({{prev.output}} and friends) resolve after the
+      // sentinel is chosen and are not in its haystack, so an extra occurrence
+      // is still conceivable. It is not silently corrected — surfacing it beats
+      // splicing the pack into a place nobody asked for.
+      const sentinelOccurrences = preSplice.split(sentinel).length - 1;
+      if (sentinelOccurrences > 1) {
+        yield* Effect.logWarning(
+          `workflow step ${step.key} context-pack sentinel occurs ${String(
+            sentinelOccurrences,
+          )} times after templating; expanded step output appears to contain it`,
+        );
+      }
       instruction = preSplice.split(sentinel).join(packReplacement);
       if (packBlock !== "" && preSplice.includes(sentinel) && instruction.length > providerBudget) {
         // The pack is the one block that can be dropped without losing anything

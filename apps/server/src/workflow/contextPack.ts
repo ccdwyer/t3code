@@ -128,11 +128,14 @@ export const sectionsEqual = (
 export const escapeBodyStructure = (body: string): string =>
   body
     .split(/(\r\n|\r|\n|\u000b|\u000c|\u0085|\u2028|\u2029)/)
-    // The leading-run class covers zero-width and format characters as well as
-    // whitespace: JS `\s` matches none of them, so a body beginning
-    // `<ZWSP>### notes` would slip past a whitespace-only scan while a model
-    // still reads a heading.
-    .map((part) => part.replace(/^([\s\u200b-\u200f\u2060\ufeff]*)(#+)/, "$1\\$2"))
+    // Unicode CATEGORIES, not a hand-listed set: any leading run of whitespace,
+    // control (Cc), format (Cf — soft hyphen, ZWSP/ZWJ, the bidi overrides,
+    // U+FEFF) or non-spacing mark (Mn — variation selectors, the grapheme
+    // joiner) is skipped before the `#` test. Enumerating these by hand loses:
+    // every consumer that strips or ignores one more invisible character than
+    // the list anticipates re-opens the hole, and the list is long enough that
+    // omissions are not obvious on review.
+    .map((part) => part.replace(/^([\s\p{Cc}\p{Cf}\p{Mn}]*)(#+)/u, "$1\\$2"))
     .join("");
 
 export const renderContextPack = (input: {
@@ -268,8 +271,8 @@ export const renderDiffSummary = (input: {
 export const makeContextPackSentinel = (haystack: string, seed: string): string => {
   // Derived from the step run id, not randomness: it only has to be unique
   // within THIS render, and a deterministic sentinel keeps the executor free of
-  // ambient randomness (which this codebase routes through Effect anyway) and
-  // makes the splice reproducible in tests.
+  // ambient randomness (which this codebase routes through Effect) and makes the
+  // splice reproducible in tests.
   const base = seed.replace(/[^A-Za-z0-9]/g, "").slice(-8);
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const candidate = `«cp:${base}${attempt === 0 ? "" : String(attempt)}»`;
@@ -277,10 +280,18 @@ export const makeContextPackSentinel = (haystack: string, seed: string): string 
       return candidate;
     }
   }
-  // Every candidate collided or was too long. Correctness beats length
-  // neutrality: a mis-splice would put pack text in the wrong place, while a few
-  // extra characters only nudge the description spill decision.
-  return `«cp:${base}:${String(haystack.length)}»`;
+  // Every short candidate collided. Widen without bound until one is unique:
+  // returning an unchecked fallback would be the one case where the sentinel is
+  // KNOWN to be collidable, which is exactly when a mis-splice happens. This
+  // terminates because the haystack is finite and each candidate is longer than
+  // the last. Correctness beats length neutrality here — extra characters only
+  // nudge the description spill decision.
+  for (let width = 1; ; width += 1) {
+    const candidate = `«cp:${base}:${"x".repeat(width)}»`;
+    if (!haystack.includes(candidate)) {
+      return candidate;
+    }
+  }
 };
 
 /** Matches the placeholder anywhere, allowing internal whitespace. */

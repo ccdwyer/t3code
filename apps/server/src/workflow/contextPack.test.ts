@@ -7,6 +7,7 @@ import {
   canonicalizeSubmittedSections,
   escapeBodyStructure,
   escapeForPack,
+  makeContextPackSentinel,
   parseNumstatZ,
   redactAndCap,
   renderContextPack,
@@ -250,6 +251,18 @@ describe("contextPack", () => {
       assert.include(escapeBodyStructure("done\u000b### notes"), "\\### notes");
     });
 
+    it("escapes a heading hidden behind any invisible character a consumer may strip", () => {
+      // Each of these is invisible to a reader and dropped or ignored by some
+      // consumer, which would turn the following `###` into a real heading.
+      for (const hidden of ["\u0000", "\u00ad", "\u061c", "\u200b", "\u202e", "\ufe0f", "\ufeff"]) {
+        assert.include(
+          escapeBodyStructure(`agent done\n${hidden}### notes`),
+          "\\### notes",
+          `unescaped after U+${hidden.charCodeAt(0).toString(16)}`,
+        );
+      }
+    });
+
     it("escapes a heading hidden behind a zero-width character", () => {
       // JS \s matches none of these, so a whitespace-only leading scan would
       // walk straight past them while a model still reads a heading.
@@ -274,6 +287,33 @@ describe("contextPack", () => {
 
     it("neutralizes an indented heading", () => {
       assert.equal(escapeBodyStructure("  ## indented"), "  \\## indented");
+    });
+  });
+
+  describe("makeContextPackSentinel", () => {
+    it("is deterministic for a given step run id", () => {
+      assert.equal(
+        makeContextPackSentinel("body", "step-run-0123abcd"),
+        makeContextPackSentinel("body", "step-run-0123abcd"),
+      );
+    });
+
+    it("never returns a sentinel the text already contains, even when every short form collides", () => {
+      const base = "0123abcd";
+      // All eight short candidates AND the first wide fallback are present.
+      const colliding = [
+        `«cp:${base}»`,
+        ...Array.from({ length: 7 }, (_, index) => `«cp:${base}${String(index + 1)}»`),
+        `«cp:${base}:x»`,
+      ].join(" ");
+
+      const sentinel = makeContextPackSentinel(colliding, `step-run-${base}`);
+      assert.notInclude(colliding, sentinel);
+    });
+
+    it("stays no longer than the placeholder it replaces in the ordinary case", () => {
+      const sentinel = makeContextPackSentinel("nothing here", "step-run-0123abcd");
+      assert.isAtMost(sentinel.length, "{{ticket.contextPack}}".length);
     });
   });
 });

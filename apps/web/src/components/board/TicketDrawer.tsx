@@ -1275,6 +1275,11 @@ function TicketContextPackSection({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [redacted, setRedacted] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // What the server actually stored, shown until the parent's refetch lands.
+  // Rendering the pre-save bodies instead would keep claiming text is stored
+  // that is not — and would sit under a "redacted on save" note saying so.
+  const [persisted, setPersisted] = useState<ContextPackView["sections"] | null>(null);
 
   if (pack === undefined) {
     return null;
@@ -1290,23 +1295,39 @@ function TicketContextPackSection({
     if (onSave === undefined) {
       return;
     }
+    // An all-blank submission IS the delete gesture on the server, so it needs
+    // the same confirmation as the explicit "Remove pack" button — otherwise
+    // clearing the textareas and pressing Save destroys the pack silently.
+    const meaningful = sections.filter((section) => section.body.trim().length > 0);
+    if (meaningful.length === 0 && !window.confirm("Remove this handoff context pack?")) {
+      return;
+    }
     setSaving(true);
+    setSaveError(null);
     void onSave({ ticketId, forLane: pack.forLane, sections })
-      .then((persisted) => {
+      .then((stored) => {
         // The server redacts secrets on save, so what came back can differ from
         // what was typed. Say so rather than silently showing different text.
         setRedacted(
-          persisted.some((section) => {
+          stored.some((section) => {
             const submitted = sections.find((candidate) => candidate.key === section.key);
             return submitted !== undefined && submitted.body.trim() !== section.body;
           }),
         );
+        setPersisted(stored);
         setEditing(false);
+      })
+      .catch((error: unknown) => {
+        // Keep the form open with the user's text: a failed save usually means
+        // the ticket left the lane, and silently closing would lose the edit.
+        setSaveError(error instanceof Error ? error.message : "Could not save handoff context.");
       })
       .finally(() => {
         setSaving(false);
       });
   };
+
+  const shownSections = persisted ?? pack.sections;
 
   return (
     <section
@@ -1339,6 +1360,11 @@ function TicketContextPackSection({
       {redacted ? (
         <p className="mt-1 text-xs text-warning">
           Some text was redacted on save; the stored version is shown.
+        </p>
+      ) : null}
+      {saveError !== null ? (
+        <p className="mt-1 text-xs text-destructive" role="alert">
+          {saveError}
         </p>
       ) : null}
 
@@ -1396,10 +1422,8 @@ function TicketContextPackSection({
               disabled={saving}
               className="text-xs text-destructive"
               onClick={() => {
-                // An empty submission IS the delete gesture on the server.
-                if (window.confirm("Remove this handoff context pack?")) {
-                  submit([]);
-                }
+                // submit() confirms an empty submission for us.
+                submit([]);
               }}
             >
               Remove pack
@@ -1408,7 +1432,7 @@ function TicketContextPackSection({
         </div>
       ) : (
         <div className="mt-2 space-y-2">
-          {pack.sections.map((section) => (
+          {shownSections.map((section) => (
             <div key={section.key}>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-medium text-foreground">

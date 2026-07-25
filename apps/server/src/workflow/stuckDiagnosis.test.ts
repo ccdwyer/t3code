@@ -66,7 +66,7 @@ describe("diagnoseTicket", () => {
       assert.deepStrictEqual(kinds(result), ["resolveApproval", "resolveApproval", "openTicket"]);
     });
 
-    it("offers no approve/reject when the wait carries a decision form", () => {
+    it("offers no approve/reject when the wait carries any checkpoint form", () => {
       // A bare approve cannot satisfy a decision form — the engine rejects it —
       // so the one-click buttons would be guaranteed errors.
       const result = diagnoseTicket(
@@ -76,7 +76,7 @@ describe("diagnoseTicket", () => {
             stepRunId: "sr-1",
             status: "awaiting_user",
             stepType: "approval",
-            formRequiresDecision: true,
+            hasCheckpointForm: true,
           } as never,
         }),
       );

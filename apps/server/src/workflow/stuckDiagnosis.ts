@@ -46,12 +46,15 @@ export interface StepRunLite {
   readonly startedAt?: string | null | undefined;
   readonly finishedAt?: string | null | undefined;
   /**
-   * The wait carries a checkpoint form with a decision field.
+   * The wait carries a checkpoint form of ANY shape.
    *
-   * A bare approve/reject cannot satisfy such a wait — the engine requires the
-   * chosen decision option — so the one-click buttons must not be offered for it.
+   * The unstick action contract carries no answers, so a bare approve/reject
+   * cannot satisfy a form wait: a decision field rejects it for want of a
+   * decision, and a required text/select/checklist rejects it for want of that
+   * answer. Suppressing only decision forms would still leave required-field
+   * forms erroring, so the whole class is excluded.
    */
-  readonly formRequiresDecision?: boolean | undefined;
+  readonly hasCheckpointForm?: boolean | undefined;
 }
 
 export interface DiagnoseTicketInput {
@@ -134,10 +137,11 @@ export const diagnoseTicket = (input: DiagnoseTicketInput): WorkflowStuckDiagnos
 
     if (isApproval) {
       const actions: Array<WorkflowUnstickActionView> = [];
-      if (liveApprovalStep !== undefined && liveApprovalStep.formRequiresDecision !== true) {
-        // Only with a live awaiting step, and never for a decision form: a stale
-        // stepRunId resolves nothing, and a bare approve on a decision form is
-        // rejected outright. Either way the button would lie.
+      if (liveApprovalStep !== undefined && liveApprovalStep.hasCheckpointForm !== true) {
+        // Only with a live awaiting step, and never for a form wait: a stale
+        // stepRunId resolves nothing, and a bare approve on any form is rejected
+        // for a missing decision or a missing required answer. Either way the
+        // button would lie.
         actions.push(
           {
             type: "resolveApproval",

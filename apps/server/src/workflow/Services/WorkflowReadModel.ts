@@ -83,6 +83,10 @@ export interface TicketRow {
   readonly description: string | null;
   readonly currentLaneKey: string;
   readonly currentLaneEntryToken: string | null;
+  // Both feed stuck diagnosis: terminalAt is its terminal guard, and
+  // currentLaneEnteredAt dates an idle-in-manual-lane stall.
+  readonly currentLaneEnteredAt?: string | null | undefined;
+  readonly terminalAt?: string | null | undefined;
   readonly status: string;
   readonly queuedAt: string | null;
   readonly totalTokens: number | null;

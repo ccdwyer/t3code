@@ -1,5 +1,6 @@
 import type {
   BoardId,
+  CheckpointAnswers,
   LaneKey,
   MessageId,
   StepRunId,
@@ -12,6 +13,7 @@ import type {
   WorkflowStepUsage,
   WorkflowContextPackSection,
 } from "@t3tools/contracts";
+
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
@@ -182,9 +184,21 @@ export interface WorkflowEngineShape {
     },
     WorkflowEventStoreError
   >;
+  /**
+   * Resolve a human checkpoint.
+   *
+   * Takes the reviewer's raw submission, not a finished resolution: the outcome
+   * is derived HERE by validating against the form snapshot persisted on the
+   * wait, so a client cannot choose its own routing outcome or answer a form
+   * that has since been edited off the board.
+   */
   readonly resolveApproval: (
     stepRunId: StepRunId,
-    approved: boolean,
+    submission: {
+      readonly approved: boolean;
+      readonly decision?: string | undefined;
+      readonly answers?: CheckpointAnswers | undefined;
+    },
   ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly answerTicketStep: (input: {
     readonly stepRunId: StepRunId;

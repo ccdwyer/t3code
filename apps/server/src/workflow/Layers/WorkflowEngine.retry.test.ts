@@ -254,7 +254,7 @@ rejectionLayer("user rejections never retry", (it) => {
       const stepRunId = waiting?.steps[0]?.stepRunId;
       assert.ok(stepRunId !== undefined);
 
-      yield* engine.resolveApproval(stepRunId as never, false);
+      yield* engine.resolveApproval(stepRunId as never, { approved: false });
 
       const detail = yield* awaitLane(ticketId as string, "needs");
       assert.equal(detail?.ticket.currentLaneKey, "needs");

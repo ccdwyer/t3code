@@ -184,6 +184,7 @@ import {
   TicketId,
   WorkflowBoardVersionSummary,
   WorkflowGetBoardDefinitionResult,
+  CheckpointAnswers,
   WorkflowGetBoardTimelineInput,
   WorkflowGetBoardTimelineResult,
   WorkflowGetBoardVersionResult,
@@ -996,7 +997,15 @@ export const WsWorkflowRunLaneRpc = Rpc.make(WORKFLOW_WS_METHODS.runLane, {
 });
 
 export const WsWorkflowResolveApprovalRpc = Rpc.make(WORKFLOW_WS_METHODS.resolveApproval, {
-  payload: Schema.Struct({ stepRunId: StepRunId, approved: Schema.Boolean }),
+  payload: Schema.Struct({
+    stepRunId: StepRunId,
+    // Kept required so older clients keep working unchanged; a checkpoint form
+    // sends it alongside the decision, and the server prefers the decision when
+    // the wait has a form.
+    approved: Schema.Boolean,
+    decision: Schema.optional(Schema.String),
+    answers: Schema.optional(CheckpointAnswers),
+  }),
   success: Schema.Void,
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });

@@ -3,12 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
-import { ApprovalGate } from "../Services/ApprovalGate.ts";
+import { ApprovalGate, type CheckpointResolution } from "../Services/ApprovalGate.ts";
 
 export const ApprovalGateLive = Layer.effect(
   ApprovalGate,
   Effect.gen(function* () {
-    const pending = yield* Ref.make(new Map<string, Deferred.Deferred<boolean>>());
+    const pending = yield* Ref.make(new Map<string, Deferred.Deferred<CheckpointResolution>>());
     const activeWaiters = yield* Ref.make(new Map<string, number>());
 
     const getOrCreate = (stepRunId: string) =>
@@ -16,7 +16,7 @@ export const ApprovalGateLive = Layer.effect(
         // Created speculatively, registered atomically: two concurrent
         // callers must end up waiting on the SAME deferred or the loser's
         // waiter could never be resolved.
-        const fresh = yield* Deferred.make<boolean>();
+        const fresh = yield* Deferred.make<CheckpointResolution>();
         return yield* Ref.modify(pending, (current) => {
           const existing = current.get(stepRunId);
           if (existing) {
@@ -72,12 +72,12 @@ export const ApprovalGateLive = Layer.effect(
             Effect.ensuring(decrementWaiter(id)),
           );
         }),
-      resolve: (stepRunId, approved) =>
+      resolve: (stepRunId, resolution) =>
         Effect.gen(function* () {
           const id = stepRunId as string;
           const deferred = yield* getOrCreate(id);
           const liveWaiters = (yield* Ref.get(activeWaiters)).get(id) ?? 0;
-          yield* Deferred.succeed(deferred, approved);
+          yield* Deferred.succeed(deferred, resolution);
           yield* prune(id);
           return liveWaiters > 0;
         }),

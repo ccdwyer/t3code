@@ -13,9 +13,9 @@ layer("ApprovalGate", (it) => {
       const gate = yield* ApprovalGate;
       const fiber = yield* Effect.forkChild(gate.await("sr-1" as never));
       yield* Effect.yieldNow;
-      yield* gate.resolve("sr-1" as never, true);
+      yield* gate.resolve("sr-1" as never, { outcome: "success" });
       const approved = yield* Fiber.join(fiber);
-      assert.equal(approved, true);
+      assert.deepStrictEqual(approved, { outcome: "success" });
     }),
   );
 });

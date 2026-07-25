@@ -23,6 +23,7 @@ import type {
   WorkflowSaveBoardDefinitionInput,
   WorkflowSaveBoardDefinitionResult,
   WorkflowStepRunView,
+  CheckpointAnswers,
   WorkflowGetBoardTimelineInput,
   WorkflowGetBoardTimelineResult,
   WorkflowGetTicketTimelineInput,
@@ -3026,11 +3027,17 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
     [WORKFLOW_WS_METHODS.resolveApproval]: (input: {
       readonly stepRunId: StepRunId;
       readonly approved: boolean;
+      readonly decision?: string | undefined;
+      readonly answers?: CheckpointAnswers | undefined;
     }) =>
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.resolveApproval,
         deps.engine
-          .resolveApproval(input.stepRunId, input.approved)
+          .resolveApproval(input.stepRunId, {
+            approved: input.approved,
+            ...(input.decision === undefined ? {} : { decision: input.decision }),
+            ...(input.answers === undefined ? {} : { answers: input.answers }),
+          })
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to resolve workflow approval"))),
         { "rpc.aggregate": "workflow" },
       ),

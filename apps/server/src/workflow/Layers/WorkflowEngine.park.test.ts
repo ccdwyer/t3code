@@ -1185,7 +1185,7 @@ answerParkLayer("answer while parked", (it) => {
       // resolveApproval on the same parked ticket is refused too (NEW-3: the
       // parked check guards the approval commit path as well).
       const approvalFailure = yield* engine
-        .resolveApproval(stepRunId as never, true)
+        .resolveApproval(stepRunId as never, { approved: true })
         .pipe(Effect.flip);
       assert.include(approvalFailure.message, "parked");
 

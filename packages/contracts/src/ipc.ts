@@ -130,6 +130,7 @@ import type {
   WorkflowDefinitionEncoded,
   WorkflowDryRunResult,
   WorkflowDryRunScenario,
+  CheckpointAnswers,
   WorkflowGetBoardTimelineInput,
   WorkflowGetBoardTimelineResult,
   WorkflowGetTicketTimelineInput,
@@ -1424,6 +1425,8 @@ export interface EnvironmentApi {
     resolveApproval: (input: {
       readonly stepRunId: StepRunId;
       readonly approved: boolean;
+      readonly decision?: string | undefined;
+      readonly answers?: CheckpointAnswers | undefined;
     }) => Promise<void>;
     answerTicketStep: (input: {
       readonly stepRunId: StepRunId;

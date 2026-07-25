@@ -1219,7 +1219,7 @@ describe.sequential("Workflow runtime real path", () => {
       });
 
       yield* recovery.recover();
-      yield* engine.resolveApproval(approvalStepRunId, true);
+      yield* engine.resolveApproval(approvalStepRunId, { approved: true });
       const done = yield* waitForDetail(
         read,
         ticketId,

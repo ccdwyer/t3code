@@ -888,7 +888,7 @@ providerContinuationLayer("WorkflowEngine provider continuation routing", (it) =
         )
       `;
 
-      yield* engine.resolveApproval("step-provider-continuation" as never, true);
+      yield* engine.resolveApproval("step-provider-continuation" as never, { approved: true });
 
       const detail = yield* awaitLane("ticket-provider-continuation", "needs");
       assert.deepEqual(detail?.steps.find((step) => step.stepKey === "review")?.output, {
@@ -1113,7 +1113,7 @@ successLayer("WorkflowEngine approval gate", (it) => {
       const stepRunId = waitingDetail?.steps[0]?.stepRunId;
       assert.isString(stepRunId);
 
-      yield* engine.resolveApproval(stepRunId as never, true);
+      yield* engine.resolveApproval(stepRunId as never, { approved: true });
       const doneDetail = yield* awaitLane(ticketId as string, "done");
       assert.equal(doneDetail?.ticket.currentLaneKey, "done");
     }),

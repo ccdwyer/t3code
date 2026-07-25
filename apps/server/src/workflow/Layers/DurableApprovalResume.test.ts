@@ -318,7 +318,7 @@ it.effect("routes provider-question approval resolution to the provider response
         },
       });
 
-      yield* engine.resolveApproval("step-run-provider" as never, true);
+      yield* engine.resolveApproval("step-run-provider" as never, { approved: true });
 
       assert.deepEqual(yield* Ref.get(responses), [
         {
@@ -454,7 +454,7 @@ it.effect("rejects resolveApproval for provider user-input waits without respond
       });
 
       const error = yield* Effect.flip(
-        engine.resolveApproval("step-run-provider-user-input" as never, true),
+        engine.resolveApproval("step-run-provider-user-input" as never, { approved: true }),
       );
 
       assert.include(error.message, "answerTicketStep");

@@ -42,7 +42,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import { ApprovalGate } from "../Services/ApprovalGate.ts";
+import { ApprovalGate, type CheckpointResolution } from "../Services/ApprovalGate.ts";
+import { validateCheckpointSubmission } from "@t3tools/contracts";
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { CapturedStepOutputReader } from "../Services/CapturedStepOutputReader.ts";
 import { WorkflowEventStoreError, WorkflowEventStoreErrorCode } from "../Services/Errors.ts";
@@ -1051,24 +1052,58 @@ const make = Effect.gen(function* () {
         yield* commit({
           type: "StepAwaitingUser",
           ticketId,
-          payload: { stepRunId, waitingReason: step.prompt ?? "Approval required" },
+          payload: {
+            stepRunId,
+            waitingReason: step.prompt ?? "Approval required",
+            // Snapshot the form as it is NOW. The reviewer may not answer for
+            // days, by which time the board definition can have changed; the
+            // event, not the definition, is the authority for what was asked.
+            ...(step.form === undefined ? {} : { formSnapshot: step.form }),
+          },
         });
-        const approved = yield* approvals.await(stepRunId);
-        yield* commit({ type: "StepUserResolved", ticketId, payload: { stepRunId } });
-        if (!approved) {
+        const resolution = yield* approvals.await(stepRunId);
+        yield* commit({
+          type: "StepUserResolved",
+          ticketId,
+          payload: {
+            stepRunId,
+            outcome: resolution.outcome,
+            ...(resolution.decision === undefined ? {} : { decision: resolution.decision }),
+            ...(resolution.answers === undefined ? {} : { answers: resolution.answers }),
+          },
+        });
+        if (resolution.outcome === "blocked") {
+          // A "hold"-style decision is neither approval nor rejection: the step
+          // blocks so lane on.blocked routing can pick it up.
+          yield* commit({
+            type: "StepBlocked",
+            ticketId,
+            payload: { stepRunId, reason: resolution.decision ?? "checkpoint blocked" },
+          });
+          return {
+            result: "blocked",
+            noRetry: true,
+            detail: resolution.decision ?? "checkpoint blocked",
+          };
+        }
+        if (resolution.outcome === "failure") {
           yield* commit({
             type: "StepFailed",
             ticketId,
             payload: stepFailedPayload(
               stepRunId,
-              "rejected",
+              resolution.decision ?? "rejected",
               undefined,
               false,
               undefined,
               "human_rejection",
             ),
           });
-          return { result: "failed", noRetry: true, detail: "rejected" };
+          return {
+            result: "failed",
+            noRetry: true,
+            detail: resolution.decision ?? "rejected",
+          };
         }
         yield* commit({
           type: "StepCompleted",
@@ -1272,9 +1307,20 @@ const make = Effect.gen(function* () {
           },
         } satisfies UnstampedWorkflowEventInput;
         yield* commitMany(yield* awaitingUserEvents(ticketId, awaitingEvent));
-        const approved = yield* approvals.await(stepRunId);
-        yield* commit({ type: "StepUserResolved", ticketId, payload: { stepRunId } });
-        if (!approved) {
+        const userResolution = yield* approvals.await(stepRunId);
+        yield* commit({
+          type: "StepUserResolved",
+          ticketId,
+          payload: {
+            stepRunId,
+            // No `outcome` here on purpose: this is a provider-originated wait,
+            // whose real terminal arrives below from the provider turn. Stamping
+            // one would let boot replay fabricate a terminal that never happened.
+            ...(userResolution.decision === undefined ? {} : { decision: userResolution.decision }),
+            ...(userResolution.answers === undefined ? {} : { answers: userResolution.answers }),
+          },
+        });
+        if (userResolution.outcome !== "success") {
           yield* commit({
             type: "StepFailed",
             ticketId,
@@ -3555,9 +3601,9 @@ const make = Effect.gen(function* () {
       if (pending?.payload.providerResponseKind !== "user-input") {
         return;
       }
-      const resumedLiveWaiter = yield* approvals.resolve(input.stepRunId, true);
+      const resumedLiveWaiter = yield* approvals.resolve(input.stepRunId, { outcome: "success" });
       if (!resumedLiveWaiter) {
-        yield* continueRecoveredApproval(pending, true);
+        yield* continueRecoveredApproval(pending, { outcome: "success" });
       }
     });
 
@@ -4818,7 +4864,7 @@ const make = Effect.gen(function* () {
       );
     });
 
-  const continueRecoveredApproval = (pending: PendingWait, approved: boolean) =>
+  const continueRecoveredApproval = (pending: PendingWait, resolution: CheckpointResolution) =>
     Effect.gen(function* () {
       const events = yield* readStoredEventsForStep(pending.payload.stepRunId);
       if (events === null || !pendingWaitInEvents(events, pending.payload.stepRunId)) {
@@ -4833,14 +4879,24 @@ const make = Effect.gen(function* () {
       yield* commit({
         type: "StepUserResolved",
         ticketId: pending.ticketId,
-        payload: { stepRunId: pending.payload.stepRunId },
+        payload: {
+          stepRunId: pending.payload.stepRunId,
+          // Only native waits carry an outcome. A provider-originated wait gets
+          // its real terminal from awaitProviderTerminalForStep below, and
+          // stamping one here would let boot replay fabricate the wrong one.
+          ...(pending.payload.providerThreadId === undefined
+            ? { outcome: resolution.outcome }
+            : {}),
+          ...(resolution.decision === undefined ? {} : { decision: resolution.decision }),
+          ...(resolution.answers === undefined ? {} : { answers: resolution.answers }),
+        },
       });
-      if (!approved) {
+      if (resolution.outcome !== "success") {
         yield* completeRecoveredStepUnlocked(
           pending.payload.stepRunId,
           {
             _tag: "failed",
-            error: "rejected",
+            error: resolution.decision ?? "rejected",
           },
           undefined,
           { allowRetry: false },
@@ -4878,7 +4934,7 @@ const make = Effect.gen(function* () {
       yield* cancelActiveProviderTurnsForTicket(ticketId);
     });
 
-  const resolveApproval: WorkflowEngineShape["resolveApproval"] = (stepRunId, approved) =>
+  const resolveApproval: WorkflowEngineShape["resolveApproval"] = (stepRunId, submission) =>
     Effect.gen(function* () {
       const resolve = Effect.gen(function* () {
         // Refuse to resolve an approval on a parked ticket: a park cannot
@@ -4895,6 +4951,26 @@ const make = Effect.gen(function* () {
           }
         }
         const pending = yield* pendingWaitFor(stepRunId);
+        // Validate against the SNAPSHOT on the wait, never the current board
+        // definition: the form may have been edited while the reviewer was
+        // deciding, and the outcome must be the one their chosen option mapped
+        // to — not one the client asserted.
+        const validated = validateCheckpointSubmission(
+          pending?.payload.formSnapshot,
+          {
+            ...(submission.decision === undefined ? {} : { decision: submission.decision }),
+            ...(submission.answers === undefined ? {} : { answers: submission.answers }),
+          },
+          submission.approved ? "success" : "failure",
+        );
+        if (!validated.ok) {
+          return yield* new WorkflowEventStoreError({ message: validated.message });
+        }
+        const resolution: CheckpointResolution = {
+          outcome: validated.outcome,
+          ...(validated.decision === undefined ? {} : { decision: validated.decision }),
+          ...(Object.keys(validated.answers).length === 0 ? {} : { answers: validated.answers }),
+        };
         const { providerResponses } = yield* getOptionalServices;
         if (pending?.payload.providerResponseKind === "user-input") {
           return yield* new WorkflowEventStoreError({
@@ -4926,13 +5002,14 @@ const make = Effect.gen(function* () {
             threadId: pending.payload.providerThreadId,
             requestId: pending.payload.providerRequestId,
             responseKind: pending.payload.providerResponseKind,
-            approved,
+            // A provider permission prompt only understands yes/no.
+            approved: resolution.outcome === "success",
           });
         }
 
-        const resumedLiveWaiter = yield* approvals.resolve(stepRunId, approved);
+        const resumedLiveWaiter = yield* approvals.resolve(stepRunId, resolution);
         if (!resumedLiveWaiter && pending) {
-          yield* continueRecoveredApproval(pending, approved);
+          yield* continueRecoveredApproval(pending, resolution);
         }
       });
       // Resolution serializes through the inner recovery path's own locking

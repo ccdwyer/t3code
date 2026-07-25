@@ -563,7 +563,7 @@ const make = Effect.gen(function* () {
         SELECT dispatch_id AS "dispatchId"
         FROM workflow_dispatch_outbox
         WHERE step_run_id = ${stepRunId}
-        ORDER BY created_at DESC, dispatch_id DESC
+        ORDER BY dispatch_seq DESC, created_at DESC, dispatch_id DESC
         LIMIT 1
       `);
       const dispatchId = rows[0]?.dispatchId;

@@ -128,10 +128,12 @@ const stepCompletedPayload = (
   stepRunId: StepRunId,
   output?: unknown,
   usage?: WorkflowStepUsage,
+  outputRepaired?: boolean,
 ) => ({
   stepRunId,
   ...(output === undefined ? {} : { output }),
   ...(usage === undefined ? {} : { usage }),
+  ...(outputRepaired === undefined ? {} : { outputRepaired }),
 });
 
 const stepFailedPayload = (
@@ -139,11 +141,13 @@ const stepFailedPayload = (
   error: string,
   usage?: WorkflowStepUsage,
   retryable?: boolean,
+  contractViolation?: boolean,
 ) => ({
   stepRunId,
   error,
   ...(retryable === undefined ? {} : { retryable }),
   ...(usage === undefined ? {} : { usage }),
+  ...(contractViolation === undefined ? {} : { contractViolation }),
 });
 
 const MAX_TICKET_ANSWER_BODY_LENGTH = MAX_TICKET_MESSAGE_BODY_LENGTH;
@@ -1088,6 +1092,7 @@ const make = Effect.gen(function* () {
             outcome.error,
             outcome.usage,
             outcome.retryable === false ? false : undefined,
+            outcome.contractViolation === true ? true : undefined,
           ),
         });
         return { result: "failed", noRetry: outcome.retryable === false, detail: outcome.error };
@@ -1104,7 +1109,12 @@ const make = Effect.gen(function* () {
       yield* commit({
         type: "StepCompleted",
         ticketId,
-        payload: stepCompletedPayload(stepRunId, outcome.output, outcome.usage),
+        payload: stepCompletedPayload(
+          stepRunId,
+          outcome.output,
+          outcome.usage,
+          outcome.outputRepaired === true ? true : undefined,
+        ),
       });
       return { result: "completed", noRetry: false };
     });

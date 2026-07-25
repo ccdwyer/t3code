@@ -766,7 +766,9 @@ const make = Effect.gen(function* () {
             turnId: result.turnId,
           });
           const diagnostic: OutputDiagnostic =
-            output === undefined ? { failure: "no_block" } : { output: output as object };
+            output === undefined
+              ? { failure: "no_block" }
+              : { output: output as object, rawBlock: JSON.stringify(output) };
 
           if (contract === undefined) {
             if (output === undefined) {
@@ -861,7 +863,10 @@ const make = Effect.gen(function* () {
           const repairDiagnostic: OutputDiagnostic =
             repairedOutput === undefined
               ? { failure: "no_block" }
-              : { output: repairedOutput as object };
+              : {
+                  output: repairedOutput as object,
+                  rawBlock: JSON.stringify(repairedOutput),
+                };
           const repairErrors = validateStepOutput(contract, repairDiagnostic);
           const finalUsage = yield* readStepUsage(threadId as string);
           if (repairErrors.length === 0 && repairedOutput !== undefined) {

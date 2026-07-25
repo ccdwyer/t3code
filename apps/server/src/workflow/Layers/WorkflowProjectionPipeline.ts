@@ -518,7 +518,20 @@ const make = Effect.gen(function* () {
                 cached_input_tokens = ${usage?.cachedInputTokens ?? null},
                 output_tokens = ${usage?.outputTokens ?? null},
                 total_tokens = ${usage?.totalTokens ?? null},
-                finished_at = ${event.occurredAt}
+                finished_at = ${event.occurredAt},
+                output_validation_errors_json = NULL,
+                output_validation_phase = NULL,
+                output_repaired = ${event.payload.outputRepaired === true ? 1 : 0}
+            WHERE step_run_id = ${event.payload.stepRunId}
+          `;
+          break;
+        }
+        case "StepOutputInvalid": {
+          const errorsJson = JSON.stringify(event.payload.errors);
+          yield* sql`
+            UPDATE projection_step_run
+            SET output_validation_errors_json = ${errorsJson},
+                output_validation_phase = ${event.payload.phase}
             WHERE step_run_id = ${event.payload.stepRunId}
           `;
           break;
@@ -539,6 +552,15 @@ const make = Effect.gen(function* () {
                 finished_at = ${event.occurredAt}
             WHERE step_run_id = ${event.payload.stepRunId}
           `;
+          // Contract violations keep the error list for the drawer; others clear.
+          if (event.payload.contractViolation !== true) {
+            yield* sql`
+              UPDATE projection_step_run
+              SET output_validation_errors_json = NULL,
+                  output_validation_phase = NULL
+              WHERE step_run_id = ${event.payload.stepRunId}
+            `;
+          }
           break;
         }
         case "StepBlocked": {

@@ -1281,6 +1281,20 @@ function TicketContextPackSection({
   // that is not — and would sit under a "redacted on save" note saying so.
   const [persisted, setPersisted] = useState<ContextPackView["sections"] | null>(null);
 
+  // Identity of the pack currently on screen. A route into a new lane compiles a
+  // fresh pack, and the post-save override must not outlive the pack it came
+  // from — it would show one lane's handoff text under another lane's heading.
+  const packKey =
+    pack === undefined ? "" : `${pack.forLane}\u0000${pack.compiledAt}\u0000${pack.editedAt ?? ""}`;
+  const [shownPackKey, setShownPackKey] = useState(packKey);
+  if (shownPackKey !== packKey) {
+    setShownPackKey(packKey);
+    setPersisted(null);
+    setRedacted(false);
+    setSaveError(null);
+    setEditing(false);
+  }
+
   if (pack === undefined) {
     return null;
   }

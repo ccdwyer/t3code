@@ -166,6 +166,28 @@ describe("workflowReplay", () => {
       );
       assert.equal(resolved?.status, "running");
     });
+
+    it("resolves a fork ONLY from forked, matching the projection's guard", () => {
+      // The projection updates `WHERE ... AND status = 'forked'`. A resolve
+      // reaching a ticket that has since been blocked or parked must leave it
+      // alone; flipping it to running would show a replayed card as working
+      // while the live board shows it stuck.
+      const blocked = after(ev("TicketBlocked", { reason: "no route" }));
+      const afterResolve = reduceReplayEvents(
+        [ev("TicketForkResolved", { stepRunId: "sr", result: "success" })],
+        blocked,
+      );
+      assert.equal(afterResolve?.status, "blocked");
+
+      const parked = after(ev("TicketParked", { substate: "issue", label: "L", reason: "r" }));
+      assert.equal(
+        reduceReplayEvents(
+          [ev("TicketForkResolved", { stepRunId: "sr", result: "success" })],
+          parked,
+        )?.status,
+        "parked",
+      );
+    });
   });
 
   describe("edits", () => {

@@ -88,6 +88,14 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       label: "environment-data:workflow:get-ticket-detail",
       tag: WORKFLOW_WS_METHODS.getTicketDetail,
     }),
+    getTicketTimeline: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:workflow:get-ticket-timeline",
+      tag: WORKFLOW_WS_METHODS.getTicketTimeline,
+    }),
+    getBoardTimeline: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:workflow:get-board-timeline",
+      tag: WORKFLOW_WS_METHODS.getBoardTimeline,
+    }),
     getTicketDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:workflow:get-ticket-diff",
       tag: WORKFLOW_WS_METHODS.getTicketDiff,

@@ -15,15 +15,6 @@ export interface ReplayTicketState {
   readonly description?: string | undefined;
   readonly tokenBudget?: number | undefined;
   readonly status: TicketStatus;
-  /**
-   * When the ticket entered a terminal lane, separate from `status`.
-   *
-   * The projection does NOT move a ticket to a terminal status on terminal-lane
-   * entry — it keeps `idle` and stamps `terminal_at`. Exposing this as its own
-   * field is what lets the reducer avoid an `isTerminalLane` predicate (which
-   * would need the board definition) and still agree with the live board.
-   */
-  readonly terminalAt?: string | undefined;
   /** The state reflects every event at or below this per-ticket version. */
   readonly asOfStreamVersion: number;
   readonly occurredAt: string;
@@ -51,6 +42,14 @@ const isParked = (status: TicketStatus): boolean => status === "parked";
  *    `running` until the engine emits `TicketBlocked` or routes it.
  *  - `TicketRouted` (legacy) moves the lane and stamps `terminal_at` but leaves
  *    status alone.
+ *
+ * NOT modeled: `terminal_at`. The projection stamps it on lane entry by asking
+ * whether the destination lane is terminal, which requires the board definition
+ * — and this reducer is deliberately definition-free so the server fork path and
+ * the web can share it. A caller that needs "is this ticket done" checks the
+ * reduced `laneKey` against the live definition's terminal lanes, which it
+ * already has. An earlier version declared a `terminalAt` field here and never
+ * assigned it, which was worse than omitting it: the field read as supported.
  *
  * Getting any of these wrong would make a replayed card disagree with the live
  * board for the same event.
@@ -122,7 +121,10 @@ export const applyReplayEvent = (
     case "TicketForkSpawned":
       return advance({ status: "forked" });
     case "TicketForkResolved":
-      return advance({ status: "running" });
+      // Guarded in the projection by `AND status = 'forked'`: a resolve that
+      // arrives for a ticket which has since been parked, blocked or moved on
+      // must not drag it back to running.
+      return state.status === "forked" ? advance({ status: "running" }) : advance({});
     default:
       // Everything else — messages, edits to messages, refs, PRs, route
       // decisions, skips, steering, SLA breaches, step lifecycle — leaves ticket

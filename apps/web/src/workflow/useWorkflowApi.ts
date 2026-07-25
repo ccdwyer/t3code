@@ -197,6 +197,8 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
       setProjectScriptTrust: (input) => run(w.setProjectScriptTrust, input),
       cancelStep: (input) => run(w.cancelStep, input),
       getTicketDetail: (input) => readQuery(w.getTicketDetail, input),
+      getTicketTimeline: (input) => readQuery(w.getTicketTimeline, input),
+      getBoardTimeline: (input) => readQuery(w.getBoardTimeline, input),
       getTicketDiff: (input) => readQuery(w.getTicketDiff, input),
       intakeTickets: (input) => run(w.intakeTickets, input),
       listTicketArtifacts: (input) => readQuery(w.listTicketArtifacts, input),

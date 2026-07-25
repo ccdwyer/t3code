@@ -127,6 +127,24 @@ export const steerTicketStep = (
 export const getTicketDiff = (api: EnvironmentApi, ticketId: TicketId) =>
   api.workflow.getTicketDiff({ ticketId });
 
+export const getTicketTimeline = (api: EnvironmentApi, ticketId: TicketId) =>
+  api.workflow.getTicketTimeline({ ticketId });
+
+/**
+ * One page of a board timeline. `throughSequence` pins the scrub session: pass
+ * the `latestSequence` from the first page on every subsequent call, or events
+ * appended mid-scrub shift the pages under the user.
+ */
+export const getBoardTimeline = (
+  api: EnvironmentApi,
+  input: {
+    readonly boardId: BoardId;
+    readonly afterSequence?: number | undefined;
+    readonly throughSequence?: number | undefined;
+    readonly limit?: number | undefined;
+  },
+) => api.workflow.getBoardTimeline(input);
+
 export const proposeBoardImprovement = (
   api: EnvironmentApi,
   input: WorkflowProposeBoardImprovementInput,

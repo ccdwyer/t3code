@@ -45,11 +45,18 @@ describe("evaluateJoin", () => {
     ).toBe("wait");
   });
 
-  it("does not clamp require down to partial outcomes length", () => {
-    // require 3 of 3 but only 2 slots provided as success — still wait (missing
-    // child must be passed as unsettled by the caller; we do not lower the bar).
+  it("does not clamp require down — short list with require>length is impossible", () => {
+    // Caller must pass a fixed-length list (one entry per child). A short list
+    // with require higher than length is impossible → failure, not success.
     expect(
       evaluateJoin(["success", "success"], {
+        require: 3,
+        onBranchFailure: "waitImpossible",
+      }).result,
+    ).toBe("failure");
+    // Correct caller form: pad missing children as unsettled → wait.
+    expect(
+      evaluateJoin(["success", "success", "unsettled"], {
         require: 3,
         onBranchFailure: "waitImpossible",
       }).result,

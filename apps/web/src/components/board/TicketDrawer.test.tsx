@@ -1146,7 +1146,7 @@ describe("TicketDiffContent", () => {
                   },
                   { kind: "text", key: "why", label: "Why?" },
                 ],
-              },
+              } as never,
             },
           ],
         }}

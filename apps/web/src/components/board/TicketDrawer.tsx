@@ -8,6 +8,7 @@ import {
   type EnvironmentApi,
   type TerminalHistoryAttachStreamEvent,
   type CheckpointForm,
+  toTimelineEntry,
   type WorkflowTimelineBase,
   type WorkflowTimelineItem,
 } from "@t3tools/contracts";
@@ -1631,7 +1632,20 @@ function TicketHistorySection({
                         setSelected(index);
                       }}
                     >
-                      {`${entry.event.type} · ${entry.event.occurredAt}`}
+                      {(() => {
+                        const mapped = toTimelineEntry(entry.event);
+                        return (
+                          <>
+                            <span className="text-muted-foreground">{`${mapped.actor} · `}</span>
+                            <span className="text-foreground">{mapped.summary}</span>
+                            {mapped.detail === undefined ? null : (
+                              <span className="block truncate text-2xs text-muted-foreground">
+                                {mapped.detail}
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
                     </button>
                   </li>
                 ))}

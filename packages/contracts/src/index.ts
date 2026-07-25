@@ -33,4 +33,5 @@ export * from "./rpc.ts";
 export * from "./workflow.ts";
 export * from "./workflowReplay.ts";
 export * from "./checkpointForm.ts";
+export * from "./workflowTimelineEntry.ts";
 export * from "./outbound.ts";

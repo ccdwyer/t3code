@@ -8,7 +8,7 @@ import { migrationEntries } from "../Migrations.ts";
 
 const layer = it.layer(Layer.mergeAll(SqlitePersistenceMemory));
 
-layer("036_WorktreeParallelism", (it) => {
+layer("037_WorktreeParallelism", (it) => {
   it.effect("creates path cache, hold, overlap report, and registry tables", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -34,7 +34,7 @@ layer("036_WorktreeParallelism", (it) => {
       ]);
 
       assert.isTrue(
-        migrationEntries.some(([id, name]) => id === 36 && name === "WorktreeParallelism"),
+        migrationEntries.some(([id, name]) => id === 37 && name === "WorktreeParallelism"),
       );
     }),
   );

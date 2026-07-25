@@ -8,7 +8,7 @@ import { migrationEntries } from "../Migrations.ts";
 
 const layer = it.layer(Layer.mergeAll(SqlitePersistenceMemory));
 
-layer("037_ForkJoin", (it) => {
+layer("038_ForkJoin", (it) => {
   it.effect("creates fork projection and lineage tables", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -26,7 +26,7 @@ layer("037_ForkJoin", (it) => {
         tables.map((t) => t.name),
         ["projection_ticket_fork", "projection_ticket_fork_child", "workflow_fork_lineage"],
       );
-      assert.isTrue(migrationEntries.some(([id, name]) => id === 37 && name === "ForkJoin"));
+      assert.isTrue(migrationEntries.some(([id, name]) => id === 38 && name === "ForkJoin"));
 
       const cols = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_ticket)`;
       const names = new Set(cols.map((c) => c.name));

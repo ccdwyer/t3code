@@ -9,7 +9,7 @@ import { migrationEntries } from "../Migrations.ts";
 // SqlitePersistenceMemory runs full MigrationsLive on build.
 const layer = it.layer(Layer.mergeAll(SqlitePersistenceMemory));
 
-layer("035_StepOutputContract", (it) => {
+layer("036_StepOutputContract", (it) => {
   it.effect("adds output-contract columns and dispatch_seq", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -29,7 +29,7 @@ layer("035_StepOutputContract", (it) => {
 
       // Columns exist once 035 has applied (higher migrations may also be present).
       assert.isTrue(
-        migrationEntries.some(([id, name]) => id === 35 && name === "StepOutputContract"),
+        migrationEntries.some(([id, name]) => id === 36 && name === "StepOutputContract"),
       );
     }),
   );

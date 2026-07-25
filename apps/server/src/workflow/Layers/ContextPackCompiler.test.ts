@@ -177,6 +177,18 @@ describe("ContextPackCompiler", () => {
     }),
   );
 
+  it.effect("propagates an interrupt even when a defect rode along with it", () =>
+    Effect.gen(function* () {
+      // A cause carrying BOTH an interrupt and a defect must still propagate:
+      // an "only interrupts" check would swallow the interrupt with the defect.
+      const exit = yield* compileWith({
+        priorOutputs: Effect.interrupt as never,
+        diffStat: Effect.die("git exploded") as never,
+      }).pipe(Effect.exit);
+      assert.isTrue(exit._tag === "Failure");
+    }),
+  );
+
   it.effect("propagates an interrupt instead of swallowing it as a failed section", () =>
     Effect.gen(function* () {
       // A superseded pipeline interrupts the compiling fiber. Absorbing that

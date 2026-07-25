@@ -219,3 +219,49 @@ export const renderDiffSummary = (input: {
   });
   return [header, ...lines].join("\n");
 };
+
+/**
+ * Build a per-render sentinel to stand in for the pack during templating.
+ *
+ * Two constraints:
+ *  - It must never be LONGER than the placeholder it replaces. The description
+ *    inline-or-spill decision is computed against the templated body, so a
+ *    longer stand-in would push the description toward spilling before the pack
+ *    text even exists.
+ *  - It must not already occur in the text. A fixed sentinel that happened to
+ *    appear inside a pack body, a ticket discussion, or a captured output would
+ *    mis-splice, so the suffix varies per render and is collision-checked.
+ */
+export const makeContextPackSentinel = (haystack: string, randomHex: () => string): string => {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = `«ctxpack:${randomHex().slice(0, 8)}»`;
+    if (candidate.length <= CONTEXT_PACK_PLACEHOLDER.length && !haystack.includes(candidate)) {
+      return candidate;
+    }
+  }
+  // Every candidate collided (or was too long) — fall back to a longer unique
+  // form. Correctness beats length neutrality: a mis-splice would inject pack
+  // text into the wrong position, while a few extra characters only nudges the
+  // spill decision.
+  return `«ctxpack:${randomHex()}:${randomHex()}»`;
+};
+
+/** Matches the placeholder anywhere, allowing internal whitespace. */
+export const CONTEXT_PACK_PLACEHOLDER_PATTERN = /\{\{\s*ticket\.contextPack\s*\}\}/g;
+
+/**
+ * Replace the FIRST placeholder occurrence with `sentinel` and every later one
+ * with the empty-pack text. The pack is single-use by design: splicing it twice
+ * would double the prompt's largest block.
+ */
+export const substituteContextPackPlaceholder = (
+  text: string,
+  sentinel: string,
+): { readonly text: string; readonly matched: number } => {
+  let matched = 0;
+  const next = text.replace(CONTEXT_PACK_PLACEHOLDER_PATTERN, () => {
+    matched += 1;
+    return matched === 1 ? sentinel : CONTEXT_PACK_EMPTY;
+  });
+  return { text: next, matched };
+};

@@ -43,7 +43,10 @@ const guardSection = <A>(
 ): Effect.Effect<A | null, never, never> =>
   effect.pipe(
     Effect.catchCause((cause) => {
-      if (Cause.hasInterruptsOnly(cause)) {
+      // hasInterrupts, not the "only" variant: a cause combining an in-flight
+      // defect with the interrupt would fail an all-interrupts check, and the
+      // interrupt would be swallowed along with the defect.
+      if (Cause.hasInterrupts(cause)) {
         return Effect.failCause(cause) as Effect.Effect<never, never, never>;
       }
       return Effect.logWarning(`context pack section ${label} failed`, cause).pipe(Effect.as(null));
@@ -149,7 +152,7 @@ const make = Effect.gen(function* () {
       // Any failure or defect at the compile boundary degrades to "no pack".
       // Routing must never fail because a pack could not be built.
       Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) {
+        if (Cause.hasInterrupts(cause)) {
           return Effect.failCause(cause) as Effect.Effect<never, never, never>;
         }
         return Effect.logWarning("context pack compilation failed", cause).pipe(

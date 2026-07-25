@@ -51,6 +51,12 @@ import {
   unsafeWorkflowInstructionPathMessage,
 } from "../instructionPath.ts";
 import {
+  CONTEXT_PACK_EMPTY,
+  makeContextPackSentinel,
+  renderContextPack,
+  substituteContextPackPlaceholder,
+} from "../contextPack.ts";
+import {
   applyInstructionTemplateExcept,
   descriptionSpillPath,
   descriptionSpillReference,
@@ -709,6 +715,42 @@ const make = Effect.gen(function* () {
       const discussion = renderTicketDiscussion(
         yield* read.listTicketDiscussion(ctx.ticketId, DISCUSSION_MESSAGE_CAP + 1),
       );
+      // The handoff pack for the lane this step is EXECUTING in. Not
+      // ticket.currentLaneKey, which can drift from the executing lane while a
+      // dispatch is in flight. A read failure degrades to no pack: an optional
+      // enrichment must never fail the step.
+      const contextPack = yield* read
+        .getContextPack(ctx.ticketId, ctx.laneKey)
+        .pipe(Effect.orElseSucceed(() => null));
+      const packBlock =
+        contextPack === null || contextPack.sections.length === 0
+          ? ""
+          : renderContextPack({
+              fromLane: contextPack.fromLane as string,
+              sections: contextPack.sections,
+            });
+
+      // Stand the pack behind a short sentinel for the whole of templating, then
+      // splice the real text over it at the very end. Consequences: literal
+      // {{ticket.description}} / {{prev.output}} text inside a captured output or
+      // a human-written note is never re-expanded, and the description's
+      // inline-or-spill decision is computed against the sentinel rather than the
+      // pack body, so a pack can never make the description spill earlier.
+      const sentinel = makeContextPackSentinel(
+        `${resolvedInstruction}\n${discussion}\n${packBlock}`,
+        () => Math.floor(Math.random() * 0xffffffff).toString(16),
+      );
+      const placeholderResult = substituteContextPackPlaceholder(resolvedInstruction, sentinel);
+      const hasPackPlaceholder = placeholderResult.matched > 0;
+      if (placeholderResult.matched > 1) {
+        yield* Effect.logWarning(
+          `workflow step ${step.key} instruction repeats {{ticket.contextPack}} ${String(
+            placeholderResult.matched,
+          )} times; only the first is filled`,
+        );
+      }
+      const packedInstruction = placeholderResult.text;
+
       // Resolve the active provider's per-turn input budget (clamped to 120k).
       // Absent ProviderService (some test layers) or a failed lookup → 120k.
       const providerSvcOpt = yield* providerServiceOption;
@@ -725,7 +767,7 @@ const make = Effect.gen(function* () {
       // The discussion block appended after the body (0 when inlined via the
       // {{ticket.discussion}} placeholder). Reserved exactly against the budget.
       const appendedDiscussionBlock =
-        discussion !== "" && !hasDiscussionPlaceholder(resolvedInstruction)
+        discussion !== "" && !hasDiscussionPlaceholder(packedInstruction)
           ? `\n\n## Ticket discussion\n\n${discussion}`
           : "";
       const bodyBudget = instructionBodyBudget(
@@ -740,18 +782,18 @@ const make = Effect.gen(function* () {
       // the description is spliced in is deliberate: it stops the handoff scanner
       // from matching {{prev.output}}/{{step.k.output}} text that happens to appear
       // inside a ticket description (which would silently mangle the description).
-      const instructionWithHandoff = resolvedInstruction.includes("{{")
+      const instructionWithHandoff = packedInstruction.includes("{{")
         ? yield* Effect.gen(function* () {
             const detail = yield* read.getTicketDetail(ctx.ticketId);
             const title = detail?.ticket.title ?? "";
             const rawDescription = detail?.ticket.description ?? "";
             const templatedShort = applyInstructionTemplateExcept(
-              resolvedInstruction,
+              packedInstruction,
               {
                 title,
                 id: ctx.ticketId as string,
                 baseRef: ticketBaseRef(ctx.ticketId),
-                ...(hasDiscussionPlaceholder(resolvedInstruction)
+                ...(hasDiscussionPlaceholder(packedInstruction)
                   ? { discussion: discussion === "" ? "(no discussion yet)" : discussion }
                   : {}),
               },
@@ -821,23 +863,49 @@ const make = Effect.gen(function* () {
               () => descriptionReplacement,
             );
           })
-        : resolvedInstruction;
+        : packedInstruction;
       // Comments always reach the next agent step: unless the instruction
       // already placed the transcript via {{ticket.discussion}}, append it.
       const instructionWithDiscussion =
         appendedDiscussionBlock !== ""
           ? `${instructionWithHandoff}${appendedDiscussionBlock}`
           : instructionWithHandoff;
+      // Default injection: only when the instruction did not place the pack
+      // itself, only on the lane's FIRST agent step, and only when there is a
+      // pack with content — otherwise an empty "Handoff context" heading would
+      // be appended to every agent step in the lane. The sentinel goes in here
+      // (not the pack text) so the capture suffix below still lands last.
+      const appendsPack = !hasPackPlaceholder && packBlock !== "" && ctx.isFirstAgentStep === true;
+      const instructionWithPack = appendsPack
+        ? `${instructionWithDiscussion}\n\n${sentinel}`
+        : instructionWithDiscussion;
       const contract =
         step.captureOutput === true && step.outputContract !== undefined
           ? step.outputContract
           : undefined;
       let instruction =
         step.captureOutput === true
-          ? appendCaptureOutputInstruction(instructionWithDiscussion)
-          : instructionWithDiscussion;
+          ? appendCaptureOutputInstruction(instructionWithPack)
+          : instructionWithPack;
       if (contract !== undefined) {
         instruction = `${instruction}\n\n${renderContractInstruction(contract)}`;
+      }
+      // Everything above is done templating, so the pack text can go in now —
+      // it is never itself scanned for placeholders.
+      const spliceCount = instruction.split(sentinel).length - 1;
+      instruction = instruction
+        .split(sentinel)
+        .join(packBlock === "" ? CONTEXT_PACK_EMPTY : packBlock);
+      if (spliceCount > 0 && instruction.length > providerBudget && packBlock !== "") {
+        // The pack is the one block that can be dropped without losing anything
+        // the user authored. Drop it and re-check before falling through to the
+        // existing warn-only path.
+        yield* Effect.logWarning(
+          `workflow step ${step.key} prompt exceeds provider budget (${String(
+            providerBudget,
+          )}); dropping the handoff context pack`,
+        );
+        instruction = instruction.split(packBlock).join(CONTEXT_PACK_EMPTY);
       }
       if (instruction.length > providerBudget) {
         if (contract !== undefined) {

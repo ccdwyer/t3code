@@ -1034,6 +1034,10 @@ const make = Effect.gen(function* () {
     laneKey: LaneKey,
     laneStepKeys: ReadonlyArray<StepKey>,
     attempt: number,
+    // The executor cannot derive this: laneStepKeys carries keys, not types.
+    // Keyed on the step KEY, so a retry of the same step is still the first
+    // agent step.
+    isFirstAgentStep = false,
   ): Effect.Effect<StepRunOutcome, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const stepRunId = yield* ids.stepRunId();
@@ -1239,6 +1243,7 @@ const make = Effect.gen(function* () {
           laneKey,
           laneStepKeys,
           step,
+          isFirstAgentStep,
         }) as Effect.Effect<StepOutcome, WorkflowEventStoreError>
       ).pipe(
         Effect.catch((error) =>
@@ -1508,6 +1513,9 @@ const make = Effect.gen(function* () {
       // Serialize hold: skip on.blocked routing; keep lane entry token (SPEC §2.4).
       let parallelismHeld = initialParallelismHold;
       const laneStepKeys = steps.map((s) => s.key);
+      // The default handoff-pack injection targets only the lane's FIRST agent
+      // step, not every agent step in the lane.
+      const firstAgentStepKey = steps.find((s) => s.type === "agent")?.key;
 
       if (routeDecision === null) {
         let firstStep = true;
@@ -1541,6 +1549,7 @@ const make = Effect.gen(function* () {
             lane.key,
             laneStepKeys,
             attempt,
+            step.key === firstAgentStepKey,
           );
           // Taxonomy-aware retry: decideRetry is the sole gate (SPEC failure-taxonomy).
           while (stepOutcome.result === "failed" && !stepOutcome.noRetry) {
@@ -1609,6 +1618,7 @@ const make = Effect.gen(function* () {
               lane.key,
               laneStepKeys,
               attempt,
+              nextStep.key === firstAgentStepKey,
             );
           }
           if (stepOutcome.result === "awaiting_children") {

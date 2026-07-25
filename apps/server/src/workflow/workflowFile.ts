@@ -15,7 +15,11 @@ import {
   isSafeWorkflowInstructionPath,
   unsafeWorkflowInstructionPathMessage,
 } from "./instructionPath.ts";
-import { findHandoffReferences, unknownTicketPlaceholders } from "./instructionTemplate.ts";
+import {
+  countContextPackPlaceholders,
+  findHandoffReferences,
+  unknownTicketPlaceholders,
+} from "./instructionTemplate.ts";
 import { inspectJsonLogicRule } from "./jsonLogicRule.ts";
 import { lintContractShape } from "./stepOutputContract.ts";
 
@@ -601,12 +605,27 @@ export const lintWorkflowDefinition = (
           ? step.instruction
           : (ctx.readInstructionFile?.(step.instruction.file) ?? null);
       if (instructionText !== null) {
-        for (const placeholder of unknownTicketPlaceholders(instructionText)) {
+        for (const placeholder of unknownTicketPlaceholders(instructionText, {
+          allowAgentOnly: true,
+        })) {
           errors.push({
             code: "unknown_template_placeholder",
             laneKey,
             stepKey,
             message: `Step "${stepKey}" instruction references unknown placeholder "{{ticket.${placeholder}}}"`,
+          });
+        }
+        // Only the first occurrence is filled; the rest render as
+        // "(no handoff context)". Say so at lint time.
+        const packRefs = countContextPackPlaceholders(instructionText);
+        if (packRefs > 1) {
+          errors.push({
+            code: "unknown_template_placeholder",
+            laneKey,
+            stepKey,
+            message: `Step "${stepKey}" instruction repeats "{{ticket.contextPack}}" ${String(
+              packRefs,
+            )} times; only the first is filled`,
           });
         }
 

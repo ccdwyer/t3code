@@ -208,13 +208,37 @@ export const descriptionSpillPath = (ticketId: string): string =>
 export const descriptionSpillReference = (spillPath: string): string =>
   `The full ticket description is in \`${spillPath}\` — read that file before starting.`;
 
-export const unknownTicketPlaceholders = (instruction: string): ReadonlyArray<string> => {
+/**
+ * `{{ticket.contextPack}}` is valid ONLY inside an agent instruction. It is
+ * deliberately not a member of TICKET_TEMPLATE_FIELDS: that constant is shared
+ * with PR title/body templates and types TicketTemplateVars, so adding it there
+ * would break those callers and authorize the placeholder where nothing fills it.
+ */
+const AGENT_ONLY_PLACEHOLDERS = new Set(["contextPack"]);
+
+export const unknownTicketPlaceholders = (
+  instruction: string,
+  options?: { readonly allowAgentOnly?: boolean | undefined },
+): ReadonlyArray<string> => {
   const unknown = new Set<string>();
   for (const match of instruction.matchAll(PLACEHOLDER_PATTERN)) {
     const field = match[1];
-    if (field !== undefined && !isTemplateField(field)) {
-      unknown.add(field);
+    if (field === undefined || isTemplateField(field)) {
+      continue;
     }
+    if (options?.allowAgentOnly === true && AGENT_ONLY_PLACEHOLDERS.has(field)) {
+      continue;
+    }
+    unknown.add(field);
   }
   return [...unknown];
 };
+
+/**
+ * How many times an agent instruction repeats `{{ticket.contextPack}}`. The pack
+ * is single-use — only the first occurrence is filled — so a board that repeats
+ * it is warned at lint time rather than silently getting `(no handoff context)`
+ * for the rest.
+ */
+export const countContextPackPlaceholders = (instruction: string): number =>
+  [...instruction.matchAll(/\{\{\s*ticket\.contextPack\s*\}\}/g)].length;

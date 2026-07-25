@@ -21,6 +21,14 @@ export interface StepExecutionContext {
   readonly laneKey: LaneKey;
   readonly laneStepKeys: ReadonlyArray<StepKey>;
   readonly step: WorkflowStep;
+  /**
+   * True only for the lane pipeline's FIRST agent step. The executor cannot
+   * compute it — `laneStepKeys` carries keys, not types — and it gates the
+   * default (placeholder-free) handoff-pack injection so a pack is not repeated
+   * on every agent step in the lane. Attempt-agnostic: a retry of that step is
+   * still the first agent step.
+   */
+  readonly isFirstAgentStep?: boolean | undefined;
 }
 
 export interface StepExecutorShape {

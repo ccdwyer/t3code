@@ -45,6 +45,13 @@ export interface StepRunLite {
   readonly attempt?: number | null | undefined;
   readonly startedAt?: string | null | undefined;
   readonly finishedAt?: string | null | undefined;
+  /**
+   * The wait carries a checkpoint form with a decision field.
+   *
+   * A bare approve/reject cannot satisfy such a wait — the engine requires the
+   * chosen decision option — so the one-click buttons must not be offered for it.
+   */
+  readonly formRequiresDecision?: boolean | undefined;
 }
 
 export interface DiagnoseTicketInput {
@@ -127,9 +134,10 @@ export const diagnoseTicket = (input: DiagnoseTicketInput): WorkflowStuckDiagnos
 
     if (isApproval) {
       const actions: Array<WorkflowUnstickActionView> = [];
-      if (liveApprovalStep !== undefined) {
-        // Only with a live awaiting step: a stale stepRunId resolves nothing and
-        // the button would lie.
+      if (liveApprovalStep !== undefined && liveApprovalStep.formRequiresDecision !== true) {
+        // Only with a live awaiting step, and never for a decision form: a stale
+        // stepRunId resolves nothing, and a bare approve on a decision form is
+        // rejected outright. Either way the button would lie.
         actions.push(
           {
             type: "resolveApproval",
@@ -285,7 +293,9 @@ export const diagnoseTicket = (input: DiagnoseTicketInput): WorkflowStuckDiagnos
 
     const blockedText = oneLine(reason.length > 0 ? reason : stepError);
     const actions: Array<WorkflowUnstickActionView> = [];
-    if (canRunLane(input)) {
+    // The non-retryable guard belongs on this branch too: a rejected approval or
+    // a cancelled script lands here, and Retry on either is a guaranteed no-op.
+    if (canRunLane(input) && latestStep?.retryable !== false) {
       actions.push({ type: "runLane", label: "Retry lane" });
     }
     actions.push(openAction);

@@ -162,7 +162,13 @@ export const validateCheckpointSubmission = (
   return {
     ok: true,
     outcome,
-    ...(submission.decision === undefined ? {} : { decision: submission.decision }),
+    // Echo the decision ONLY when the form actually has a decision field. A form
+    // without one has no membership check to validate against, so echoing a
+    // caller-supplied string would be an unbounded side channel straight into
+    // the event log.
+    ...(decision === undefined || submission.decision === undefined
+      ? {}
+      : { decision: submission.decision }),
     answers: answers as CheckpointAnswers,
   };
 };

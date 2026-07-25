@@ -66,6 +66,24 @@ describe("diagnoseTicket", () => {
       assert.deepStrictEqual(kinds(result), ["resolveApproval", "resolveApproval", "openTicket"]);
     });
 
+    it("offers no approve/reject when the wait carries a decision form", () => {
+      // A bare approve cannot satisfy a decision form — the engine rejects it —
+      // so the one-click buttons would be guaranteed errors.
+      const result = diagnoseTicket(
+        input({
+          ticket: { status: "waiting_on_user", attentionKind: "waiting_for_approval" } as never,
+          latestStep: {
+            stepRunId: "sr-1",
+            status: "awaiting_user",
+            stepType: "approval",
+            formRequiresDecision: true,
+          } as never,
+        }),
+      );
+      assert.equal(result?.kind, "waiting_approval");
+      assert.deepStrictEqual(kinds(result), ["openTicket"]);
+    });
+
     it("offers no approve/reject without a live awaiting step", () => {
       // A stale stepRunId resolves nothing, so a button would lie.
       const result = diagnoseTicket(
@@ -278,6 +296,26 @@ describe("diagnoseTicket", () => {
         }),
       );
       assert.equal(result?.kind, "agent_failed");
+      assert.deepStrictEqual(kinds(result), ["openTicket"]);
+    });
+
+    it("does not offer Retry for a non-retryable failure on the generic blocked path", () => {
+      // A rejected approval or a cancelled script lands here rather than in
+      // agent_failed, and Retry on either is a guaranteed no-op.
+      const result = diagnoseTicket(
+        input({
+          ticket: { status: "blocked", attentionReason: "rejected by reviewer" } as never,
+          lane: lane(),
+          latestStep: {
+            stepRunId: "sr",
+            status: "failed",
+            stepType: "approval",
+            error: "rejected",
+            retryable: false,
+          } as never,
+        }),
+      );
+      assert.equal(result?.kind, "step_blocked");
       assert.deepStrictEqual(kinds(result), ["openTicket"]);
     });
 

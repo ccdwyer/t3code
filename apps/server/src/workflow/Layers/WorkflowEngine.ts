@@ -4891,6 +4891,20 @@ const make = Effect.gen(function* () {
           ...(resolution.answers === undefined ? {} : { answers: resolution.answers }),
         },
       });
+      if (resolution.outcome === "blocked") {
+        // Must stay blocked on the recovered path too. Collapsing it into a
+        // failure here would route a "hold" decision down on.failure after a
+        // restart while the live path routed it down on.blocked — the same
+        // decision producing two different destinations depending on whether a
+        // fiber happened to survive.
+        yield* completeRecoveredStepUnlocked(
+          pending.payload.stepRunId,
+          { _tag: "blocked", reason: resolution.decision ?? "checkpoint blocked" },
+          undefined,
+          { allowRetry: false },
+        );
+        return;
+      }
       if (resolution.outcome !== "success") {
         yield* completeRecoveredStepUnlocked(
           pending.payload.stepRunId,

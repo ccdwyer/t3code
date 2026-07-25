@@ -193,6 +193,22 @@ describe("validateCheckpointSubmission", () => {
     });
   });
 
+  describe("decision echo", () => {
+    it("does not echo a decision when the form has no decision field", () => {
+      // Nothing to validate membership against, so echoing a caller string
+      // would be an unbounded side channel into the event log.
+      const result = validateCheckpointSubmission(
+        form({ kind: "text", key: "why", label: "Why?" }),
+        { decision: "x".repeat(5000), answers: { why: "ok" } as never },
+        "success",
+      );
+      assert.isTrue(result.ok);
+      if (result.ok) {
+        assert.isUndefined(result.decision);
+      }
+    });
+  });
+
   describe("unknown fields", () => {
     it("drops answers the snapshot does not declare rather than storing them", () => {
       // A newer client must not be able to smuggle arbitrary keys into the event

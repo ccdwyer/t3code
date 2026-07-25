@@ -285,8 +285,11 @@ export const AgentStep = Schema.Struct({
 });
 
 /**
- * Path-safe so `answers.<fieldKey>` is addressable from a JsonLogic dot-path in
- * lane transitions. Same shape as the step-key pattern for the same reason.
+ * Path-safe so `answers.<fieldKey>` can be addressed from a JsonLogic dot-path.
+ *
+ * The routing-context builder does not yet expose answers, so a lane transition
+ * cannot read them today; the constraint exists so that wiring it later cannot
+ * be blocked by keys already persisted with unaddressable names.
  */
 export const CheckpointFieldKey = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9_-]{1,40}$/),
@@ -1662,8 +1665,10 @@ export const WorkflowStepRunView = Schema.Struct({
   stepRunId: StepRunId,
   stepKey: StepKey,
   stepType: WorkflowStepType,
-  // Checkpoint form: the snapshot is present from the awaiting event onward, and
-  // the decision/answers once a reviewer has submitted.
+  // Checkpoint form fields. NOT POPULATED YET: the projection does not persist
+  // formSnapshot and no view assembler sets these, so they are reserved rather
+  // than available. Clients must not treat their absence as "this wait has no
+  // form" — read the StepAwaitingUser event, which is the authority.
   form: Schema.optional(CheckpointForm),
   formDecision: Schema.optional(Schema.String),
   formAnswers: Schema.optional(CheckpointAnswers),

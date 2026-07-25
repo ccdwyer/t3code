@@ -52,7 +52,6 @@ const mapCommandResult = (
       _tag: "failed",
       error: "script cancelled",
       failureClass: "user_cancelled" as const,
-      retryable: false as const,
       retryable: false,
     };
   }

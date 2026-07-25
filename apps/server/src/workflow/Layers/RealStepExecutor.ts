@@ -178,7 +178,11 @@ const make = Effect.gen(function* () {
           worktree.projectId,
         );
         if (setupResult.status !== "completed") {
-          return { _tag: "failed", error: `setup ${setupResult.status}` } satisfies StepOutcome;
+          return {
+            _tag: "failed",
+            error: `setup ${setupResult.status}`,
+            failureClass: "infra",
+          } satisfies StepOutcome;
         }
       }
 
@@ -1057,6 +1061,7 @@ const make = Effect.gen(function* () {
         Effect.succeed<StepOutcome>({
           _tag: "failed",
           error: `executor error: ${executorErrorDetail(error)}`,
+          failureClass: "infra",
         }),
       ),
     );

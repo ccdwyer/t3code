@@ -130,8 +130,6 @@ import type {
   WorkflowDefinitionEncoded,
   WorkflowDryRunResult,
   WorkflowDryRunScenario,
-  WorkflowForkFromEventInput,
-  WorkflowForkFromEventResult,
   WorkflowGetBoardTimelineInput,
   WorkflowGetBoardTimelineResult,
   WorkflowGetTicketTimelineInput,
@@ -1460,9 +1458,6 @@ export interface EnvironmentApi {
     getBoardTimeline: (
       input: typeof WorkflowGetBoardTimelineInput.Type,
     ) => Promise<typeof WorkflowGetBoardTimelineResult.Type>;
-    forkTicketFromEvent: (
-      input: typeof WorkflowForkFromEventInput.Type,
-    ) => Promise<typeof WorkflowForkFromEventResult.Type>;
     getTicketDiff: (input: { readonly ticketId: TicketId }) => Promise<TicketDiff>;
     intakeTickets: (input: {
       readonly boardId: BoardId;

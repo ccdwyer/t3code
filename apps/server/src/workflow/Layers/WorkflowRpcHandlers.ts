@@ -23,6 +23,10 @@ import type {
   WorkflowSaveBoardDefinitionInput,
   WorkflowSaveBoardDefinitionResult,
   WorkflowStepRunView,
+  WorkflowGetBoardTimelineInput,
+  WorkflowGetBoardTimelineResult,
+  WorkflowGetTicketTimelineInput,
+  WorkflowGetTicketTimelineResult,
   WorkflowTicketDetailView,
   WorkflowEventId,
   WorkflowDefinition as WorkflowDefinitionType,
@@ -101,6 +105,7 @@ import type {
 } from "../Services/WorkflowBoardVersionStore.ts";
 import type { WorkflowEngineShape } from "../Services/WorkflowEngine.ts";
 import type { WorkflowEventStoreShape } from "../Services/WorkflowEventStore.ts";
+import { buildBoardTimeline, buildTicketTimeline } from "./workflowTimeline.ts";
 import type { WorkflowFileLoaderShape } from "../Services/WorkflowFileLoader.ts";
 import type {
   BoardRow,
@@ -208,7 +213,15 @@ interface WorkflowRpcHandlerDeps {
   // paths, which DO have a SqlClient, run the cascade transactionally up front
   // (see WorkflowBoardOwnedStateDeletionDeps).
   readonly sql?: Pick<SqlClient.SqlClient, "withTransaction">;
-  readonly eventStore?: Pick<WorkflowEventStoreShape, "deleteForBoard" | "deleteForTicket">;
+  readonly eventStore?: Pick<
+    WorkflowEventStoreShape,
+    | "deleteForBoard"
+    | "deleteForTicket"
+    | "readByBoard"
+    | "readTicketTail"
+    | "readTicketRange"
+    | "maxSequenceForBoard"
+  >;
   readonly readModel: WorkflowReadModelShape;
   readonly boardRegistry: BoardRegistryShape;
   readonly boardDiscovery: BoardDiscoveryShape;
@@ -3088,6 +3101,20 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.getTicketDetail,
         ticketDetail(deps, input.ticketId),
+        {
+          "rpc.aggregate": "workflow",
+        },
+      ),
+    [WORKFLOW_WS_METHODS.getTicketTimeline]: (input: typeof WorkflowGetTicketTimelineInput.Type) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.getTicketTimeline,
+        buildTicketTimeline(deps.eventStore ?? {}, input.ticketId),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.getBoardTimeline]: (input: typeof WorkflowGetBoardTimelineInput.Type) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.getBoardTimeline,
+        buildBoardTimeline(deps.eventStore ?? {}, input),
         {
           "rpc.aggregate": "workflow",
         },

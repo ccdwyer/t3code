@@ -121,6 +121,95 @@ const make = Effect.gen(function* () {
       ORDER BY stream_version ASC
     `);
 
+  const readByBoard: WorkflowEventStoreShape["readByBoard"] = (
+    boardId,
+    afterSequence,
+    throughSequence,
+    limit,
+  ) => {
+    const normalizedLimit = Math.max(0, Math.floor(limit));
+    if (normalizedLimit === 0) {
+      return Stream.empty;
+    }
+    return streamRows(sql<Row>`
+      SELECT
+        sequence,
+        event_id AS "eventId",
+        ticket_id AS "ticketId",
+        stream_version AS "streamVersion",
+        event_type AS "type",
+        occurred_at AS "occurredAt",
+        payload_json AS "payloadJson"
+      FROM workflow_events
+      WHERE sequence > ${afterSequence}
+        AND (${throughSequence} IS NULL OR sequence <= ${throughSequence})
+        AND ticket_id IN (SELECT ticket_id FROM projection_ticket WHERE board_id = ${boardId})
+      ORDER BY sequence ASC
+      LIMIT ${normalizedLimit}
+    `);
+  };
+
+  const readTicketTail: WorkflowEventStoreShape["readTicketTail"] = (ticketId, limit) => {
+    const normalizedLimit = Math.max(0, Math.floor(limit));
+    if (normalizedLimit === 0) {
+      return Stream.empty;
+    }
+    // DESC + LIMIT n+1 at the SQL level: the caller re-sorts ascending and uses
+    // the extra row only to decide `truncated`.
+    return streamRows(sql<Row>`
+      SELECT
+        sequence,
+        event_id AS "eventId",
+        ticket_id AS "ticketId",
+        stream_version AS "streamVersion",
+        event_type AS "type",
+        occurred_at AS "occurredAt",
+        payload_json AS "payloadJson"
+      FROM workflow_events
+      WHERE ticket_id = ${ticketId}
+      ORDER BY stream_version DESC
+      LIMIT ${normalizedLimit + 1}
+    `);
+  };
+
+  const readTicketRange: WorkflowEventStoreShape["readTicketRange"] = (
+    ticketId,
+    fromVersionInclusive,
+    toVersionExclusive,
+    batch,
+  ) => {
+    const normalizedBatch = Math.max(0, Math.floor(batch));
+    if (normalizedBatch === 0 || toVersionExclusive <= fromVersionInclusive) {
+      return Stream.empty;
+    }
+    return streamRows(sql<Row>`
+      SELECT
+        sequence,
+        event_id AS "eventId",
+        ticket_id AS "ticketId",
+        stream_version AS "streamVersion",
+        event_type AS "type",
+        occurred_at AS "occurredAt",
+        payload_json AS "payloadJson"
+      FROM workflow_events
+      WHERE ticket_id = ${ticketId}
+        AND stream_version >= ${fromVersionInclusive}
+        AND stream_version < ${toVersionExclusive}
+      ORDER BY stream_version ASC
+      LIMIT ${normalizedBatch}
+    `);
+  };
+
+  const maxSequenceForBoard: WorkflowEventStoreShape["maxSequenceForBoard"] = (boardId) =>
+    sql<{ readonly maxSequence: number | null }>`
+      SELECT MAX(sequence) AS "maxSequence"
+      FROM workflow_events
+      WHERE ticket_id IN (SELECT ticket_id FROM projection_ticket WHERE board_id = ${boardId})
+    `.pipe(
+      Effect.map((rows) => rows[0]?.maxSequence ?? 0),
+      Effect.mapError(toStoreError("max sequence read failed")),
+    );
+
   const readFromSequence: WorkflowEventStoreShape["readFromSequence"] = (
     sequenceExclusive,
     limit = 1_000,
@@ -165,6 +254,10 @@ const make = Effect.gen(function* () {
     `.pipe(Effect.mapError(toStoreError("delete failed")), Effect.asVoid);
 
   return {
+    readByBoard,
+    readTicketTail,
+    readTicketRange,
+    maxSequenceForBoard,
     append,
     readByTicket,
     readFromSequence,

@@ -358,6 +358,8 @@ const THREAD_RESUME_MAX_GAP = 1_000;
 const WORKFLOW_RPC_REQUIRED_SCOPE_ENTRIES = [
   [WS_METHODS.terminalAttachHistory, AuthTerminalOperateScope],
   [WORKFLOW_WS_METHODS.listBoards, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getTicketTimeline, AuthWorkflowReadScope],
+  [WORKFLOW_WS_METHODS.getBoardTimeline, AuthWorkflowReadScope],
   [WORKFLOW_WS_METHODS.listNeedsAttentionTickets, AuthWorkflowReadScope],
   [WORKFLOW_WS_METHODS.createBoard, AuthWorkflowOperateScope],
   [WORKFLOW_WS_METHODS.deleteBoard, AuthWorkflowOperateScope],

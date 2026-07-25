@@ -817,6 +817,10 @@ it.effect(
               operations.push("delete-events");
             }),
           deleteForTicket: () => Effect.void,
+          readByBoard: () => Stream.empty,
+          readTicketTail: () => Stream.empty,
+          readTicketRange: () => Stream.empty,
+          maxSequenceForBoard: () => Effect.succeed(0),
         },
         boardRegistry: {
           register: () => Effect.die("unused"),
@@ -1004,6 +1008,10 @@ it.effect("workflowRpcHandlers completes deleteBoard retry after a mid-cascade f
             eventRows = 0;
           }),
         deleteForTicket: () => Effect.void,
+        readByBoard: () => Stream.empty,
+        readTicketTail: () => Stream.empty,
+        readTicketRange: () => Stream.empty,
+        maxSequenceForBoard: () => Effect.succeed(0),
       },
       boardRegistry: {
         register: () => Effect.die("unused"),

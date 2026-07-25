@@ -28,7 +28,10 @@ const MIN_USEFUL_SECTION = 64;
  * key cannot forge pack headings/rows once rendered into an agent prompt.
  */
 export const escapeForPack = (value: string): string =>
-  value.replace(/[\u0000-\u001f\u007f]/g, (ch) => {
+  // U+0085, U+2028 and U+2029 are line breaks to many renderers and tokenizers
+  // even though they are not C0 controls, so a value carrying one could start a
+  // new line with `##` and forge a heading. They escape like the C0 set.
+  value.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, (ch) => {
     if (ch === "\n") return "\\n";
     if (ch === "\r") return "\\r";
     if (ch === "\t") return "\\t";
@@ -104,12 +107,33 @@ export const sectionsEqual = (
  * Render a pack for prompt injection. Never passed through the template scanner —
  * the caller splices it over an opaque sentinel after all templating completes.
  */
+/**
+ * Neutralize heading syntax inside a section BODY.
+ *
+ * Bodies are the least trustworthy text in the pack: `prior_outputs` is verbatim
+ * agent output and `failed_attempts` is verbatim error text, so either can carry
+ * a line like `### notes` and manufacture a section the compiler never wrote —
+ * one the destination agent cannot tell from a real one. Escaping only the
+ * section key and the lane name would leave that wide open.
+ *
+ * A line-leading run of `#` is prefixed with a backslash, which still reads
+ * plainly but can no longer open a heading. The split covers the Unicode line
+ * separators too, so a body cannot start a line the scan would miss.
+ */
+export const escapeBodyStructure = (body: string): string =>
+  body
+    .split(/(\r\n|\r|\n|\u0085|\u2028|\u2029)/)
+    .map((part) => part.replace(/^(\s*)(#+)/, "$1\\$2"))
+    .join("");
+
 export const renderContextPack = (input: {
   readonly fromLane: string;
   readonly sections: ReadonlyArray<WorkflowContextPackSection>;
 }): string => {
   const heading = `## Handoff context from lane "${escapeForPack(input.fromLane)}"`;
-  const body = input.sections.map((section) => `### ${section.key}\n${section.body}`).join("\n\n");
+  const body = input.sections
+    .map((section) => `### ${section.key}\n${escapeBodyStructure(section.body)}`)
+    .join("\n\n");
   return `${heading}\n\n${body}`;
 };
 

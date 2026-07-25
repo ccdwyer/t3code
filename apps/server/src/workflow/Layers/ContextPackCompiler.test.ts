@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -186,6 +187,9 @@ describe("ContextPackCompiler", () => {
         diffStat: Effect.die("git exploded") as never,
       }).pipe(Effect.exit);
       assert.isTrue(exit._tag === "Failure");
+      // "Failure" alone would also pass for a swallowed interrupt re-raised as
+      // an ordinary error, which is the very thing under test.
+      assert.isTrue(exit._tag === "Failure" && Cause.hasInterrupts(exit.cause));
     }),
   );
 
@@ -197,6 +201,9 @@ describe("ContextPackCompiler", () => {
         priorOutputs: Effect.interrupt as never,
       }).pipe(Effect.exit);
       assert.isTrue(exit._tag === "Failure");
+      // "Failure" alone would also pass for a swallowed interrupt re-raised as
+      // an ordinary error, which is the very thing under test.
+      assert.isTrue(exit._tag === "Failure" && Cause.hasInterrupts(exit.cause));
     }),
   );
 });

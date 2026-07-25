@@ -3015,13 +3015,14 @@ const make = Effect.gen(function* () {
               ticketId: input.ticketId,
               payload: { forLane: input.forLane, sections: [] },
             });
-            // `commit` resolves to void even when the append found no ticket/board
-            // (deletion or retention won the race), so confirm the ticket still
-            // exists rather than reporting a write that never happened.
-            const after = yield* read.getTicketDetail(input.ticketId);
-            if (after === null) {
+            // `commit` resolves to void even when the append wrote nothing (the
+            // ticket or board vanished, or the board was unregistered), so verify
+            // the EFFECT rather than merely that the ticket still exists — the
+            // latter is true in exactly the case this guard must catch.
+            const after = yield* read.getContextPack(input.ticketId, input.forLane);
+            if (after !== null) {
               return yield* new WorkflowEventStoreError({
-                message: "ticket no longer exists",
+                message: "context pack delete did not persist",
               });
             }
             return { sections: [] as ReadonlyArray<WorkflowContextPackSection> };
@@ -3057,12 +3058,14 @@ const make = Effect.gen(function* () {
             ticketId: input.ticketId,
             payload: { forLane: input.forLane, sections: persisted },
           });
-          // Same read-back guard as the deletion branch: a null append is silent,
-          // so never return "persisted" sections we cannot see in the projection.
+          // Same read-back guard as the deletion branch, and for the same reason
+          // it must compare CONTENT: a silent no-op append leaves the pre-edit
+          // pack in place, which is non-null and would pass a mere existence
+          // check while the caller is told its edit persisted.
           const stored = yield* read.getContextPack(input.ticketId, input.forLane);
-          if (stored === null) {
+          if (stored === null || !sectionsEqual(stored.sections, persisted)) {
             return yield* new WorkflowEventStoreError({
-              message: "ticket no longer exists",
+              message: "context pack edit did not persist",
             });
           }
           return { sections: stored.sections };
@@ -4734,6 +4737,10 @@ const make = Effect.gen(function* () {
             lane.key,
             steps.map((s) => s.key),
             attempt,
+            // Recovery must reach the same verdict as the live path. Leaving the
+            // default here dropped the handoff pack on exactly the crash-retry
+            // case the feature exists for.
+            nextStep.key === steps.find((s) => s.type === "agent")?.key,
           );
         }
         if (attempt > (recovered.stepStarted.payload.attempt ?? 1)) {

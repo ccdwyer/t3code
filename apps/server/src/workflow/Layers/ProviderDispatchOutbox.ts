@@ -329,6 +329,10 @@ const make = Effect.gen(function* () {
             steer_pending_text = NULL
         WHERE dispatch_id = ${dispatchId}
           AND steer_pending_message_id = ${messageId}
+          AND (
+            steer_delivered_message_id IS NULL
+            OR steer_delivered_message_id = ${messageId}
+          )
       `);
       // Also stage when pending was already cleared by a peer but we still
       // hold a matching staged slot empty and a prior pending text is gone —

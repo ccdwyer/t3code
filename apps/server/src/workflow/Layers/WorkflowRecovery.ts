@@ -1293,8 +1293,9 @@ const make = Effect.gen(function* () {
       yield* recoverWorkflowWip;
       yield* approvals.resume();
       yield* settleInterruptedPanelDispatches;
-      // Drain staged StepSteered BEFORE recoverTerminalDispatches resets
-      // started rows (which used to wipe steer_delivered_* and lose the event).
+      // Drain staged StepSteered BEFORE recoverTerminalDispatches (pre-crash
+      // stages) and again after monitorStartedDispatches (stages created by
+      // awaitTerminal during recovery with no reconcile fiber in this process).
       yield* recoverStagedSteerDeliveries;
       yield* recoverTerminalDispatches;
       yield* recoverRunningScriptRuns;
@@ -1306,6 +1307,7 @@ const make = Effect.gen(function* () {
       yield* recoverConfirmedRunningSteps;
       yield* outbox.recoverPending();
       yield* monitorStartedDispatches;
+      yield* recoverStagedSteerDeliveries;
       yield* resumeStrandedPipelines;
       yield* releaseTerminalStepLeases;
     });

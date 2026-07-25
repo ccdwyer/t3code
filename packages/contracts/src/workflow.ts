@@ -314,12 +314,43 @@ export const PullRequestStep = Schema.Struct({
 });
 export type PullRequestStep = typeof PullRequestStep.Type;
 
+export const ForkChildKey = TrimmedNonEmptyString.check(Schema.isMaxLength(48)).pipe(
+  Schema.brand("ForkChildKey"),
+);
+export type ForkChildKey = typeof ForkChildKey.Type;
+
+export const ForkChildSpec = Schema.Struct({
+  key: ForkChildKey,
+  lane: LaneKey,
+  titleTemplate: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  descriptionTemplate: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))),
+  dependsOn: Schema.optional(Schema.Array(ForkChildKey)),
+  tokenBudget: Schema.optional(NonNegativeInt),
+});
+export type ForkChildSpec = typeof ForkChildSpec.Type;
+
+export const ForkJoinPolicy = Schema.Struct({
+  require: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  onBranchFailure: Schema.optional(Schema.Literals(["failFast", "waitImpossible"])),
+});
+export type ForkJoinPolicy = typeof ForkJoinPolicy.Type;
+
+export const ForkStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("fork"),
+  children: Schema.NonEmptyArray(ForkChildSpec),
+  join: Schema.optional(ForkJoinPolicy),
+  on: Schema.optional(StepRouting),
+});
+export type ForkStep = typeof ForkStep.Type;
+
 export const WorkflowStep = Schema.Union([
   AgentStep,
   ApprovalStep,
   ScriptStep,
   MergeStep,
   PullRequestStep,
+  ForkStep,
 ]);
 export type WorkflowStep = typeof WorkflowStep.Type;
 
@@ -377,8 +408,16 @@ export const WorkflowLane = Schema.Struct({
 });
 export type WorkflowLane = typeof WorkflowLane.Type;
 
+export const WorkflowParallelismSettings = Schema.Struct({
+  conflictPolicy: Schema.optional(Schema.Literals(["off", "warn", "serialize"])),
+  rebaseOnSiblingMerge: Schema.optional(Schema.Boolean),
+  overlapIgnorePaths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+});
+export type WorkflowParallelismSettings = typeof WorkflowParallelismSettings.Type;
+
 export const WorkflowSettings = Schema.Struct({
   maxConcurrentTickets: Schema.optional(Schema.Int),
+  parallelism: Schema.optional(WorkflowParallelismSettings),
 });
 export type WorkflowSettings = typeof WorkflowSettings.Type;
 
@@ -979,6 +1018,9 @@ export const StepOutcome = Schema.Union([
     providerRequestId: Schema.optional(ApprovalRequestId),
     providerResponseKind: Schema.optional(Schema.Literals(["request", "user-input"])),
     providerQuestionId: Schema.optional(Schema.String),
+  }),
+  Schema.TaggedStruct("awaiting_children", {
+    // Fork step suspended until join condition is met.
   }),
 ]);
 export type StepOutcome = typeof StepOutcome.Type;

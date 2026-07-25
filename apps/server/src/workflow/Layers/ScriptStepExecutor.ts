@@ -44,16 +44,26 @@ const mapCommandResult = (
   allowFailure: boolean,
 ): StepOutcome => {
   if (result.outcome === "timeout") {
-    return { _tag: "failed", error: "script timed out" };
+    return { _tag: "failed", error: "script timed out", failureClass: "timeout" as const };
   }
   if (result.outcome === "cancelled") {
     // User-initiated cancellation: never auto-retried.
-    return { _tag: "failed", error: "script cancelled", retryable: false };
+    return {
+      _tag: "failed",
+      error: "script cancelled",
+      failureClass: "user_cancelled" as const,
+      retryable: false as const,
+      retryable: false,
+    };
   }
   if (result.exitCode === 0 || allowFailure) {
     return { _tag: "completed" };
   }
-  return { _tag: "failed", error: `script exited with code ${result.exitCode ?? 1}` };
+  return {
+    _tag: "failed",
+    error: `script exited with code ${result.exitCode ?? 1}`,
+    failureClass: "script_failure" as const,
+  };
 };
 
 const make = Effect.gen(function* () {

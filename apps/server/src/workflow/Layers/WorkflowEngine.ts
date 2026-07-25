@@ -990,7 +990,14 @@ const make = Effect.gen(function* () {
           yield* commit({
             type: "StepFailed",
             ticketId,
-            payload: stepFailedPayload(stepRunId, "rejected", undefined, false),
+            payload: stepFailedPayload(
+              stepRunId,
+              "rejected",
+              undefined,
+              false,
+              undefined,
+              "human_rejection",
+            ),
           });
           return { result: "failed", noRetry: true, detail: "rejected" };
         }
@@ -1046,7 +1053,14 @@ const make = Effect.gen(function* () {
           yield* commit({
             type: "StepFailed",
             ticketId,
-            payload: stepFailedPayload(stepRunId, "rejected", undefined, false),
+            payload: stepFailedPayload(
+              stepRunId,
+              "rejected",
+              undefined,
+              false,
+              undefined,
+              "human_rejection",
+            ),
           });
           return { result: "failed", noRetry: true, detail: "rejected" };
         }
@@ -3691,6 +3705,9 @@ const make = Effect.gen(function* () {
               terminalResult.error,
               terminalResult.usage,
               terminalResult.retryable === false ? false : undefined,
+              undefined,
+              terminalResult.failureClass ??
+                classifyFallback(terminalResult.error, terminalResult.retryable),
             ),
           });
         } else {

@@ -152,7 +152,7 @@ const layer = it.layer(
         ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
         resolveApproval: () => Effect.die("unused resolveApproval"),
         answerTicketStep: () => Effect.void,
-        steerTicketStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         postTicketMessage: () => Effect.void,
         editTicketMessage: () => Effect.void,
         cancelStep: () => Effect.die("unused cancelStep"),
@@ -775,7 +775,7 @@ it.effect("starts recovered provider waits once when the fresh turn is still run
           ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
           resolveApproval: () => Effect.die("unused resolveApproval"),
           answerTicketStep: () => Effect.void,
-          steerTicketStep: () => Effect.void,
+          steerTicketStep: () => Effect.succeed({ accepted: true as const }),
           postTicketMessage: () => Effect.void,
           editTicketMessage: () => Effect.void,
           cancelStep: () => Effect.die("unused cancelStep"),
@@ -1020,7 +1020,7 @@ it.effect("recommits recovered provider approval requests after stale dispatch c
           ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
           resolveApproval: () => Effect.die("unused resolveApproval"),
           answerTicketStep: () => Effect.void,
-          steerTicketStep: () => Effect.void,
+          steerTicketStep: () => Effect.succeed({ accepted: true as const }),
           postTicketMessage: () => Effect.void,
           editTicketMessage: () => Effect.void,
           cancelStep: () => Effect.die("unused cancelStep"),
@@ -1294,7 +1294,7 @@ it.effect("fails an interrupted panel step even when only one member row is stil
               ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
               resolveApproval: () => Effect.die("unused resolveApproval"),
               answerTicketStep: () => Effect.void,
-              steerTicketStep: () => Effect.void,
+              steerTicketStep: () => Effect.succeed({ accepted: true as const }),
               postTicketMessage: () => Effect.void,
               editTicketMessage: () => Effect.void,
               cancelStep: () => Effect.die("unused cancelStep"),
@@ -2003,7 +2003,7 @@ it.effect("cascades persisted boards whose workflow file is missing during prelo
           ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
           resolveApproval: () => Effect.die("unused resolveApproval"),
           answerTicketStep: () => Effect.void,
-          steerTicketStep: () => Effect.void,
+          steerTicketStep: () => Effect.succeed({ accepted: true as const }),
           postTicketMessage: () => Effect.void,
           editTicketMessage: () => Effect.void,
           cancelStep: () => Effect.die("unused cancelStep"),
@@ -2318,7 +2318,7 @@ it.effect("preload does not resurrect a board deleted while its save lock is hel
             ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
             resolveApproval: () => Effect.die("unused resolveApproval"),
             answerTicketStep: () => Effect.void,
-            steerTicketStep: () => Effect.void,
+            steerTicketStep: () => Effect.succeed({ accepted: true as const }),
             postTicketMessage: () => Effect.void,
             editTicketMessage: () => Effect.void,
             cancelStep: () => Effect.die("unused cancelStep"),
@@ -3119,13 +3119,33 @@ layer("WorkflowRecovery", (it) => {
           '2026-06-07T00:00:01.000Z'
         )
       `;
+        // Capture-first only completes when the correlated turn is actually
+        // completed — seed a terminal success turn.
+        yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          state,
+          requested_at,
+          completed_at,
+          checkpoint_files_json
+        )
+        VALUES (
+          'thread-confirmed-crash',
+          'turn-confirmed-crash',
+          'completed',
+          '2026-06-07T00:00:00.000Z',
+          '2026-06-07T00:00:01.000Z',
+          '[]'
+        )
+      `;
 
         yield* recovery.recover();
 
         const calls = completedRecoveredSteps.filter(
           (call) => call.stepRunId === "step-confirmed-crash",
         );
-        // Capture-first: confirmed row still has thread/turn → complete from it
+        // Capture-first: confirmed row + completed turn → complete from it
         // rather than always emitting STEP_RESTART_ERROR.
         assert.deepEqual(calls, [
           {

@@ -427,13 +427,21 @@ it.effect("getSteerTarget and CAS markSteerPending/clearSteerPending", () =>
       assert.equal(target?.panelSize, 1);
       assert.equal(target?.steerPendingMessageId, null);
 
-      const won = yield* outbox.markSteerPending(request.dispatchId, "msg-steer-1" as never);
+      const won = yield* outbox.markSteerPending(
+        request.dispatchId,
+        "msg-steer-1" as never,
+        "steer text",
+      );
       assert.isTrue(won);
       const after = yield* outbox.getSteerTarget(request.stepRunId);
       assert.equal(after?.steerPendingMessageId, "msg-steer-1");
 
       // Second reservation must lose CAS.
-      const lost = yield* outbox.markSteerPending(request.dispatchId, "msg-steer-2" as never);
+      const lost = yield* outbox.markSteerPending(
+        request.dispatchId,
+        "msg-steer-2" as never,
+        "other",
+      );
       assert.isFalse(lost);
       assert.equal(
         (yield* outbox.getSteerTarget(request.stepRunId))?.steerPendingMessageId,
@@ -441,10 +449,21 @@ it.effect("getSteerTarget and CAS markSteerPending/clearSteerPending", () =>
       );
 
       // Same messageId re-check is still true (idempotent ownership).
-      const same = yield* outbox.markSteerPending(request.dispatchId, "msg-steer-1" as never);
+      const same = yield* outbox.markSteerPending(
+        request.dispatchId,
+        "msg-steer-1" as never,
+        "steer text",
+      );
       assert.isTrue(same);
 
-      yield* outbox.clearSteerPending(request.dispatchId);
+      // Wrong messageId must not clear a different reservation.
+      yield* outbox.clearSteerPending(request.dispatchId, "msg-other" as never);
+      assert.equal(
+        (yield* outbox.getSteerTarget(request.stepRunId))?.steerPendingMessageId,
+        "msg-steer-1",
+      );
+
+      yield* outbox.clearSteerPending(request.dispatchId, "msg-steer-1" as never);
       assert.equal((yield* outbox.getSteerTarget(request.stepRunId))?.steerPendingMessageId, null);
     }).pipe(Effect.provide(layer));
   }),
@@ -477,7 +496,7 @@ it.effect("clears steer pending when thread reaches awaiting_user", () =>
     yield* Effect.gen(function* () {
       const outbox = yield* ProviderDispatchOutbox;
       yield* outbox.ensureStarted(request);
-      yield* outbox.markSteerPending(request.dispatchId, "msg-pending" as never);
+      yield* outbox.markSteerPending(request.dispatchId, "msg-pending" as never, "pending text");
 
       const terminal = yield* outbox.awaitTerminal(request.dispatchId, request.threadId);
       assert.isTrue("awaitingUser" in terminal && terminal.awaitingUser === true);

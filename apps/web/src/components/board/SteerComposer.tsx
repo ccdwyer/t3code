@@ -1,5 +1,5 @@
 import { StepRunId, TicketId, type EnvironmentApi } from "@t3tools/contracts";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { randomUUID } from "~/lib/utils";
@@ -48,6 +48,11 @@ export function SteerComposer({
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Stable messageId per draft so transport retries exercise server
+  // idempotency instead of double-steering. Regenerated on text change or
+  // after a successful accept.
+  const draftMessageIdRef = useRef(randomUUID());
+  const draftTextRef = useRef("");
 
   const blocked = step.steerBlockedReason;
   if (!isSteerComposerVisible({ canSteer: step.canSteer, steerBlockedReason: blocked })) {
@@ -68,13 +73,18 @@ export function SteerComposer({
     setSubmitting(true);
     setError(null);
     const trimmed = text.trim();
+    if (trimmed !== draftTextRef.current) {
+      draftTextRef.current = trimmed;
+      draftMessageIdRef.current = randomUUID();
+    }
+    const messageId = draftMessageIdRef.current;
     const outcome = await runSteerSubmit({
       text: trimmed,
       submit: () =>
         api.workflow.steerTicketStep({
           ticketId: TicketId.make(ticketId),
           stepRunId: StepRunId.make(step.stepRunId),
-          messageId: randomUUID() as never,
+          messageId: messageId as never,
           text: trimmed,
         }),
     });
@@ -82,6 +92,8 @@ export function SteerComposer({
     setError(outcome.error);
     setSubmitting(false);
     if (outcome.error === null) {
+      draftMessageIdRef.current = randomUUID();
+      draftTextRef.current = "";
       onSteered?.();
     }
   };

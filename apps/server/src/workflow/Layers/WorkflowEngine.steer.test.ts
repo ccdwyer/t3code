@@ -24,6 +24,7 @@ import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import {
   ProviderDispatchOutbox,
   ProviderTurnPort,
+  type ProviderDispatchOutboxShape,
   type SteerTarget,
 } from "../Services/ProviderDispatchOutbox.ts";
 import { TurnStateReader } from "../Services/TurnStateReader.ts";
@@ -43,29 +44,90 @@ let steerCalls: Array<{ messageId: string; text: string }> = [];
 let steerShouldFail = false;
 
 const makeOutboxLayer = (target: SteerTarget | null) =>
-  Layer.succeed(ProviderDispatchOutbox, {
-    confirmStep: () => Effect.void,
-    ensureStarted: () => Effect.succeed({ turnId: "turn-1" as never }),
-    getDispatchForStep: () =>
-      Effect.succeed(target === null ? null : { threadId: target.threadId, turnId: target.turnId }),
-    getSteerTarget: () =>
-      Effect.succeed(target === null ? null : { ...target, steerPendingMessageId: pending }),
-    markSteerPending: (_dispatchId, messageId) =>
-      Effect.sync(() => {
-        if (pending !== null && pending !== (messageId as string)) {
-          return false;
-        }
-        pending = messageId as string;
-        return true;
-      }),
-    clearSteerPending: () =>
-      Effect.sync(() => {
-        pending = null;
-      }),
-    awaitTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
-    awaitStepTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
-    recoverPending: () => Effect.void,
-  });
+  Layer.effect(
+    ProviderDispatchOutbox,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return {
+        confirmStep: () => Effect.void,
+        ensureStarted: () => Effect.succeed({ turnId: "turn-1" as never }),
+        getDispatchForStep: () =>
+          Effect.succeed(
+            target === null || target.turnId === null
+              ? null
+              : { threadId: target.threadId, turnId: target.turnId },
+          ),
+        getSteerTarget: () =>
+          Effect.succeed(target === null ? null : { ...target, steerPendingMessageId: pending }),
+        markSteerPending: (dispatchId, messageId, text) =>
+          Effect.gen(function* () {
+            if (pending !== null && pending !== (messageId as string)) {
+              return false;
+            }
+            pending = messageId as string;
+            yield* sql`
+              UPDATE workflow_dispatch_outbox
+              SET steer_pending_message_id = ${messageId as string},
+                  steer_pending_text = ${text}
+              WHERE dispatch_id = ${dispatchId as string}
+                AND steer_pending_message_id IS NULL
+            `.pipe(Effect.catch(() => Effect.void));
+            return true;
+          }),
+        clearSteerPending: (dispatchId, messageId) =>
+          Effect.gen(function* () {
+            if (pending === (messageId as string) || pending === null) {
+              pending = null;
+            }
+            yield* sql`
+              UPDATE workflow_dispatch_outbox
+              SET steer_pending_message_id = NULL,
+                  steer_pending_text = NULL
+              WHERE dispatch_id = ${dispatchId as string}
+                AND steer_pending_message_id = ${messageId as string}
+            `.pipe(Effect.catch(() => Effect.void));
+          }),
+        ackSteerDelivered: (dispatchId, messageId) =>
+          Effect.gen(function* () {
+            if (pending !== (messageId as string) && pending !== null) {
+              return false;
+            }
+            pending = null;
+            const acceptedAt = "2026-07-24T00:00:05.000Z";
+            yield* sql`
+              UPDATE workflow_dispatch_outbox
+              SET steer_accepted_at = ${acceptedAt},
+                  steer_count = COALESCE(steer_count, 0) + 1,
+                  steer_delivered_message_id = ${messageId as string},
+                  steer_delivered_text = COALESCE(steer_pending_text, ''),
+                  steer_pending_message_id = NULL,
+                  steer_pending_text = NULL
+              WHERE dispatch_id = ${dispatchId as string}
+                AND (
+                  steer_pending_message_id = ${messageId as string}
+                  OR steer_pending_message_id IS NULL
+                )
+            `.pipe(Effect.catch(() => Effect.void));
+            return true;
+          }),
+        listStagedSteerDeliveries: () => Effect.succeed([]),
+        clearStagedSteerDelivery: (dispatchId, messageId) =>
+          sql`
+            UPDATE workflow_dispatch_outbox
+            SET steer_delivered_message_id = NULL,
+                steer_delivered_text = NULL
+            WHERE dispatch_id = ${dispatchId as string}
+              AND steer_delivered_message_id = ${messageId as string}
+          `.pipe(
+            Effect.catch(() => Effect.void),
+            Effect.asVoid,
+          ),
+        awaitTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
+        awaitStepTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
+        recoverPending: () => Effect.void,
+      } as ProviderDispatchOutboxShape;
+    }),
+  );
 
 const turnPortLayer = Layer.succeed(ProviderTurnPort, {
   ensureTurnStarted: () => Effect.succeed({ turnId: "turn-1" as never }),
@@ -105,7 +167,8 @@ const baseLayer = WorkflowEngineLayer.pipe(
 
 const makeLayer = (target: SteerTarget | null) =>
   baseLayer.pipe(
-    Layer.provideMerge(makeOutboxLayer(target)),
+    // Outbox Layer.effect needs SqlClient from the foundation stack.
+    Layer.provideMerge(makeOutboxLayer(target).pipe(Layer.provide(baseLayer))),
     Layer.provideMerge(turnPortLayer),
     Layer.provideMerge(turnStateLayer),
   );
@@ -294,7 +357,10 @@ layer("WorkflowEngine.steerTicketStep", (it) => {
             FROM workflow_events
             WHERE event_type = 'StepSteered'
               AND json_extract(payload_json, '$.messageId') = ${messageId}
-          `.pipe(Effect.map((rows) => (rows[0]?.count ?? 0) >= 1)),
+          `.pipe(
+          Effect.map((rows) => (rows[0]?.count ?? 0) >= 1),
+          Effect.orElseSucceed(() => false),
+        ),
       );
 
       const events = yield* sql<{ readonly count: number }>`

@@ -73,10 +73,21 @@ export type ProviderDispatchTerminalResult =
 export interface SteerTarget {
   readonly dispatchId: DispatchId;
   readonly threadId: ThreadId;
-  readonly turnId: TurnId;
+  /** Null only in the post-start window before the first turn id is observed. */
+  readonly turnId: TurnId | null;
   readonly captureOutput: boolean;
   readonly panelSize: number | null;
   readonly steerPendingMessageId: string | null;
+}
+
+/** Staged delivered steer awaiting a durable `StepSteered` append. */
+export interface StagedSteerDelivery {
+  readonly dispatchId: DispatchId;
+  readonly ticketId: TicketId;
+  readonly stepRunId: StepRunId;
+  readonly threadId: ThreadId;
+  readonly messageId: MessageId;
+  readonly text: string;
 }
 
 export interface ProviderDispatchOutboxShape {
@@ -95,15 +106,41 @@ export interface ProviderDispatchOutboxShape {
     stepRunId: StepRunId,
   ) => Effect.Effect<SteerTarget | null, WorkflowEventStoreError>;
   /**
-   * CAS: set `steer_pending_message_id` only when currently null and not
-   * tombstoned. Returns true when this caller won the reservation.
+   * CAS: set `steer_pending_message_id` (+ text) only when currently null and
+   * not tombstoned. Returns true when this caller won the reservation (or
+   * already holds the same messageId).
    */
   readonly markSteerPending: (
     dispatchId: DispatchId,
     messageId: MessageId,
+    text: string,
   ) => Effect.Effect<boolean, WorkflowEventStoreError>;
+  /**
+   * Clear pending only when it still matches `messageId` (never clobber a
+   * newer reservation).
+   */
   readonly clearSteerPending: (
     dispatchId: DispatchId,
+    messageId: MessageId,
+  ) => Effect.Effect<void, WorkflowEventStoreError>;
+  /**
+   * On delivered receipt: bump ack columns, stage text for `StepSteered`,
+   * clear pending (messageId-keyed). Returns true when this call staged a
+   * new delivery (caller should append `StepSteered`).
+   */
+  readonly ackSteerDelivered: (
+    dispatchId: DispatchId,
+    messageId: MessageId,
+  ) => Effect.Effect<boolean, WorkflowEventStoreError>;
+  /** Rows with a staged delivery waiting for `StepSteered`. */
+  readonly listStagedSteerDeliveries: () => Effect.Effect<
+    ReadonlyArray<StagedSteerDelivery>,
+    WorkflowEventStoreError
+  >;
+  /** Clear staged delivery after a successful `StepSteered` append. */
+  readonly clearStagedSteerDelivery: (
+    dispatchId: DispatchId,
+    messageId: MessageId,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly awaitTerminal: (
     dispatchId: DispatchId,

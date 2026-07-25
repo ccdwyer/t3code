@@ -214,9 +214,14 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN capture_output INTEGER`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN panel_size INTEGER`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_message_id TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_text TEXT`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_accepted_at TEXT`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_count INTEGER NOT NULL DEFAULT 0`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_tombstone_message_id TEXT`;
+  // Staged delivery: durable handoff for StepSteered when the in-process ack
+  // fiber dies (restart / slow receipt). Cleared after StepSteered commits.
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_message_id TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_text TEXT`;
 
   // --- Setup run (037) ---
   yield* sql`

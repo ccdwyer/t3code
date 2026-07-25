@@ -146,7 +146,7 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     type: "table",
     name: "workflow_dispatch_outbox",
     tbl_name: "workflow_dispatch_outbox",
-    sql: "CREATE TABLE workflow_dispatch_outbox ( dispatch_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, step_run_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT, provider_instance TEXT NOT NULL, model TEXT NOT NULL, instruction TEXT NOT NULL, worktree_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, confirmed_at TEXT , options_json TEXT, project_id TEXT, thread_title TEXT, runtime_mode TEXT, capture_output INTEGER, panel_size INTEGER, steer_pending_message_id TEXT, steer_accepted_at TEXT, steer_count INTEGER NOT NULL DEFAULT 0, steer_tombstone_message_id TEXT)",
+    sql: "CREATE TABLE workflow_dispatch_outbox ( dispatch_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, step_run_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT, provider_instance TEXT NOT NULL, model TEXT NOT NULL, instruction TEXT NOT NULL, worktree_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, confirmed_at TEXT , options_json TEXT, project_id TEXT, thread_title TEXT, runtime_mode TEXT, capture_output INTEGER, panel_size INTEGER, steer_pending_message_id TEXT, steer_pending_text TEXT, steer_accepted_at TEXT, steer_count INTEGER NOT NULL DEFAULT 0, steer_tombstone_message_id TEXT, steer_delivered_message_id TEXT, steer_delivered_text TEXT)",
   },
   {
     type: "index",
@@ -745,9 +745,12 @@ layer("035_WorkflowSchema", (it) => {
         "capture_output",
         "panel_size",
         "steer_pending_message_id",
+        "steer_pending_text",
         "steer_accepted_at",
         "steer_count",
         "steer_tombstone_message_id",
+        "steer_delivered_message_id",
+        "steer_delivered_text",
       ]) {
         assert.isTrue(outboxNames.has(name), `outbox missing ${name}`);
       }

@@ -1078,8 +1078,9 @@ const make = Effect.gen(function* () {
       readonly summary: string;
       readonly detail?: string;
       readonly turnId?: TurnId | null;
-    }) =>
-      Effect.all({
+    }) => {
+      const messageIdForPayload = steerMessageId ?? event.payload.messageId;
+      const appendViaOrchestration = Effect.all({
         commandId: serverCommandId("workflow-steer-receipt"),
         eventId: serverEventId(),
       }).pipe(
@@ -1094,7 +1095,7 @@ const make = Effect.gen(function* () {
               kind: input.kind,
               summary: input.summary,
               payload: {
-                messageId: steerMessageId ?? event.payload.messageId,
+                messageId: messageIdForPayload,
                 commandId: commandIdStr,
                 ...(input.detail !== undefined ? { detail: input.detail } : {}),
               },
@@ -1104,13 +1105,49 @@ const make = Effect.gen(function* () {
             createdAt: event.payload.createdAt,
           }),
         ),
+      );
+      // Direct SQL fallback so a durable receipt always lands even if the
+      // orchestration dispatch fails after sendTurn already succeeded.
+      const appendViaSqlFallback = Option.isSome(sqlOption)
+        ? Effect.gen(function* () {
+            const activityId = yield* serverEventId();
+            const payloadJson = JSON.stringify({
+              messageId: messageIdForPayload,
+              commandId: commandIdStr,
+              ...(input.detail !== undefined ? { detail: input.detail } : {}),
+            });
+            yield* sqlOption.value`
+              INSERT INTO projection_thread_activities (
+                activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+              ) VALUES (
+                ${activityId},
+                ${event.payload.threadId},
+                ${input.turnId ?? null},
+                ${input.tone},
+                ${input.kind},
+                ${input.summary},
+                ${payloadJson},
+                ${event.payload.createdAt}
+              )
+            `.pipe(Effect.asVoid);
+          })
+        : Effect.void;
+
+      return appendViaOrchestration.pipe(
+        Effect.retry({ times: 2 }),
         Effect.catchCause((cause) =>
-          Effect.logWarning("workflow steer receipt append failed", {
-            kind: input.kind,
-            cause: Cause.pretty(cause),
-          }),
+          appendViaSqlFallback.pipe(
+            Effect.catchCause((fallbackCause) =>
+              Effect.logError("workflow steer receipt append failed", {
+                kind: input.kind,
+                cause: Cause.pretty(cause),
+                fallbackCause: Cause.pretty(fallbackCause),
+              }),
+            ),
+          ),
         ),
       );
+    };
 
     // Tombstone fence: drop steers reaped by the outbox grace reaper.
     if (isWorkflowSteer && steerMessageId !== null && Option.isSome(sqlOption)) {

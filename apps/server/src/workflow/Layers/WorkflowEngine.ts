@@ -2280,32 +2280,68 @@ const make = Effect.gen(function* () {
       });
     });
 
+  const stepSteeredExists = (messageId: string) =>
+    wrapSql(sql<{
+      readonly ticketId: string;
+      readonly stepRunId: string;
+      readonly text: string;
+    }>`
+      SELECT
+        ticket_id AS "ticketId",
+        json_extract(payload_json, '$.stepRunId') AS "stepRunId",
+        json_extract(payload_json, '$.text') AS "text"
+      FROM workflow_events
+      WHERE event_type = 'StepSteered'
+        AND json_extract(payload_json, '$.messageId') = ${messageId}
+      LIMIT 1
+    `).pipe(
+      Effect.orElseSucceed(
+        () =>
+          [] as Array<{
+            readonly ticketId: string;
+            readonly stepRunId: string;
+            readonly text: string;
+          }>,
+      ),
+    );
+
+  /** Append StepSteered once for a staged delivery; clear the stage after. */
+  const commitStepSteeredOnce = (input: {
+    readonly dispatchId: never;
+    readonly ticketId: TicketId;
+    readonly stepRunId: never;
+    readonly messageId: never;
+    readonly text: string;
+    readonly outbox: {
+      readonly clearStagedSteerDelivery: (
+        dispatchId: never,
+        messageId: never,
+      ) => Effect.Effect<void, WorkflowEventStoreError>;
+    };
+  }) =>
+    Effect.gen(function* () {
+      const existing = yield* stepSteeredExists(input.messageId as string);
+      if (existing[0] !== undefined) {
+        yield* input.outbox.clearStagedSteerDelivery(input.dispatchId, input.messageId);
+        return;
+      }
+      yield* commit({
+        type: "StepSteered",
+        ticketId: input.ticketId,
+        payload: {
+          stepRunId: input.stepRunId,
+          messageId: input.messageId,
+          text: input.text,
+        },
+      });
+      yield* input.outbox.clearStagedSteerDelivery(input.dispatchId, input.messageId);
+    });
+
   const steerTicketStep: WorkflowEngineShape["steerTicketStep"] = (input) =>
     Effect.gen(function* () {
       // Idempotency first (before mutable-state validation), keyed by messageId.
-      const existingSteers = yield* wrapSql(sql<{
-        readonly ticketId: string;
-        readonly stepRunId: string;
-        readonly text: string;
-      }>`
-        SELECT
-          ticket_id AS "ticketId",
-          json_extract(payload_json, '$.stepRunId') AS "stepRunId",
-          json_extract(payload_json, '$.text') AS "text"
-        FROM workflow_events
-        WHERE event_type = 'StepSteered'
-          AND json_extract(payload_json, '$.messageId') = ${input.messageId}
-        LIMIT 1
-      `).pipe(
-        Effect.orElseSucceed(
-          () =>
-            [] as Array<{
-              readonly ticketId: string;
-              readonly stepRunId: string;
-              readonly text: string;
-            }>,
-        ),
-      );
+      // Success only when a matching StepSteered exists — not for failed receipts.
+      const existingSteers = yield* stepSteeredExists(input.messageId as string);
       if (existingSteers[0] !== undefined) {
         const row = existingSteers[0];
         if (
@@ -2318,29 +2354,26 @@ const make = Effect.gen(function* () {
         return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.messageIdReuse });
       }
 
-      // Submitted or later: pending reservation, durable reactor receipt, or
-      // orchestration command receipt for this messageId. Retries after the
-      // outbox clears pending (delivered/failed) must NOT re-dispatch.
-      const submittedMarkers = yield* wrapSql(sql<{ readonly n: number }>`
+      // In-flight or already delivered (but StepSteered may still be pending
+      // append). Failed receipts intentionally do NOT short-circuit — client
+      // may retry with the same messageId after a failed delivery.
+      const inFlightMarkers = yield* wrapSql(sql<{ readonly n: number }>`
         SELECT COUNT(*) AS n FROM (
           SELECT 1 AS x
           FROM workflow_dispatch_outbox
           WHERE steer_pending_message_id = ${input.messageId}
+             OR steer_delivered_message_id = ${input.messageId}
           UNION ALL
           SELECT 1 AS x
           FROM projection_thread_activities
-          WHERE kind IN ('workflow.steer.delivered', 'workflow.steer.failed')
+          WHERE kind = 'workflow.steer.delivered'
             AND (
               json_extract(payload_json, '$.messageId') = ${input.messageId}
               OR payload_json LIKE ${`%${input.messageId as string}%`}
             )
-          UNION ALL
-          SELECT 1 AS x
-          FROM orchestration_command_receipts
-          WHERE command_id = ${`workflow-steer-${input.messageId as string}`}
         )
       `).pipe(Effect.orElseSucceed(() => [{ n: 0 }]));
-      if ((submittedMarkers[0]?.n ?? 0) > 0) {
+      if ((inFlightMarkers[0]?.n ?? 0) > 0) {
         return { accepted: true as const };
       }
 
@@ -2382,6 +2415,7 @@ const make = Effect.gen(function* () {
       if (target === null) {
         return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.agentStarting });
       }
+      // Turn id may lag one poll after start; still require a live running turn.
       if (target.panelSize !== null && target.panelSize >= 2) {
         return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.panelStep });
       }
@@ -2398,11 +2432,18 @@ const make = Effect.gen(function* () {
           return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.stepNotRunning });
         }
         if (state._tag !== "running") {
-          return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.stepNotRunning });
+          // Pre-start / no projected turn yet.
+          return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.agentStarting });
         }
+      } else if (target.turnId === null) {
+        return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.agentStarting });
       }
 
-      const reserved = yield* outbox.markSteerPending(target.dispatchId, input.messageId);
+      const reserved = yield* outbox.markSteerPending(
+        target.dispatchId,
+        input.messageId,
+        input.text,
+      );
       if (!reserved) {
         return yield* new WorkflowEventStoreError({ message: STEER_REJECTION.steerInFlight });
       }
@@ -2410,7 +2451,7 @@ const make = Effect.gen(function* () {
       const framed = frameSteerText(input.text, target.captureOutput);
       const submit = turnPort.steerTurn;
       if (submit === undefined) {
-        yield* outbox.clearSteerPending(target.dispatchId);
+        yield* outbox.clearSteerPending(target.dispatchId, input.messageId);
         return yield* new WorkflowEventStoreError({
           message: STEER_REJECTION.orchestrationUnavailable,
         });
@@ -2424,18 +2465,18 @@ const make = Effect.gen(function* () {
         }),
       );
       if (exit._tag === "Failure") {
-        yield* outbox.clearSteerPending(target.dispatchId);
+        yield* outbox.clearSteerPending(target.dispatchId, input.messageId);
         return yield* new WorkflowEventStoreError({
           message: "steer submit failed",
           cause: exit.cause,
         });
       }
 
-      // Reconcile ack → StepSteered in the background. awaitTerminal also
-      // updates outbox columns when it observes the receipt; this fiber owns
-      // the audit event append (unique on messageId).
+      // Best-effort in-process reconcile. Durable path: outbox stages delivery
+      // on receipt (awaitTerminal / this fiber); recovery drains staged rows
+      // into StepSteered if the fiber dies.
       const reconcileSteerAck = Effect.gen(function* () {
-        for (let attempt = 0; attempt < 120; attempt++) {
+        for (let attempt = 0; attempt < 240; attempt++) {
           yield* Effect.sleep(Duration.millis(250));
           const receipts = yield* wrapSql(sql<{ readonly kind: string }>`
             SELECT kind
@@ -2451,37 +2492,36 @@ const make = Effect.gen(function* () {
           `).pipe(Effect.orElseSucceed(() => [] as Array<{ readonly kind: string }>));
           const kind = receipts[0]?.kind;
           if (kind === "workflow.steer.failed") {
-            yield* outbox.clearSteerPending(target.dispatchId);
+            yield* outbox.clearSteerPending(target.dispatchId, input.messageId);
             return;
           }
           if (kind === "workflow.steer.delivered") {
-            const acceptedAt = yield* nowIso;
-            yield* wrapSql(sql`
-              UPDATE workflow_dispatch_outbox
-              SET steer_accepted_at = COALESCE(steer_accepted_at, ${acceptedAt}),
-                  steer_count = CASE
-                    WHEN steer_pending_message_id = ${input.messageId}
-                      OR steer_pending_message_id IS NULL
-                    THEN CASE
-                      WHEN steer_accepted_at IS NULL THEN COALESCE(steer_count, 0) + 1
-                      ELSE steer_count
-                    END
-                    ELSE steer_count
-                  END,
-                  steer_pending_message_id = NULL
-              WHERE dispatch_id = ${target.dispatchId}
-            `);
-            // Clear in-memory pending for stubs that only track process state.
-            yield* outbox.clearSteerPending(target.dispatchId);
-            // Use engine `commit` so eventId/occurredAt are stamped.
-            yield* commit({
-              type: "StepSteered",
+            yield* outbox.ackSteerDelivered(target.dispatchId, input.messageId);
+            yield* commitStepSteeredOnce({
+              dispatchId: target.dispatchId as never,
               ticketId: input.ticketId,
-              payload: {
-                stepRunId: input.stepRunId,
-                messageId: input.messageId,
-                text: input.text,
-              },
+              stepRunId: input.stepRunId as never,
+              messageId: input.messageId as never,
+              text: input.text,
+              outbox: outbox as never,
+            });
+            return;
+          }
+          // Staged by awaitTerminal while we were waiting.
+          const staged = yield* outbox.listStagedSteerDeliveries();
+          const mine = staged.find(
+            (row) =>
+              (row.dispatchId as string) === (target.dispatchId as string) &&
+              (row.messageId as string) === (input.messageId as string),
+          );
+          if (mine !== undefined) {
+            yield* commitStepSteeredOnce({
+              dispatchId: target.dispatchId as never,
+              ticketId: input.ticketId,
+              stepRunId: input.stepRunId as never,
+              messageId: input.messageId as never,
+              text: mine.text.length > 0 ? mine.text : input.text,
+              outbox: outbox as never,
             });
             return;
           }
@@ -3276,10 +3316,21 @@ const make = Effect.gen(function* () {
   const abandonTicketDispatches = (ticketId: TicketId) =>
     Effect.gen(function* () {
       const confirmedAt = yield* nowIso;
+      // Confirm + tombstone any in-flight steer so the reactor fence drops a
+      // late provider delivery after park/move/cancel.
       yield* wrapSql(sql`
         UPDATE workflow_dispatch_outbox
         SET status = 'confirmed',
-            confirmed_at = ${confirmedAt}
+            confirmed_at = ${confirmedAt},
+            steer_tombstone_message_id = COALESCE(
+              steer_pending_message_id,
+              steer_delivered_message_id,
+              steer_tombstone_message_id
+            ),
+            steer_pending_message_id = NULL,
+            steer_pending_text = NULL,
+            steer_delivered_message_id = NULL,
+            steer_delivered_text = NULL
         WHERE ticket_id = ${ticketId}
           AND status IN ('pending', 'started')
       `);

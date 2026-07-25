@@ -258,13 +258,14 @@ const make = Effect.gen(function* () {
     `).pipe(
       Effect.map((rows): SteerTarget | null => {
         const row = rows[0];
-        if (!row || row.status !== "started" || row.turnId === null) {
+        // Started dispatch is enough; turn_id may lag one poll after start.
+        if (!row || row.status !== "started") {
           return null;
         }
         return {
           dispatchId: row.dispatchId as never,
           threadId: row.threadId as never,
-          turnId: row.turnId as never,
+          turnId: (row.turnId as never) ?? null,
           captureOutput: row.captureOutput === 1,
           panelSize: row.panelSize,
           steerPendingMessageId: row.steerPendingMessageId,
@@ -275,11 +276,13 @@ const make = Effect.gen(function* () {
   const markSteerPending: ProviderDispatchOutboxShape["markSteerPending"] = (
     dispatchId,
     messageId,
+    text,
   ) =>
     Effect.gen(function* () {
       yield* wrapSql(sql`
         UPDATE workflow_dispatch_outbox
-        SET steer_pending_message_id = ${messageId}
+        SET steer_pending_message_id = ${messageId},
+            steer_pending_text = ${text}
         WHERE dispatch_id = ${dispatchId}
           AND status = 'started'
           AND steer_pending_message_id IS NULL
@@ -295,11 +298,91 @@ const make = Effect.gen(function* () {
       return rows[0]?.pending === (messageId as string);
     });
 
-  const clearSteerPending: ProviderDispatchOutboxShape["clearSteerPending"] = (dispatchId) =>
+  const clearSteerPending: ProviderDispatchOutboxShape["clearSteerPending"] = (
+    dispatchId,
+    messageId,
+  ) =>
     wrapSql(sql`
       UPDATE workflow_dispatch_outbox
-      SET steer_pending_message_id = NULL
+      SET steer_pending_message_id = NULL,
+          steer_pending_text = NULL
       WHERE dispatch_id = ${dispatchId}
+        AND steer_pending_message_id = ${messageId}
+    `).pipe(Effect.asVoid);
+
+  const ackSteerDelivered: ProviderDispatchOutboxShape["ackSteerDelivered"] = (
+    dispatchId,
+    messageId,
+  ) =>
+    Effect.gen(function* () {
+      const acceptedAt = yield* nowIso;
+      // MessageId-keyed: only the owner of the current pending reservation
+      // stages the delivery and clears pending. Stages text from pending_text
+      // for a durable StepSteered append (survives process exit).
+      yield* wrapSql(sql`
+        UPDATE workflow_dispatch_outbox
+        SET steer_accepted_at = ${acceptedAt},
+            steer_count = COALESCE(steer_count, 0) + 1,
+            steer_delivered_message_id = ${messageId},
+            steer_delivered_text = steer_pending_text,
+            steer_pending_message_id = NULL,
+            steer_pending_text = NULL
+        WHERE dispatch_id = ${dispatchId}
+          AND steer_pending_message_id = ${messageId}
+      `);
+      // Also stage when pending was already cleared by a peer but we still
+      // hold a matching staged slot empty and a prior pending text is gone —
+      // only report true when this message is now the staged delivery.
+      const rows = yield* wrapSql(sql<{ readonly delivered: string | null }>`
+        SELECT steer_delivered_message_id AS "delivered"
+        FROM workflow_dispatch_outbox
+        WHERE dispatch_id = ${dispatchId}
+      `);
+      return rows[0]?.delivered === (messageId as string);
+    });
+
+  const listStagedSteerDeliveries: ProviderDispatchOutboxShape["listStagedSteerDeliveries"] = () =>
+    wrapSql(sql<{
+      readonly dispatchId: string;
+      readonly ticketId: string;
+      readonly stepRunId: string;
+      readonly threadId: string;
+      readonly messageId: string;
+      readonly text: string | null;
+    }>`
+        SELECT
+          dispatch_id AS "dispatchId",
+          ticket_id AS "ticketId",
+          step_run_id AS "stepRunId",
+          thread_id AS "threadId",
+          steer_delivered_message_id AS "messageId",
+          steer_delivered_text AS "text"
+        FROM workflow_dispatch_outbox
+        WHERE steer_delivered_message_id IS NOT NULL
+          AND steer_delivered_text IS NOT NULL
+      `).pipe(
+      Effect.map((rows) =>
+        rows.map((row) => ({
+          dispatchId: row.dispatchId as never,
+          ticketId: row.ticketId as never,
+          stepRunId: row.stepRunId as never,
+          threadId: row.threadId as never,
+          messageId: row.messageId as never,
+          text: row.text ?? "",
+        })),
+      ),
+    );
+
+  const clearStagedSteerDelivery: ProviderDispatchOutboxShape["clearStagedSteerDelivery"] = (
+    dispatchId,
+    messageId,
+  ) =>
+    wrapSql(sql`
+      UPDATE workflow_dispatch_outbox
+      SET steer_delivered_message_id = NULL,
+          steer_delivered_text = NULL
+      WHERE dispatch_id = ${dispatchId}
+        AND steer_delivered_message_id = ${messageId}
     `).pipe(Effect.asVoid);
 
   const readDeadlineBase = (dispatchId: string) =>
@@ -336,20 +419,25 @@ const make = Effect.gen(function* () {
             break;
           }
 
-          // Single-read correlation when the projection port is available:
-          // turn id + raw state come from one listByThreadId; awaiting_user
-          // enrichment still goes through TurnStateReader (same pending tables).
+          // Single-snapshot correlation: turn id + raw state from one projection
+          // read. Awaiting_user enrichment still goes through TurnStateReader when
+          // the snapshot is non-terminal.
           let latestTurnId: string | null = meta?.turnId ?? null;
+          let snapshotState: string | null = null;
+          let snapshotCompleted = false;
           if (Option.isSome(turnProjection)) {
             const latest = yield* turnProjection.value.getLatestTurnState(threadId);
+            snapshotState = latest.state;
+            snapshotCompleted = latest.completed;
             if (latest.turnId !== null) {
               latestTurnId = latest.turnId;
               yield* persistTurnIdIfChanged(dispatchId, latest.turnId);
             }
           }
 
-          // Ack processing: watch durable reactor receipts for in-flight steers.
+          // Ack processing: stage delivered steers for durable StepSteered.
           if (meta?.steerPendingMessageId != null) {
+            const pendingMessageId = meta.steerPendingMessageId;
             const receipts = yield* wrapSql(sql<{
               readonly kind: string;
             }>`
@@ -358,29 +446,38 @@ const make = Effect.gen(function* () {
               WHERE thread_id = ${threadId}
                 AND kind IN ('workflow.steer.delivered', 'workflow.steer.failed')
                 AND (
-                  json_extract(payload_json, '$.messageId') = ${meta.steerPendingMessageId}
-                  OR payload_json LIKE ${`%${meta.steerPendingMessageId}%`}
+                  json_extract(payload_json, '$.messageId') = ${pendingMessageId}
+                  OR payload_json LIKE ${`%${pendingMessageId}%`}
                 )
               ORDER BY created_at DESC
               LIMIT 1
             `).pipe(Effect.orElseSucceed(() => [] as Array<{ readonly kind: string }>));
             const receipt = receipts[0];
             if (receipt?.kind === "workflow.steer.delivered") {
-              const acceptedAt = yield* nowIso;
-              yield* wrapSql(sql`
-                UPDATE workflow_dispatch_outbox
-                SET steer_accepted_at = ${acceptedAt},
-                    steer_count = COALESCE(steer_count, 0) + 1,
-                    steer_pending_message_id = NULL
-                WHERE dispatch_id = ${dispatchId}
-                  AND steer_pending_message_id = ${meta.steerPendingMessageId}
-              `);
-              // StepSteered append is owned by the engine monitor path; signal
-              // via a side channel is not available here. Ack columns are the
-              // durable source; engine.ackSteer (if registered later) is optional.
+              yield* ackSteerDelivered(dispatchId as never, pendingMessageId as never);
             } else if (receipt?.kind === "workflow.steer.failed") {
-              yield* clearSteerPending(dispatchId as never);
+              yield* clearSteerPending(dispatchId as never, pendingMessageId as never);
             }
+          }
+
+          // Terminal from the same snapshot — do not re-read turn id separately.
+          if (snapshotCompleted && latestTurnId !== null) {
+            const terminalTurnId = latestTurnId as never;
+            const confirmedAt = yield* nowIso;
+            yield* wrapSql(sql`
+              UPDATE workflow_dispatch_outbox
+              SET status = 'confirmed',
+                  confirmed_at = ${confirmedAt},
+                  turn_id = COALESCE(turn_id, ${latestTurnId})
+              WHERE dispatch_id = ${dispatchId}
+            `);
+            return snapshotState === "completed"
+              ? ({ ok: true, turnId: terminalTurnId } satisfies ProviderDispatchTerminalResult)
+              : ({
+                  ok: false,
+                  turnId: terminalTurnId,
+                  error: snapshotState ?? "turn failed",
+                } satisfies ProviderDispatchTerminalResult);
           }
 
           const state = yield* turns.read(threadId);
@@ -393,7 +490,7 @@ const make = Effect.gen(function* () {
             // No grace / stop on the approval path. Clear any in-flight steer
             // reservation — the provider superseded it with a question.
             if (meta?.steerPendingMessageId != null) {
-              yield* clearSteerPending(dispatchId as never);
+              yield* clearSteerPending(dispatchId as never, meta.steerPendingMessageId as never);
             }
             return {
               ok: false,
@@ -545,6 +642,9 @@ const make = Effect.gen(function* () {
     getSteerTarget,
     markSteerPending,
     clearSteerPending,
+    ackSteerDelivered,
+    listStagedSteerDeliveries,
+    clearStagedSteerDelivery,
     awaitTerminal,
     awaitStepTerminal,
     recoverPending,

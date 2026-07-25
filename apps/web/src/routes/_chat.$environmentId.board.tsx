@@ -1024,6 +1024,7 @@ function WorkflowBoardRouteView() {
             onDeleteTicket={handleDeleteTicket}
             onMove={handleDrawerMove}
             onRunLane={handleRunLane}
+            onSteered={reloadTicketDetail}
             onParkAction={handleParkAction}
             parkActionPending={pendingParkActionTicketIds.has(ticketDetail.ticket.ticketId)}
             projectId={state.projectId ? ProjectId.make(state.projectId) : undefined}

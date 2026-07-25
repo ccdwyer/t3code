@@ -207,6 +207,7 @@ export function TicketDrawer({
   onDeleteTicket,
   onMove,
   onRunLane,
+  onSteered,
   onParkAction,
   parkActionPending = false,
   projectId,
@@ -223,6 +224,8 @@ export function TicketDrawer({
   readonly onDeleteTicket?: (() => Promise<void>) | undefined;
   readonly onMove?: ((toLane: string) => void) | undefined;
   readonly onRunLane: () => void;
+  /** Refresh ticket detail after a successful steer (must NOT be onRunLane). */
+  readonly onSteered?: (() => void) | undefined;
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
@@ -610,6 +613,7 @@ export function TicketDrawer({
           onEditMessage={onEditMessage}
           onMove={onMove}
           onRunLane={onRunLane}
+          onSteered={onSteered}
           onParkAction={onParkAction}
           parkActionPending={parkActionPending}
           now={now}
@@ -744,7 +748,7 @@ export function TicketDrawer({
                     stepOutputTestId="step-captured-output"
                     onRunLane={onRunLane}
                     submitApproval={submitApproval}
-                    onSteered={onRunLane}
+                    onSteered={onSteered}
                     liClassName="p-2"
                   />
                 ))}
@@ -1796,6 +1800,7 @@ export function TicketFullscreen({
   onEditMessage,
   onMove,
   onRunLane,
+  onSteered,
   onParkAction,
   parkActionPending = false,
   now,
@@ -1826,6 +1831,7 @@ export function TicketFullscreen({
   readonly onEditMessage?: ((messageId: string, body: string) => Promise<void>) | undefined;
   readonly onMove?: ((toLane: string) => void) | undefined;
   readonly onRunLane: () => void;
+  readonly onSteered?: (() => void) | undefined;
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
@@ -2069,7 +2075,7 @@ export function TicketFullscreen({
                     stepOutputTestId="step-captured-output"
                     onRunLane={onRunLane}
                     submitApproval={approvalState.submitApproval}
-                    onSteered={onRunLane}
+                    onSteered={onSteered}
                     liClassName="p-3"
                   />
                 ))}

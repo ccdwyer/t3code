@@ -383,7 +383,7 @@ const make = Effect.gen(function* () {
             WHERE thread_id = ${threadId}
               AND turn_id IS NOT NULL
               AND state IN ('pending', 'running')
-            ORDER BY created_at DESC, turn_id DESC
+            ORDER BY requested_at DESC, turn_id DESC
             LIMIT 1
           )
       `);
@@ -416,7 +416,12 @@ const make = Effect.gen(function* () {
           started_at = NULL,
           turn_id = NULL,
           steer_pending_message_id = NULL,
-          steer_tombstone_message_id = NULL
+          steer_pending_text = NULL,
+          steer_delivered_message_id = NULL,
+          steer_delivered_text = NULL,
+          steer_tombstone_message_id = NULL,
+          steer_accepted_at = NULL,
+          steer_count = 0
       WHERE dispatch_id = ${dispatchId}
         AND status = 'started'
     `).pipe(Effect.asVoid);
@@ -1026,15 +1031,42 @@ const make = Effect.gen(function* () {
       `);
       const dispatch = dispatchRows[0];
       if (dispatch?.threadId != null && dispatch.turnId != null) {
-        yield* engine.completeRecoveredStep(
-          row.stepRunId,
-          { _tag: "completed" },
-          {
-            threadId: dispatch.threadId as ThreadId,
-            turnId: dispatch.turnId as TurnId,
-          },
-        );
-        continue;
+        // Only treat a confirmed dispatch as success when the correlated turn
+        // is actually completed — failed/interrupted/timeout confirms must not
+        // become false-complete after a crash between confirm and event append.
+        const turnRows = yield* wrapSql(sql<{ readonly state: string }>`
+          SELECT state
+          FROM projection_turns
+          WHERE thread_id = ${dispatch.threadId}
+            AND turn_id = ${dispatch.turnId}
+          LIMIT 1
+        `).pipe(Effect.orElseSucceed(() => [] as Array<{ readonly state: string }>));
+        const turnState = turnRows[0]?.state;
+        if (turnState === "completed") {
+          yield* engine.completeRecoveredStep(
+            row.stepRunId,
+            { _tag: "completed" },
+            {
+              threadId: dispatch.threadId as ThreadId,
+              turnId: dispatch.turnId as TurnId,
+            },
+          );
+          continue;
+        }
+        if (turnState === "error" || turnState === "interrupted" || turnState === "failed") {
+          yield* engine.completeRecoveredStep(
+            row.stepRunId,
+            {
+              _tag: "failed",
+              error: turnState === "interrupted" ? "turn interrupted" : "turn failed",
+            },
+            {
+              threadId: dispatch.threadId as ThreadId,
+              turnId: dispatch.turnId as TurnId,
+            },
+          );
+          continue;
+        }
       }
       yield* engine.completeRecoveredStep(row.stepRunId, {
         _tag: "failed",
@@ -1204,6 +1236,41 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Durable StepSteered: if a delivery was staged before process exit and the
+   * in-memory ack fiber died, append the missing audit event now.
+   */
+  const recoverStagedSteerDeliveries = Effect.gen(function* () {
+    const staged = yield* outbox.listStagedSteerDeliveries();
+    for (const row of staged) {
+      const existing = yield* wrapSql(sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n
+        FROM workflow_events
+        WHERE event_type = 'StepSteered'
+          AND json_extract(payload_json, '$.messageId') = ${row.messageId as string}
+      `).pipe(Effect.orElseSucceed(() => [{ n: 0 }]));
+      if ((existing[0]?.n ?? 0) === 0) {
+        const occurredAt = yield* nowIso;
+        yield* committer
+          .commit({
+            type: "StepSteered",
+            eventId: yield* ids.eventId(),
+            ticketId: row.ticketId,
+            occurredAt,
+            payload: {
+              stepRunId: row.stepRunId,
+              messageId: row.messageId,
+              text: row.text,
+            },
+          } satisfies WorkflowEventInput)
+          .pipe(Effect.catch(() => Effect.void));
+      }
+      yield* outbox
+        .clearStagedSteerDelivery(row.dispatchId, row.messageId)
+        .pipe(Effect.catch(() => Effect.void));
+    }
+  });
+
   const recover: WorkflowRecoveryShape["recover"] = () =>
     Effect.gen(function* () {
       yield* recoverWorkflowWip;
@@ -1217,6 +1284,8 @@ const make = Effect.gen(function* () {
       // confirms rows, and those superseded steps are not this sweep's
       // target (completeRecoveredStep's token guard handles them anyway).
       yield* recoverConfirmedRunningSteps;
+      // Before re-dispatch: commit any staged steers left by a dead ack fiber.
+      yield* recoverStagedSteerDeliveries;
       yield* outbox.recoverPending();
       yield* monitorStartedDispatches;
       yield* resumeStrandedPipelines;

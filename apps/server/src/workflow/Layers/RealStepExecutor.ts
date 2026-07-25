@@ -340,6 +340,38 @@ const make = Effect.gen(function* () {
           threadId: member.threadId as never,
           turnId: member.turnId,
         });
+        // Panel: validate against outputContract when present (no repair).
+        if (
+          step.captureOutput === true &&
+          step.outputContract !== undefined &&
+          output !== undefined
+        ) {
+          const memberErrors = validateStepOutput(step.outputContract, {
+            output: output as object,
+            rawBlock: JSON.stringify(output),
+          });
+          if (memberErrors.length > 0) {
+            votes.push({
+              reviewer: index + 1,
+              verdict: null,
+              output: output ?? null,
+              error: `output contract violation: ${memberErrors[0]}`,
+            });
+            continue;
+          }
+        } else if (
+          step.captureOutput === true &&
+          step.outputContract !== undefined &&
+          output === undefined
+        ) {
+          votes.push({
+            reviewer: index + 1,
+            verdict: null,
+            output: null,
+            error: "output contract violation: no fenced json block found",
+          });
+          continue;
+        }
         votes.push({
           reviewer: index + 1,
           verdict: verdictOf(output),

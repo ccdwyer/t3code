@@ -255,7 +255,7 @@ const make = Effect.gen(function* () {
         steer_pending_message_id AS "steerPendingMessageId"
       FROM workflow_dispatch_outbox
       WHERE step_run_id = ${stepRunId}
-      ORDER BY created_at DESC, dispatch_id DESC
+      ORDER BY dispatch_seq DESC, created_at DESC, dispatch_id DESC
       LIMIT 1
     `).pipe(
       Effect.map((rows): SteerTarget | null => {

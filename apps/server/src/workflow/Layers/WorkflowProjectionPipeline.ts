@@ -434,6 +434,12 @@ const make = Effect.gen(function* () {
             event.payload.toLane,
             event.occurredAt,
           );
+          // Lane entry, same as TicketMovedToLane: a pack compiled for this
+          // destination on an earlier visit must not leak into the new one.
+          yield* sql`
+            DELETE FROM projection_context_pack
+            WHERE ticket_id = ${event.ticketId} AND for_lane = ${event.payload.toLane}
+          `;
           yield* sql`
             UPDATE projection_ticket
             SET current_lane_key = ${event.payload.toLane},

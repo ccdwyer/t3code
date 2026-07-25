@@ -1101,6 +1101,7 @@ const make = Effect.gen(function* () {
         yield* forkCoord.recordSpawn({
           stepRunId,
           parentTicketId: ticketId,
+          rootTicketId,
           boardId,
           stepKey: step.key as string,
           joinRequire,

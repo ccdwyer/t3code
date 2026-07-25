@@ -126,7 +126,8 @@ const make = Effect.gen(function* () {
                 )
               `;
             }
-            const rootId = input.parentTicketId as string;
+            // Prefer propagated lineage root (nested forks); fall back to parent.
+            const rootId = (input.rootTicketId ?? input.parentTicketId) as string;
             yield* sql`
               INSERT INTO workflow_fork_lineage (root_ticket_id, board_id, fork_count)
               VALUES (${rootId}, ${input.boardId}, 1)

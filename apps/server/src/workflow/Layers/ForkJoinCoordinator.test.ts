@@ -2,6 +2,7 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -165,6 +166,43 @@ layer("ForkJoinCoordinator", (it) => {
         outcome: "success",
       });
       assert.equal(r.status, "waiting");
+    }),
+  );
+
+  it.effect("lineage ledger keys on propagated rootTicketId", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const coord = yield* ForkJoinCoordinator;
+      yield* coord.recordSpawn({
+        stepRunId: "sr-root" as never,
+        parentTicketId: "nested-parent" as never,
+        rootTicketId: "true-root" as never,
+        boardId: "b1" as never,
+        stepKey: "fanout",
+        joinRequire: 1,
+        onBranchFailure: "waitImpossible",
+        spawnSeq: 10,
+        children: [
+          {
+            childKey: "a",
+            ticketId: "c-root-a" as never,
+            laneKey: "impl",
+            title: "A",
+          },
+        ],
+      });
+      const rows = yield* sql<{ readonly root: string; readonly n: number }>`
+        SELECT root_ticket_id AS root, fork_count AS n
+        FROM workflow_fork_lineage
+        WHERE root_ticket_id = 'true-root'
+      `;
+      assert.equal(rows[0]?.root, "true-root");
+      assert.equal(rows[0]?.n, 1);
+      const wrong = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM workflow_fork_lineage
+        WHERE root_ticket_id = 'nested-parent'
+      `;
+      assert.equal(wrong[0]?.n, 0);
     }),
   );
 });

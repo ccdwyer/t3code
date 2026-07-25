@@ -29,6 +29,8 @@ export interface ForkJoinCoordinatorShape {
   readonly recordSpawn: (input: {
     readonly stepRunId: StepRunId;
     readonly parentTicketId: TicketId;
+    /** Lineage root (propagated through nested forks); defaults to parent if omitted. */
+    readonly rootTicketId?: TicketId;
     readonly boardId: BoardId;
     readonly stepKey: string;
     readonly joinRequire: number;

@@ -2248,6 +2248,180 @@ layer("WorkflowReadModel", (it) => {
       `;
     });
 
+  const seedStepRun = (input: {
+    readonly id: string;
+    readonly ticketId: string;
+    readonly pipelineRunId: string;
+    readonly stepKey: string;
+    readonly attempt: number;
+    readonly startedAt: string;
+    readonly status?: string;
+    readonly output?: string | null;
+    readonly error?: string | null;
+  }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_step_run (
+          step_run_id, pipeline_run_id, ticket_id, step_key, step_type, status,
+          started_at, attempt, output_json, error
+        )
+        VALUES (
+          ${input.id}, ${input.pipelineRunId}, ${input.ticketId}, ${input.stepKey},
+          'agent', ${input.status ?? "completed"}, ${input.startedAt}, ${input.attempt},
+          ${input.output ?? null}, ${input.error ?? null}
+        )
+      `;
+    });
+
+  it.effect("listPackPriorOutputs keeps only the latest attempt per step key", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      yield* seedStepRun({
+        id: "sr-a1",
+        ticketId: "t-pk",
+        pipelineRunId: "pr-pk",
+        stepKey: "implement",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:01.000Z",
+        output: '"first try"',
+      });
+      yield* seedStepRun({
+        id: "sr-a2",
+        ticketId: "t-pk",
+        pipelineRunId: "pr-pk",
+        stepKey: "implement",
+        attempt: 2,
+        startedAt: "2026-07-25T00:00:02.000Z",
+        output: '"second try"',
+      });
+      yield* seedStepRun({
+        id: "sr-b1",
+        ticketId: "t-pk",
+        pipelineRunId: "pr-pk",
+        stepKey: "review",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:03.000Z",
+        output: '"reviewed"',
+      });
+      // No persisted output: never appears.
+      yield* seedStepRun({
+        id: "sr-c1",
+        ticketId: "t-pk",
+        pipelineRunId: "pr-pk",
+        stepKey: "silent",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:04.000Z",
+        output: null,
+      });
+      // Different pipeline run: out of scope.
+      yield* seedStepRun({
+        id: "sr-d1",
+        ticketId: "t-pk",
+        pipelineRunId: "pr-other",
+        stepKey: "elsewhere",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:05.000Z",
+        output: '"other run"',
+      });
+
+      const rows = yield* read.listPackPriorOutputs("t-pk" as never, "pr-pk" as never);
+      const byKey = new Map(rows.map((row) => [row.stepKey, row]));
+      assert.deepStrictEqual([...byKey.keys()].sort(), ["implement", "review"]);
+      assert.equal(byKey.get("implement")?.attempt, 2);
+      assert.equal(byKey.get("implement")?.preview, '"second try"');
+      assert.isFalse(byKey.get("implement")?.oversized);
+    }),
+  );
+
+  it.effect("listPackPriorOutputs bounds each preview and marks it oversized", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      yield* seedStepRun({
+        id: "sr-big",
+        ticketId: "t-pk-big",
+        pipelineRunId: "pr-big",
+        stepKey: "huge",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:01.000Z",
+        output: `"${"x".repeat(5_000)}"`,
+      });
+
+      const rows = yield* read.listPackPriorOutputs("t-pk-big" as never, "pr-big" as never);
+      assert.lengthOf(rows, 1);
+      assert.equal(rows[0]?.preview.length, 2_000);
+      assert.isTrue(rows[0]?.oversized);
+    }),
+  );
+
+  it.effect("listPackFailedAttempts bounds a lane visit and reports newest first", () =>
+    Effect.gen(function* () {
+      const read = yield* WorkflowReadModel;
+      const sql = yield* SqlClient.SqlClient;
+      // Two runs in the SAME visit, one in a later visit.
+      for (const [runId, token, started] of [
+        ["pr-v1a", "tok-visit-1", "2026-07-25T00:00:01.000Z"],
+        ["pr-v1b", "tok-visit-1", "2026-07-25T00:00:02.000Z"],
+        ["pr-v2a", "tok-visit-2", "2026-07-25T00:00:03.000Z"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO projection_pipeline_run (
+            pipeline_run_id, ticket_id, lane_key, lane_entry_token, status, started_at
+          )
+          VALUES (${runId}, 't-fail', 'implement', ${token}, 'completed', ${started})
+        `;
+      }
+      yield* seedStepRun({
+        id: "sr-f1",
+        ticketId: "t-fail",
+        pipelineRunId: "pr-v1a",
+        stepKey: "build",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:01.000Z",
+        status: "failed",
+        error: "older failure",
+      });
+      yield* seedStepRun({
+        id: "sr-f2",
+        ticketId: "t-fail",
+        pipelineRunId: "pr-v1b",
+        stepKey: "build",
+        attempt: 2,
+        startedAt: "2026-07-25T00:00:02.000Z",
+        status: "failed",
+        error: "newer failure",
+      });
+      // Same visit but succeeded, and a failure from the NEXT visit: both excluded.
+      yield* seedStepRun({
+        id: "sr-ok",
+        ticketId: "t-fail",
+        pipelineRunId: "pr-v1b",
+        stepKey: "test",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:02.500Z",
+        status: "completed",
+      });
+      yield* seedStepRun({
+        id: "sr-f3",
+        ticketId: "t-fail",
+        pipelineRunId: "pr-v2a",
+        stepKey: "build",
+        attempt: 1,
+        startedAt: "2026-07-25T00:00:03.000Z",
+        status: "failed",
+        error: "next visit",
+      });
+
+      const result = yield* read.listPackFailedAttempts("t-fail" as never, "tok-visit-1" as never);
+      assert.equal(result.totalMatched, 2);
+      assert.deepStrictEqual(
+        result.rows.map((row) => row.error),
+        ["newer failure", "older failure"],
+      );
+      assert.equal(result.rows[0]?.attempt, 2);
+    }),
+  );
+
   it.effect("getContextPack round-trips the stored sections", () =>
     Effect.gen(function* () {
       const read = yield* WorkflowReadModel;

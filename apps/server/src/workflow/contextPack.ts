@@ -109,11 +109,113 @@ export const renderContextPack = (input: {
   readonly sections: ReadonlyArray<WorkflowContextPackSection>;
 }): string => {
   const heading = `## Handoff context from lane "${escapeForPack(input.fromLane)}"`;
-  const body = input.sections
-    .map((section) => `### ${section.key}\n${section.body}`)
-    .join("\n\n");
+  const body = input.sections.map((section) => `### ${section.key}\n${section.body}`).join("\n\n");
   return `${heading}\n\n${body}`;
 };
 
 export const CONTEXT_PACK_PLACEHOLDER = "{{ticket.contextPack}}";
 export const CONTEXT_PACK_EMPTY = "(no handoff context)";
+
+/** One file in a bounded ticket-diff stat. `added`/`deleted` are null for binaries. */
+export interface ContextPackDiffFile {
+  readonly path: string;
+  readonly added: number | null;
+  readonly deleted: number | null;
+  readonly renamedFrom?: string;
+}
+
+/**
+ * Parse `git diff --numstat -z` output.
+ *
+ * The `-z` records are `<added>TAB<deleted>TAB<path>NUL`, except renames, which
+ * emit an EMPTY path field followed by two more NUL-terminated tokens (old, new).
+ * Binaries report `-` for both counts.
+ *
+ * `truncated` must be the driver's own truncation flag: when the output was cut
+ * mid-record the trailing bytes can still look like a well-formed record with a
+ * short path, so everything after the last NUL is discarded before parsing
+ * rather than trusted.
+ */
+export const parseNumstatZ = (
+  stdout: string,
+  truncated = false,
+): { readonly files: ReadonlyArray<ContextPackDiffFile>; readonly partial: boolean } => {
+  let text = stdout;
+  let partial = truncated;
+  if (truncated) {
+    const lastNul = text.lastIndexOf("\u0000");
+    text = lastNul < 0 ? "" : text.slice(0, lastNul + 1);
+  }
+
+  const tokens = text.split("\u0000");
+  const files: Array<ContextPackDiffFile> = [];
+  const count = (value: string): number | null => {
+    if (value === "-") return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  };
+
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === undefined || token === "") {
+      index += 1;
+      continue;
+    }
+    const firstTab = token.indexOf("\t");
+    const secondTab = firstTab < 0 ? -1 : token.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) {
+      // Not a record header — the output ended mid-field.
+      partial = true;
+      break;
+    }
+    const added = count(token.slice(0, firstTab));
+    const deleted = count(token.slice(firstTab + 1, secondTab));
+    const path = token.slice(secondTab + 1);
+    if (path === "") {
+      // Rename: the two following tokens are the old and new paths.
+      const from = tokens[index + 1];
+      const to = tokens[index + 2];
+      if (from === undefined || to === undefined || to === "") {
+        partial = true;
+        break;
+      }
+      files.push({ path: to, added, deleted, renamedFrom: from });
+      index += 3;
+      continue;
+    }
+    files.push({ path, added, deleted });
+    index += 1;
+  }
+
+  return { files, partial };
+};
+
+/**
+ * Render the `diff_summary` body. Every path and rename endpoint is escaped: a
+ * crafted filename would otherwise forge a pack heading once this lands in a
+ * prompt. `partial` renders the count as "N+" so a truncated stat cannot read
+ * as a complete one.
+ */
+export const renderDiffSummary = (input: {
+  readonly files: ReadonlyArray<ContextPackDiffFile>;
+  readonly partial: boolean;
+}): string => {
+  if (input.files.length === 0) {
+    return "";
+  }
+  const header = `Ticket diff vs base: ${String(input.files.length)}${
+    input.partial ? "+" : ""
+  } files changed`;
+  const lines = input.files.map((file) => {
+    const name =
+      file.renamedFrom === undefined
+        ? escapeForPack(file.path)
+        : `${escapeForPack(file.renamedFrom)} → ${escapeForPack(file.path)}`;
+    if (file.added === null || file.deleted === null) {
+      return `${name} (bin)`;
+    }
+    return `${name} (+${String(file.added)}/−${String(file.deleted)})`;
+  });
+  return [header, ...lines].join("\n");
+};

@@ -19,6 +19,8 @@ import { SetupTerminalPort } from "../Services/SetupRunService.ts";
 import { TicketCheckpointService } from "../Services/TicketCheckpointService.ts";
 import { MergeGitPort } from "../Services/TicketMergeService.ts";
 import { TicketPullRequestService } from "../Services/TicketPullRequestService.ts";
+import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
+import { ServerConfig } from "../../config.ts";
 import { GitHubCli } from "../../sourceControl/GitHubCli.ts";
 import { SourceControlProviderRegistry } from "../../sourceControl/SourceControlProviderRegistry.ts";
 import { TerminalManager } from "../../terminal/Manager.ts";
@@ -243,6 +245,22 @@ const makeRuntimeLayer = (scriptExitCode: number) =>
           Effect.succeed(`refs/t3/tickets/${ticketId}/steps/${stepRunId}/${kind}` as string),
       }),
     ),
+    // The context-pack diff port reaches git for `diff_summary`. This suite has
+    // no worktrees, so a driver that lists no refs makes the port return null and
+    // the section is simply absent — which is the behavior under test anyway.
+    Layer.provideMerge(
+      Layer.succeed(GitVcsDriver, {
+        listRefs: () => Effect.succeed({ refs: [] }),
+        execute: () =>
+          Effect.succeed({
+            stdout: "",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+      } as never),
+    ),
+    Layer.provideMerge(Layer.succeed(ServerConfig, { cwd: "/tmp/t3-test" } as never)),
     Layer.provideMerge(DeterministicWorkflowIds),
     Layer.provideMerge(MigrationsLive),
     Layer.provideMerge(SqlitePersistenceMemory),

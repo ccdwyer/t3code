@@ -40,6 +40,8 @@ import { WorkflowBoardEventsLive } from "./Layers/WorkflowBoardEvents.ts";
 import { WorkflowBoardNotificationDispatcherLive } from "./Layers/WorkflowBoardNotificationDispatcher.ts";
 import { WorkflowBoardNotificationRelayLive } from "./Layers/WorkflowBoardNotificationRelay.ts";
 import { WorkflowBoardSaveLocksLive } from "./Layers/WorkflowBoardSaveLocks.ts";
+import { ContextPackCompilerLive } from "./Layers/ContextPackCompiler.ts";
+import { ContextPackDiffPortLive } from "./Layers/ContextPackDiffPort.ts";
 import { WorkflowEngineLayer } from "./Layers/WorkflowEngine.ts";
 import { WorkflowEventCommitterLive } from "./Layers/WorkflowEventCommitter.ts";
 import {
@@ -98,8 +100,16 @@ const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   Layer.provideMerge(SetupRunServiceLive),
   Layer.provideMerge(WorktreeLeaseServiceLive),
   // Both coordinators are SQL-only and independent of each other; merged into one
-  // provideMerge to keep this pipe within the 20-argument overload limit.
-  Layer.provideMerge(Layer.mergeAll(WorktreeCoordinatorLive, ForkJoinCoordinatorLive)),
+  // provideMerge to keep this pipe within the 20-argument overload limit. The
+  // context-pack compiler joins this group for the same reason; its diff port
+  // sits underneath it because the compiler requires it.
+  Layer.provideMerge(
+    Layer.mergeAll(
+      WorktreeCoordinatorLive,
+      ForkJoinCoordinatorLive,
+      ContextPackCompilerLive.pipe(Layer.provideMerge(ContextPackDiffPortLive)),
+    ),
+  ),
   Layer.provideMerge(DurableApprovalResumeLive),
   Layer.provideMerge(WorkflowBoardEventsLive),
   Layer.provideMerge(WorkflowEventCommitterLive),
@@ -110,7 +120,9 @@ const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   Layer.provideMerge(WorkflowRoutingContextBuilderLive),
   Layer.provideMerge(ApprovalGateLive),
   // Independent SQL-only projection repositories; merged for the same reason.
-  Layer.provideMerge(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadMessageRepositoryLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadMessageRepositoryLive),
+  ),
 );
 
 export const WorkflowRuntimeCoreLive = WorkflowRuntimeCoreBaseLive.pipe(

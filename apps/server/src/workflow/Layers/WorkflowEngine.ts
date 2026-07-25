@@ -74,6 +74,7 @@ import {
   type WorkflowEventInput,
 } from "../Services/WorkflowEventStore.ts";
 import { WorkflowIds } from "../Services/WorkflowIds.ts";
+import { ContextPackCompiler } from "../Services/ContextPackCompiler.ts";
 import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
 import {
   WorkflowRoutingContextBuilder,
@@ -260,6 +261,13 @@ interface RoutedEnterLaneOptions {
   readonly expectedToken: LaneEntryToken;
   readonly pipelineRunId: PipelineRunId;
   readonly fromLane: WorkflowLane;
+  /**
+   * Handoff sections compiled by the CALLER, before the admission lock. They are
+   * compiled outside the lock on purpose: the git stat behind `diff_summary` can
+   * take seconds, and running it here would stall admission and WIP decisions for
+   * every ticket on the board. Empty means no pack event is emitted.
+   */
+  readonly contextPackSections?: ReadonlyArray<WorkflowContextPackSection> | undefined;
 }
 
 interface ExternalEnterLaneOptions {
@@ -406,6 +414,9 @@ const make = Effect.gen(function* () {
   const routingContextBuilder = yield* WorkflowRoutingContextBuilder;
   const forkJoinOption = yield* Effect.serviceOption(ForkJoinCoordinator);
   const worktreeCoordOption = yield* Effect.serviceOption(WorktreeCoordinator);
+  // Optional: a runtime without it simply routes without handoff packs, which is
+  // what every engine test layer that predates the feature expects.
+  const contextPackCompilerOption = yield* Effect.serviceOption(ContextPackCompiler);
   const sql = yield* SqlClient.SqlClient;
   const boardSemaphores = yield* SynchronizedRef.make<
     Map<string, { readonly semaphore: Semaphore.Semaphore; readonly permits: number }>
@@ -1631,6 +1642,28 @@ const make = Effect.gen(function* () {
           (yield* laneTransitionDecision(lane, contextSnapshot)) ?? laneOnDecision(lane, result);
       }
 
+      // Compile the handoff pack BEFORE the completion commit. A crash during
+      // compilation then leaves the pipeline `running`, which the existing
+      // stranded-running sweep recovers and recompiles. Compiling after the
+      // commit would widen the pre-existing completed-but-unrouted window.
+      //
+      // Compilation is speculative: `enterLaneCore` can still early-return on a
+      // stale token or a phantom lane and discard these sections. That costs one
+      // bounded git stat and is side-effect free — no writes happen until the
+      // route batch.
+      const contextPackSections =
+        routeDecision !== null &&
+        !parallelismHeld &&
+        routeDecision.kind !== "park" &&
+        Option.isSome(contextPackCompilerOption)
+          ? yield* contextPackCompilerOption.value.compile({
+              ticketId,
+              pipelineRunId,
+              laneEntryToken,
+              steps,
+            })
+          : [];
+
       yield* commit({
         type: "PipelineCompleted",
         ticketId,
@@ -1657,6 +1690,7 @@ const make = Effect.gen(function* () {
           expectedToken: laneEntryToken,
           pipelineRunId,
           fromLane: lane,
+          contextPackSections,
         });
         return;
       }
@@ -2137,6 +2171,29 @@ const make = Effect.gen(function* () {
         // the emit precondition so a concurrent save cannot slip a changed/removed
         // action past the append. SLA passes emitPrecondition for the same reason.
         const emitPrecondition = options.emitPrecondition ?? parkedGuard?.revalidate;
+
+        // The pack event goes LAST in the batch. The projection folds events one
+        // at a time with no batch identity, and every move/queue fold clears the
+        // destination lane's pack; only a trailing pack event survives that clear.
+        const packSections =
+          reason === "routed" && routedOptions !== undefined
+            ? (routedOptions.contextPackSections ?? [])
+            : [];
+        const packEvents: ReadonlyArray<UnstampedWorkflowEventInput> =
+          packSections.length === 0
+            ? []
+            : [
+                {
+                  type: "TicketContextPackCompiled",
+                  ticketId,
+                  payload: {
+                    forLane: toLane,
+                    fromLane: routedOptions?.fromLane.key,
+                    sections: packSections,
+                  },
+                } as UnstampedWorkflowEventInput,
+              ];
+
         let acted: "moved" | "queued" = "moved";
         if ((limit !== undefined && admittedCount - selfInTarget >= limit) || dependencyGated) {
           acted = "queued";
@@ -2146,7 +2203,9 @@ const make = Effect.gen(function* () {
             payload: { lane: toLane },
           } as UnstampedWorkflowEventInput;
           yield* emit(
-            routeEvent === null ? [queueEvent] : [routeEvent, queueEvent],
+            routeEvent === null
+              ? [queueEvent, ...packEvents]
+              : [routeEvent, queueEvent, ...packEvents],
             emitPrecondition,
           );
         } else {
@@ -2157,7 +2216,9 @@ const make = Effect.gen(function* () {
             payload: { toLane, laneEntryToken, reason },
           } as UnstampedWorkflowEventInput;
           yield* emit(
-            routeEvent === null ? [moveEvent] : [routeEvent, moveEvent],
+            routeEvent === null
+              ? [moveEvent, ...packEvents]
+              : [routeEvent, moveEvent, ...packEvents],
             emitPrecondition,
           );
           collectStartAction(starts, ticketId, boardId, targetLane, laneEntryToken);

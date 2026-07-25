@@ -766,6 +766,119 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  /** Per-step body budget inside the pack query, before the section cap. */
+  const PACK_STEP_PREVIEW_MAX = 2_000;
+  /** Row cap for prior outputs — applied AFTER latest-attempt ranking. */
+  const PACK_PRIOR_OUTPUT_ROWS = 24;
+  /** Row cap for failed attempts within one lane visit. */
+  const PACK_FAILED_ATTEMPT_ROWS = 50;
+  /** Error-text budget per failed attempt. */
+  const PACK_FAILED_ERROR_MAX = 2_000;
+
+  const listPackPriorOutputs: WorkflowReadModelShape["listPackPriorOutputs"] = (
+    ticketId,
+    pipelineRunId,
+  ) =>
+    wrap(
+      // The window-rank runs BEFORE the row cap so the cap keeps the latest
+      // attempt of the most recent steps, not whichever rows sorted first.
+      // `length(output_json)` decides `oversized` on the untruncated value —
+      // substr alone cannot tell a short body from a truncated one.
+      sql<{
+        readonly stepKey: string;
+        readonly attempt: number | null;
+        readonly preview: string;
+        readonly fullLength: number;
+      }>`
+        WITH ranked AS (
+          SELECT
+            step_key,
+            attempt,
+            output_json,
+            started_at,
+            -- A CTE exposes no implicit rowid, so carry it as a named column:
+            -- it is the insertion-order tiebreak when two rows share a timestamp.
+            rowid AS row_order,
+            ROW_NUMBER() OVER (
+              PARTITION BY step_key
+              ORDER BY COALESCE(attempt, 0) DESC, started_at DESC, rowid DESC
+            ) AS rn
+          FROM projection_step_run
+          WHERE ticket_id = ${ticketId}
+            AND pipeline_run_id = ${pipelineRunId}
+            AND output_json IS NOT NULL
+            AND output_json <> ''
+        )
+        SELECT
+          step_key AS "stepKey",
+          attempt AS "attempt",
+          substr(output_json, 1, ${PACK_STEP_PREVIEW_MAX}) AS "preview",
+          length(output_json) AS "fullLength"
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY started_at DESC, row_order DESC
+        LIMIT ${PACK_PRIOR_OUTPUT_ROWS}
+      `,
+    ).pipe(
+      Effect.map((rows) =>
+        rows.map((row) => ({
+          stepKey: row.stepKey,
+          attempt: row.attempt ?? 1,
+          preview: row.preview,
+          oversized: row.fullLength > PACK_STEP_PREVIEW_MAX,
+        })),
+      ),
+    );
+
+  const listPackFailedAttempts: WorkflowReadModelShape["listPackFailedAttempts"] = (
+    ticketId,
+    laneEntryToken,
+  ) =>
+    Effect.gen(function* () {
+      // The ticket filter leads on both queries so the existing
+      // idx_projection_step_run_ticket applies; pipeline_run_id is unindexed on
+      // step runs, so no new index is needed.
+      const counted = yield* wrap(
+        sql<{ readonly total: number }>`
+          SELECT COUNT(*) AS "total"
+          FROM projection_step_run AS step_run
+          JOIN projection_pipeline_run AS pipeline_run
+            ON step_run.pipeline_run_id = pipeline_run.pipeline_run_id
+          WHERE step_run.ticket_id = ${ticketId}
+            AND pipeline_run.lane_entry_token = ${laneEntryToken}
+            AND step_run.status = 'failed'
+        `,
+      );
+      const rows = yield* wrap(
+        sql<{
+          readonly stepKey: string;
+          readonly attempt: number | null;
+          readonly error: string | null;
+        }>`
+          SELECT
+            step_run.step_key AS "stepKey",
+            step_run.attempt AS "attempt",
+            substr(step_run.error, 1, ${PACK_FAILED_ERROR_MAX}) AS "error"
+          FROM projection_step_run AS step_run
+          JOIN projection_pipeline_run AS pipeline_run
+            ON step_run.pipeline_run_id = pipeline_run.pipeline_run_id
+          WHERE step_run.ticket_id = ${ticketId}
+            AND pipeline_run.lane_entry_token = ${laneEntryToken}
+            AND step_run.status = 'failed'
+          ORDER BY step_run.started_at DESC, step_run.rowid DESC
+          LIMIT ${PACK_FAILED_ATTEMPT_ROWS}
+        `,
+      );
+      return {
+        rows: rows.map((row) => ({
+          stepKey: row.stepKey,
+          attempt: row.attempt ?? 1,
+          error: row.error ?? "",
+        })),
+        totalMatched: counted[0]?.total ?? rows.length,
+      };
+    });
+
   const deleteTicketState: WorkflowReadModelShape["deleteTicketState"] = (ticketId) =>
     wrap(sql`
       DELETE FROM workflow_dispatch_outbox
@@ -2039,6 +2152,8 @@ const make = Effect.gen(function* () {
     deleteBoardTicketState,
     deleteTicketState,
     getContextPack,
+    listPackPriorOutputs,
+    listPackFailedAttempts,
     listBoardsForProject,
     listTickets,
     clearSlaBreachesForLanesWithoutSla,

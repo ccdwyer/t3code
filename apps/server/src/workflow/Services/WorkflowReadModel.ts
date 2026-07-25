@@ -1,6 +1,7 @@
 import type {
   BoardId,
   IsoDateTime,
+  LaneEntryToken,
   LaneKey,
   MessageId,
   PipelineRunId,
@@ -299,6 +300,30 @@ export interface TicketDetail {
   };
 }
 
+/** One step's persisted output, bounded by the pack query. */
+export interface PackPriorOutputRow {
+  readonly stepKey: string;
+  readonly attempt: number;
+  /** Bounded, possibly-truncated rendering of `output_json`. */
+  readonly preview: string;
+  /** True when the query truncated `preview` — render a marker, do not decode. */
+  readonly oversized: boolean;
+}
+
+/** One failed step run inside a lane visit. */
+export interface PackFailedAttemptRow {
+  readonly stepKey: string;
+  readonly attempt: number;
+  readonly error: string;
+}
+
+export interface PackFailedAttempts {
+  /** Newest-first, capped. */
+  readonly rows: ReadonlyArray<PackFailedAttemptRow>;
+  /** Total matching rows before the cap, so the renderer can say what it dropped. */
+  readonly totalMatched: number;
+}
+
 export interface WorkflowReadModelShape {
   readonly registerBoard: (board: {
     readonly boardId: BoardId;
@@ -322,6 +347,35 @@ export interface WorkflowReadModelShape {
     ticketId: TicketId,
     laneKey: LaneKey,
   ) => Effect.Effect<WorkflowContextPackView | null, WorkflowEventStoreError>;
+  /**
+   * Prior-output rows for one pipeline run, for context-pack compilation ONLY.
+   *
+   * Deliberately NOT `listStepRunsForPipeline`: that query carries no `attempt`,
+   * has no row or byte cap, orders `started_at ASC` (so a LIMIT would keep the
+   * OLDEST rows and defeat latest-attempt dedupe), and is shared with
+   * `WorkflowRoutingContextBuilder`, where truncating outputs would corrupt
+   * routing predicates. This one window-ranks the latest attempt per step key
+   * BEFORE the row cap and returns a bounded preview: `oversized` marks a body
+   * the query truncated, so the renderer appends a truncation marker instead of
+   * trying to decode half a JSON document.
+   */
+  readonly listPackPriorOutputs: (
+    ticketId: TicketId,
+    pipelineRunId: PipelineRunId,
+  ) => Effect.Effect<ReadonlyArray<PackPriorOutputRow>, WorkflowEventStoreError>;
+  /**
+   * Failed step runs within ONE lane visit, for context-pack compilation only.
+   * The visit is bounded by `lane_entry_token`, which lives on
+   * `projection_pipeline_run` (step runs have no such column), so this joins the
+   * two tables with the indexed ticket filter leading. Newest-first with a row
+   * cap: oldest-first plus head truncation would silently keep stale failures
+   * and drop the most relevant ones. `totalMatched` lets the renderer say how
+   * many older attempts it omitted.
+   */
+  readonly listPackFailedAttempts: (
+    ticketId: TicketId,
+    laneEntryToken: LaneEntryToken,
+  ) => Effect.Effect<PackFailedAttempts, WorkflowEventStoreError>;
   readonly deleteTicketState: (ticketId: TicketId) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly listBoardsForProject: (
     projectId: ProjectId,

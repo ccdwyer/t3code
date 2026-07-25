@@ -260,6 +260,8 @@ it.effect(
         deleteBoardTicketState: unsupportedEffect,
         deleteTicketState: unsupportedEffect,
         getContextPack: () => Effect.die("unused"),
+        listPackPriorOutputs: () => Effect.die("unused"),
+        listPackFailedAttempts: () => Effect.die("unused"),
         listBoardsForProject: unsupportedEffect,
         listTickets: unsupportedEffect,
         clearSlaBreachesForLanesWithoutSla: unsupportedEffect,

@@ -95,6 +95,7 @@ const noopReadModel = {
   deleteBoard: () => Effect.void,
   deleteBoardTicketState: () => Effect.void,
   deleteTicketState: () => Effect.void,
+  getContextPack: () => Effect.succeed(null),
   listBoardsForProject: () => Effect.succeed([]),
   listTickets: () => Effect.succeed([]),
   clearSlaBreachesForLanesWithoutSla: () => Effect.void,
@@ -219,6 +220,7 @@ it.effect("workflowRpcHandlers maps createTicket and subscribeBoard", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -389,6 +391,7 @@ it.effect("workflowRpcHandlers lists and creates boards without a client path", 
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -592,6 +595,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
         },
         readModel: {
           ...noopReadModel,
@@ -745,6 +749,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
         },
         readModel: {
           ...noopReadModel,
@@ -928,6 +933,7 @@ it.effect("workflowRpcHandlers completes deleteBoard retry after a mid-cascade f
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -1125,6 +1131,7 @@ it.effect("workflowRpcHandlers rejects deleteBoard whose derived path is not a b
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -1242,6 +1249,7 @@ it.effect("workflowRpcHandlers includes route history in ticket detail", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -1422,6 +1430,7 @@ it.effect("workflowRpcHandlers delegates project script trust updates", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: noopReadModel,
       boardRegistry: {
@@ -1512,6 +1521,7 @@ it.effect("workflowRpcHandlers delegates cooperative step cancellation", () =>
         postTicketMessage: () => Effect.void,
         editTicketMessage: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         recoverBoardWip: () => Effect.void,
         cancelStep: (inputStepRunId) =>
           Effect.sync(() => {
@@ -1662,6 +1672,7 @@ it.effect("workflowRpcHandlers gets and saves encoded board definitions", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -1942,6 +1953,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
         },
         readModel: {
           ...noopReadModel,
@@ -2134,6 +2146,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
         },
         readModel: {
           ...noopReadModel,
@@ -2307,6 +2320,7 @@ it.effect("workflowRpcHandlers rejects blank board rename names before touching 
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -2442,6 +2456,7 @@ it.effect("workflowRpcHandlers treats unchanged board rename names as a no-op", 
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -2569,6 +2584,7 @@ it.effect("workflowRpcHandlers reports missing boards during rename without writ
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: noopReadModel,
       boardRegistry: {
@@ -2708,6 +2724,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
         },
         readModel: {
           ...noopReadModel,
@@ -2904,6 +2921,7 @@ it.effect("workflowRpcHandlers lists board versions and lazy-imports missing his
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -3157,6 +3175,7 @@ it.effect("workflowRpcHandlers records only one lazy import for concurrent histo
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -3342,6 +3361,7 @@ it.effect("workflowRpcHandlers serializes createBoard against lazy history impor
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -3541,6 +3561,7 @@ it.effect("workflowRpcHandlers skips lazy import when history appears after an e
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -3699,6 +3720,7 @@ versionRoundTripLayer("workflowRpcHandlers version history round trip", (it) => 
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
         },
         readModel: {
           ...noopReadModel,
@@ -3972,6 +3994,7 @@ it.effect("workflowRpcHandlers rejects lint-invalid board saves without writing"
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4093,6 +4116,7 @@ it.effect("workflowRpcHandlers rejects stale board saves without writing", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4233,6 +4257,7 @@ it.effect("workflowRpcHandlers rejects saves when the board file changed on disk
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4386,6 +4411,7 @@ it.effect("workflowRpcHandlers serializes same-base board saves so only one succ
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4550,6 +4576,7 @@ it.effect("workflowRpcHandlers serializes deleteBoard with an in-flight save", (
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4732,6 +4759,7 @@ it.effect("workflowRpcHandlers rejects unsafe instruction paths without writing"
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4854,6 +4882,7 @@ it.effect("workflowRpcHandlers rejects board saves whose derived path is not a b
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
@@ -4980,6 +5009,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
           steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         },
         readModel: {
@@ -5162,6 +5192,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
           steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         },
         readModel: {
@@ -5280,6 +5311,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          editTicketContextPack: () => Effect.die("unused"),
           steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         },
         readModel: {
@@ -5414,6 +5446,7 @@ const noopEngineForParkedViewTests = {
   cancelTicketPipelines: () => Effect.void,
   recoverBoardWip: () => Effect.void,
   completeRecoveredStep: () => Effect.void,
+  editTicketContextPack: () => Effect.die("unused"),
   steerTicketStep: () => Effect.succeed({ accepted: true as const }),
 };
 
@@ -5662,6 +5695,7 @@ const importNoopEngine = {
   cancelTicketPipelines: () => Effect.void,
   recoverBoardWip: () => Effect.void,
   completeRecoveredStep: () => Effect.void,
+  editTicketContextPack: () => Effect.die("unused"),
   steerTicketStep: () => Effect.succeed({ accepted: true as const }),
 } as never;
 
@@ -8498,6 +8532,7 @@ it.effect("listImportableWorkItems annotates mapped items + reports sources", ()
         cancelTicketPipelines: () => Effect.die("unused"),
         recoverBoardWip: () => Effect.die("unused"),
         completeRecoveredStep: () => Effect.die("unused"),
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: {
         ...noopReadModel,
@@ -8599,6 +8634,7 @@ it.effect("gates mutating RPCs behind readiness while reads bypass the gate", ()
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        editTicketContextPack: () => Effect.die("unused"),
         steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: noopReadModel,
@@ -8702,6 +8738,7 @@ it.effect("gates importWorkItems behind readiness; listImportableWorkItems bypas
         cancelTicketPipelines: () => Effect.die("unused"),
         recoverBoardWip: () => Effect.die("unused"),
         completeRecoveredStep: () => Effect.die("unused"),
+        editTicketContextPack: () => Effect.die("unused"),
       },
       readModel: noopReadModel,
       boardRegistry: {
@@ -8892,6 +8929,7 @@ const makeImportDeps = (opts: {
       cancelTicketPipelines: () => Effect.die("unused"),
       recoverBoardWip: () => Effect.die("unused"),
       completeRecoveredStep: () => Effect.die("unused"),
+      editTicketContextPack: () => Effect.die("unused"),
     },
     readModel: {
       ...noopReadModel,

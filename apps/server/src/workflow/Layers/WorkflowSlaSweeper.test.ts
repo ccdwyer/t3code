@@ -61,6 +61,7 @@ const makeEngineLayer = (calls: Array<EscalateCall>, outcome: "notified" | "stal
     cancelTicketPipelines: () => Effect.void,
     recoverBoardWip: () => Effect.void,
     completeRecoveredStep: () => unsupported(),
+    editTicketContextPack: () => Effect.die("unused"),
   } satisfies WorkflowEngineShape);
 
 const fixedNow = Date.parse("2026-07-24T12:00:00.000Z");

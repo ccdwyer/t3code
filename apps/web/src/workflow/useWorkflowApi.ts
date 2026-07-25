@@ -152,6 +152,11 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
           refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
           return result;
         }),
+      editTicketContextPack: (input) =>
+        run(w.editTicketContextPack, input).then((result) => {
+          refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });
+          return result;
+        }),
       deleteTicket: (input) =>
         run(w.deleteTicket, input).then((result) => {
           refreshQuery(w.getTicketDetail, { ticketId: input.ticketId });

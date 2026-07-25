@@ -52,6 +52,7 @@ import Migration0036 from "./Migrations/035_WorkflowSchema.ts";
 import Migration0037 from "./Migrations/036_StepOutputContract.ts";
 import Migration0038 from "./Migrations/037_WorktreeParallelism.ts";
 import Migration0039 from "./Migrations/038_ForkJoin.ts";
+import Migration0040 from "./Migrations/039_ContextPack.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -103,6 +104,7 @@ export const migrationEntries = [
   [37, "StepOutputContract", Migration0037],
   [38, "WorktreeParallelism", Migration0038],
   [39, "ForkJoin", Migration0039],
+  [40, "ContextPack", Migration0040],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

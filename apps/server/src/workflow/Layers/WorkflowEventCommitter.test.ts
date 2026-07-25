@@ -259,6 +259,7 @@ it.effect(
         deleteBoard: unsupportedEffect,
         deleteBoardTicketState: unsupportedEffect,
         deleteTicketState: unsupportedEffect,
+        getContextPack: () => Effect.die("unused"),
         listBoardsForProject: unsupportedEffect,
         listTickets: unsupportedEffect,
         clearSlaBreachesForLanesWithoutSla: unsupportedEffect,

@@ -195,6 +195,13 @@ const make = Effect.gen(function* () {
           break;
         }
         case "TicketMovedToLane": {
+          // Any entry into a lane invalidates that lane's pack. A routed batch
+          // re-adds a fresh one via the trailing TicketContextPackCompiled, so a
+          // manual/external/sla entry provably ends with no stale pack.
+          yield* sql`
+            DELETE FROM projection_context_pack
+            WHERE ticket_id = ${event.ticketId} AND for_lane = ${event.payload.toLane}
+          `;
           const terminalAt = yield* terminalAtForTicketLane(
             event.ticketId,
             event.payload.toLane,
@@ -312,7 +319,54 @@ const make = Effect.gen(function* () {
           `;
           break;
         }
+        case "TicketContextPackCompiled": {
+          yield* sql`
+            INSERT INTO projection_context_pack (
+              ticket_id, for_lane, from_lane, compiled_at, edited_at, sections_json
+            )
+            VALUES (
+              ${event.ticketId},
+              ${event.payload.forLane},
+              ${event.payload.fromLane},
+              ${event.occurredAt},
+              NULL,
+              ${JSON.stringify(event.payload.sections)}
+            )
+            ON CONFLICT (ticket_id, for_lane) DO UPDATE SET
+              from_lane = excluded.from_lane,
+              compiled_at = excluded.compiled_at,
+              edited_at = NULL,
+              sections_json = excluded.sections_json
+          `;
+          break;
+        }
+        case "TicketContextPackEdited": {
+          if (event.payload.sections.length === 0) {
+            // Empty full set is the deletion gesture.
+            yield* sql`
+              DELETE FROM projection_context_pack
+              WHERE ticket_id = ${event.ticketId} AND for_lane = ${event.payload.forLane}
+            `;
+            break;
+          }
+          // Defensive no-op when no pack row exists: a blind upsert would have to
+          // invent from_lane/compiled_at (both NOT NULL) and would fail the whole
+          // projection on an out-of-band stream. from_lane/compiled_at are preserved.
+          yield* sql`
+            UPDATE projection_context_pack
+            SET sections_json = ${JSON.stringify(event.payload.sections)},
+                edited_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId} AND for_lane = ${event.payload.forLane}
+          `;
+          break;
+        }
         case "TicketQueued": {
+          // Same clear-on-entry rule as TicketMovedToLane; note the payload key
+          // here is `lane`, not `toLane`.
+          yield* sql`
+            DELETE FROM projection_context_pack
+            WHERE ticket_id = ${event.ticketId} AND for_lane = ${event.payload.lane}
+          `;
           yield* sql`
             UPDATE projection_ticket
             SET current_lane_key = ${event.payload.lane},
@@ -347,6 +401,11 @@ const make = Effect.gen(function* () {
           break;
         }
         case "TicketAdmitted": {
+          // Deliberately does NOT clear the context pack. Admission promotes a
+          // ticket that is ALREADY in this lane (queued -> idle); the pack was
+          // compiled for it at route time and must survive the WIP wait, which is
+          // the whole point of it being editable while queued. Only a genuine lane
+          // ENTRY (TicketMovedToLane / TicketQueued) invalidates a pack.
           const terminalAt = yield* terminalAtForTicketLane(
             event.ticketId,
             event.payload.lane,

@@ -183,6 +183,11 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       tag: WORKFLOW_WS_METHODS.editTicket,
       concurrency: serialPerEnv,
     }),
+    editTicketContextPack: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:edit-ticket-context-pack",
+      tag: WORKFLOW_WS_METHODS.editTicketContextPack,
+      concurrency: serialPerEnv,
+    }),
     deleteTicket: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:workflow:delete-ticket",
       tag: WORKFLOW_WS_METHODS.deleteTicket,

@@ -141,6 +141,8 @@ import type {
   WorkflowResolveBoardProposalResult,
   WorkflowRevertBoardProposalResult,
   WorkflowEventId,
+  WorkflowContextPackSection,
+  WorkflowContextPackSectionKey,
 } from "./workflow.ts";
 import type { WorkflowParkActionResult } from "./rpc.ts";
 import type {
@@ -1396,6 +1398,14 @@ export interface EnvironmentApi {
       readonly dependsOn?: ReadonlyArray<TicketId> | undefined;
       readonly tokenBudget?: number | null | undefined;
     }) => Promise<void>;
+    editTicketContextPack: (input: {
+      readonly ticketId: TicketId;
+      readonly forLane: LaneKey;
+      readonly sections: ReadonlyArray<{
+        readonly key: WorkflowContextPackSectionKey;
+        readonly body: string;
+      }>;
+    }) => Promise<{ readonly sections: ReadonlyArray<WorkflowContextPackSection> }>;
     deleteTicket: (input: { readonly ticketId: TicketId }) => Promise<void>;
     moveTicket: (input: { readonly ticketId: TicketId; readonly toLane: LaneKey }) => Promise<void>;
     // Unpark a parked ticket via one of its re-resolved actions. Compare-and-act

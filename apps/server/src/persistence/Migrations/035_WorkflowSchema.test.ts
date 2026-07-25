@@ -659,12 +659,12 @@ layer("035_WorkflowSchema", (it) => {
     }),
   );
 
-  it.effect("38 is the highest migration entry", () =>
+  it.effect("39 is the highest migration entry", () =>
     Effect.gen(function* () {
       const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 38);
+      assert.strictEqual(highest, 39);
       const top = migrationEntries.find(([id]) => id === highest);
-      assert.strictEqual(top?.[1], "ForkJoin");
+      assert.strictEqual(top?.[1], "ContextPack");
     }),
   );
 

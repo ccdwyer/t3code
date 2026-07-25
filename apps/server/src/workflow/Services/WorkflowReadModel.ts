@@ -12,6 +12,7 @@ import type {
   WorkflowBoardProposalView,
   WorkflowDefinitionEncoded,
   WorkflowParkSubstate,
+  WorkflowContextPackView,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -312,6 +313,15 @@ export interface WorkflowReadModelShape {
   readonly deleteBoardTicketState: (
     boardId: BoardId,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
+  /**
+   * Pack for one (ticket, lane) pair. The executor reads by the EXECUTING lane
+   * key from its step context — never `ticket.currentLaneKey`, which can drift
+   * from the executing lane during dispatch residuals.
+   */
+  readonly getContextPack: (
+    ticketId: TicketId,
+    laneKey: LaneKey,
+  ) => Effect.Effect<WorkflowContextPackView | null, WorkflowEventStoreError>;
   readonly deleteTicketState: (ticketId: TicketId) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly listBoardsForProject: (
     projectId: ProjectId,

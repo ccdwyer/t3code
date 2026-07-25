@@ -77,6 +77,11 @@ export const deleteBoard = (api: EnvironmentApi, boardId: BoardId) =>
 export const renameBoard = (api: EnvironmentApi, boardId: BoardId, name: string) =>
   api.workflow.renameBoard({ boardId, name });
 
+export const editTicketContextPack = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["editTicketContextPack"]>[0],
+) => api.workflow.editTicketContextPack(input);
+
 export const editTicket = (
   api: EnvironmentApi,
   input: Parameters<EnvironmentApi["workflow"]["editTicket"]>[0],

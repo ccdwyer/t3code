@@ -576,8 +576,23 @@ const ticketDetail = (
     // the park action re-resolution it drives) degrades to "actions
     // unavailable" in that case rather than failing the whole read.
     const definition = yield* deps.boardRegistry.getDefinition(detail.ticket.boardId as BoardId);
+    // The wire view owns this join: readModel.getTicketDetail returns the internal
+    // TicketDetail shape, which has no pack field. Pack lookup is keyed by the
+    // ticket's CURRENT lane (a queued ticket's current_lane_key is already its
+    // queued destination, so a WIP-queued pack is visible and editable while it waits).
+    const contextPack =
+      detail.ticket.currentLaneKey === null
+        ? null
+        : yield* deps.readModel
+            .getContextPack(ticketId, detail.ticket.currentLaneKey as LaneKey)
+            .pipe(
+              Effect.mapError((cause) =>
+                workflowRpcError("Failed to load workflow ticket context pack", cause),
+              ),
+            );
 
     return {
+      ...(contextPack === null ? {} : { contextPack }),
       routeHistory: routeDecisions.map((decision) => ({
         occurredAt: decision.occurredAt as never,
         ...(decision.fromLane === null ? {} : { fromLane: decision.fromLane as never }),
@@ -2802,6 +2817,7 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
   WORKFLOW_WS_METHODS.saveBoardDefinition,
   WORKFLOW_WS_METHODS.createTicket,
   WORKFLOW_WS_METHODS.editTicket,
+  WORKFLOW_WS_METHODS.editTicketContextPack,
   WORKFLOW_WS_METHODS.deleteTicket,
   WORKFLOW_WS_METHODS.moveTicket,
   WORKFLOW_WS_METHODS.invokeParkAction,
@@ -2939,6 +2955,18 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
         deps.engine
           .editTicket(input)
           .pipe(Effect.mapError(toWorkflowRpcError("Failed to edit workflow ticket"))),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.editTicketContextPack]: (input: {
+      readonly ticketId: TicketId;
+      readonly forLane: LaneKey;
+      readonly sections: ReadonlyArray<{ readonly key: string; readonly body: string }>;
+    }) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.editTicketContextPack,
+        deps.engine
+          .editTicketContextPack(input)
+          .pipe(Effect.mapError(toWorkflowRpcError("Failed to edit context pack"))),
         { "rpc.aggregate": "workflow" },
       ),
     [WORKFLOW_WS_METHODS.deleteTicket]: (input: WorkflowDeleteTicketInput) =>

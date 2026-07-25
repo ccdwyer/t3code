@@ -1406,7 +1406,73 @@ export const WorkflowCurrentLaneView = Schema.Struct({
 });
 export type WorkflowCurrentLaneView = typeof WorkflowCurrentLaneView.Type;
 
+export const WorkflowStuckDiagnosisKind = Schema.Literals([
+  "wip_blocked",
+  "dependency_blocked",
+  "waiting_approval",
+  "waiting_input",
+  "agent_failed",
+  "step_blocked",
+  "idle_unstarted",
+]);
+export type WorkflowStuckDiagnosisKind = typeof WorkflowStuckDiagnosisKind.Type;
+
+/**
+ * A one-click way out of a stuck state. Every variant dispatches an EXISTING
+ * mutation or an existing client navigation handler — diagnosis adds no new
+ * server capability, so a stale click is at worst a no-op.
+ */
+export const WorkflowUnstickActionView = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("runLane"), label: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal("resolveApproval"),
+    label: Schema.String,
+    stepRunId: StepRunId,
+    approved: Schema.Boolean,
+  }),
+  Schema.Struct({ type: Schema.Literal("openTicket"), label: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("openTicketFocusInput"), label: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal("openDependency"),
+    label: Schema.String,
+    ticketId: TicketId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("clearDependencies"),
+    label: Schema.String,
+    // Exact-set precondition: the client refuses if the ticket's edges changed
+    // since the diagnosis was computed, so a stale click cannot clear an edge
+    // the user never saw.
+    expectedDependsOn: Schema.Array(TicketId),
+  }),
+  Schema.Struct({ type: Schema.Literal("moveToLane"), label: Schema.String, toLane: LaneKey }),
+  Schema.Struct({
+    type: Schema.Literal("clearTokenBudget"),
+    label: Schema.String,
+    expectedTokenBudget: NonNegativeInt,
+  }),
+]);
+export type WorkflowUnstickActionView = typeof WorkflowUnstickActionView.Type;
+
+export const WorkflowStuckDiagnosis = Schema.Struct({
+  kind: WorkflowStuckDiagnosisKind,
+  /** One line, and deliberately TIMELESS: the server has no clock the client
+   *  shares, and a rendered relative age would freeze between pushes. Clients
+   *  append the age from `since`. */
+  summary: Schema.String,
+  detail: Schema.optional(Schema.String),
+  /** Approximately when this stuck condition began. */
+  since: IsoDateTime,
+  /** Surface the entry only once `now - since` reaches this, so intentional
+   *  short-lived states do not flood the Needs You strip. */
+  displayAfterMs: NonNegativeInt,
+  actions: Schema.Array(WorkflowUnstickActionView),
+});
+export type WorkflowStuckDiagnosis = typeof WorkflowStuckDiagnosis.Type;
+
 export const BoardTicketView = Schema.Struct({
+  // Why this ticket is stuck, re-derived at read time; absent when it is not.
+  diagnosis: Schema.optional(WorkflowStuckDiagnosis),
   // Set when this ticket was created by forking another ticket's history.
   forkOf: Schema.optional(
     Schema.Struct({ sourceTicketId: TicketId, sourceEventId: WorkflowEventId }),

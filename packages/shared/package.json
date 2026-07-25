@@ -206,6 +206,10 @@
     "./devProxy": {
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
+    },
+    "./tokenBudgetBlock": {
+      "types": "./src/tokenBudgetBlock.ts",
+      "import": "./src/tokenBudgetBlock.ts"
     }
   },
   "scripts": {

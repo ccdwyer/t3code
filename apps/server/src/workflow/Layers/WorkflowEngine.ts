@@ -71,6 +71,12 @@ import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
 import { isParallelismHoldReason } from "../worktreeOverlap.ts";
 import { ForkJoinCoordinator } from "../Services/ForkJoinCoordinator.ts";
+import {
+  exceedsForkDepth,
+  MAX_FORK_DEPTH,
+  nextForkDepth,
+  renderForkChildTitle,
+} from "../forkSpawnHelpers.ts";
 
 type PipelineResult = "success" | "failure" | "blocked";
 type StepResult = "completed" | "failed" | "blocked" | "awaiting_children";
@@ -1043,22 +1049,82 @@ const make = Effect.gen(function* () {
         const parentDetail = yield* read.getTicketDetail(ticketId);
         const parentTitle = parentDetail?.ticket.title ?? "ticket";
         const parentDescription = parentDetail?.ticket.description ?? "";
+        // Nested-fork lineage: propagate root + depth from parent forkOrigin.
+        const parentOrigin = (
+          parentDetail?.ticket as
+            | {
+                readonly forkOrigin?: {
+                  readonly rootTicketId?: string;
+                  readonly forkDepth?: number;
+                };
+              }
+            | undefined
+        )?.forkOrigin;
+        const rootTicketId = (parentOrigin?.rootTicketId ?? (ticketId as string)) as TicketId;
+        const forkDepth = nextForkDepth(parentOrigin?.forkDepth);
+        if (exceedsForkDepth(forkDepth)) {
+          yield* commit({
+            type: "StepFailed",
+            ticketId,
+            payload: stepFailedPayload(
+              stepRunId,
+              `fork cap reached: depth ${forkDepth} > ${MAX_FORK_DEPTH}`,
+              undefined,
+              false,
+              undefined,
+              "infra",
+            ),
+          });
+          return {
+            result: "failed",
+            noRetry: true,
+            detail: `fork cap reached: depth ${forkDepth}`,
+          };
+        }
         const joinRequire = step.join?.require ?? step.children.length;
         const onBranchFailure = step.join?.onBranchFailure ?? "waitImpossible";
-        const spawned: Array<{
+        const childIds: Array<{
           childKey: string;
           ticketId: TicketId;
           lane: string;
           title: string;
         }> = [];
-
+        // Pre-allocate child ids so recordSpawn can run BEFORE TicketCreated
+        // (crash-safe: join table exists before children start).
         for (const child of step.children) {
           const childTicketId = yield* ids.ticketId();
-          const title = child.titleTemplate
-            .replaceAll("{{ticket.title}}", parentTitle)
-            .replaceAll("{{ticket.id}}", ticketId as string)
-            .replaceAll("{{child.key}}", child.key as string)
-            .slice(0, 200);
+          const title = renderForkChildTitle(child.titleTemplate, {
+            ticketTitle: parentTitle,
+            ticketId: ticketId as string,
+            childKey: child.key as string,
+          });
+          childIds.push({
+            childKey: child.key as string,
+            ticketId: childTicketId,
+            lane: child.lane as string,
+            title,
+          });
+        }
+
+        yield* forkCoord.recordSpawn({
+          stepRunId,
+          parentTicketId: ticketId,
+          boardId,
+          stepKey: step.key as string,
+          joinRequire,
+          onBranchFailure,
+          spawnSeq: Date.now(),
+          children: childIds.map((s) => ({
+            childKey: s.childKey,
+            ticketId: s.ticketId,
+            laneKey: s.lane,
+            title: s.title,
+          })),
+        });
+
+        for (let i = 0; i < step.children.length; i++) {
+          const child = step.children[i]!;
+          const planned = childIds[i]!;
           const description = (child.descriptionTemplate ?? "")
             .replaceAll("{{ticket.title}}", parentTitle)
             .replaceAll("{{ticket.description}}", parentDescription)
@@ -1068,41 +1134,35 @@ const make = Effect.gen(function* () {
           const tokenBudget = normalizeTokenBudget(child.tokenBudget);
           yield* commit({
             type: "TicketCreated",
-            ticketId: childTicketId,
+            ticketId: planned.ticketId,
             payload: {
               boardId,
-              title: title as never,
+              title: planned.title as never,
               laneKey: child.lane,
-              ...(description.length > 0 ? { description } : {}),
+              ...(description.trim().length > 0 ? { description: description.trim() } : {}),
               ...(tokenBudget === undefined || tokenBudget === null ? {} : { tokenBudget }),
               forkOrigin: {
                 parentTicketId: ticketId,
                 stepRunId,
                 childKey: child.key,
-                forkDepth: 1,
-                rootTicketId: ticketId,
+                forkDepth,
+                rootTicketId,
               },
             },
           } as UnstampedWorkflowEventInput);
           if (child.dependsOn !== undefined && child.dependsOn.length > 0) {
             const depTicketIds = child.dependsOn
-              .map((key) => spawned.find((s) => s.childKey === (key as string))?.ticketId)
+              .map((key) => childIds.find((s) => s.childKey === (key as string))?.ticketId)
               .filter((id): id is TicketId => id !== undefined);
             if (depTicketIds.length > 0) {
               yield* commit({
                 type: "TicketDependenciesSet",
-                ticketId: childTicketId,
+                ticketId: planned.ticketId,
                 payload: { dependsOn: depTicketIds },
               });
             }
           }
-          yield* moveToLane(childTicketId, boardId, child.lane, "initial");
-          spawned.push({
-            childKey: child.key as string,
-            ticketId: childTicketId,
-            lane: child.lane as string,
-            title,
-          });
+          yield* moveToLane(planned.ticketId, boardId, child.lane, "initial");
         }
 
         yield* commit({
@@ -1114,7 +1174,7 @@ const make = Effect.gen(function* () {
             stepKey: step.key,
             joinRequire,
             onBranchFailure,
-            children: spawned.map((s) => ({
+            children: childIds.map((s) => ({
               childKey: s.childKey as never,
               ticketId: s.ticketId,
               lane: s.lane as never,
@@ -1123,26 +1183,10 @@ const make = Effect.gen(function* () {
           },
         } as UnstampedWorkflowEventInput);
 
-        yield* forkCoord.recordSpawn({
-          stepRunId,
-          parentTicketId: ticketId,
-          boardId,
-          stepKey: step.key as string,
-          joinRequire,
-          onBranchFailure,
-          spawnSeq: Date.now(),
-          children: spawned.map((s) => ({
-            childKey: s.childKey,
-            ticketId: s.ticketId,
-            laneKey: s.lane,
-            title: s.title,
-          })),
-        });
-
         return {
           result: "awaiting_children" as const,
           noRetry: true,
-          detail: `fork awaiting ${spawned.length} children (require ${joinRequire})`,
+          detail: `fork awaiting ${childIds.length} children (require ${joinRequire})`,
         };
       }
 

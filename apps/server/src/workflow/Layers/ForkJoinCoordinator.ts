@@ -22,12 +22,12 @@ const toError = (message: string) => (cause: unknown) =>
 const wrapSql = <A>(effect: Effect.Effect<A, SqlError>) =>
   effect.pipe(Effect.mapError(toError("fork join coordinator sql failed")));
 
-const loadFork = (
+const loadForkRaw = (
   sql: SqlClient.SqlClient,
   stepRunId: string,
-): Effect.Effect<ForkRecord | null, WorkflowEventStoreError> =>
+): Effect.Effect<ForkRecord | null, SqlError> =>
   Effect.gen(function* () {
-    const rows = yield* wrapSql(sql<{
+    const rows = yield* sql<{
       readonly stepRunId: string;
       readonly parentTicketId: string;
       readonly boardId: string;
@@ -48,10 +48,10 @@ const loadFork = (
         resolution
       FROM projection_ticket_fork
       WHERE step_run_id = ${stepRunId}
-    `);
+    `;
     const head = rows[0];
     if (head === undefined) return null;
-    const children = yield* wrapSql(sql<{
+    const children = yield* sql<{
       readonly childKey: string;
       readonly ticketId: string;
       readonly laneKey: string;
@@ -67,7 +67,7 @@ const loadFork = (
       FROM projection_ticket_fork_child
       WHERE step_run_id = ${stepRunId}
       ORDER BY child_key ASC
-    `);
+    `;
     return {
       stepRunId: head.stepRunId as StepRunId,
       parentTicketId: head.parentTicketId as TicketId,
@@ -126,7 +126,6 @@ const make = Effect.gen(function* () {
                 )
               `;
             }
-            // Lineage ledger: parent is root for depth-1 forks.
             const rootId = input.parentTicketId as string;
             yield* sql`
               INSERT INTO workflow_fork_lineage (root_ticket_id, board_id, fork_count)
@@ -141,80 +140,109 @@ const make = Effect.gen(function* () {
 
   const settleChild: ForkJoinCoordinatorShape["settleChild"] = (input) =>
     Effect.gen(function* () {
-      const mapping = yield* wrapSql(sql<{
-        readonly stepRunId: string;
-        readonly childKey: string;
-        readonly settledOutcome: string | null;
-      }>`
-        SELECT
-          step_run_id AS "stepRunId",
-          child_key AS "childKey",
-          settled_outcome AS "settledOutcome"
-        FROM projection_ticket_fork_child
-        WHERE child_ticket_id = ${input.childTicketId}
-      `);
-      const row = mapping[0];
-      if (row === undefined) {
-        return { status: "unknown_child" as const };
-      }
-      const forkBefore = yield* loadFork(sql, row.stepRunId);
-      if (forkBefore === null) {
-        return { status: "unknown_child" as const };
-      }
-      if (forkBefore.resolvedAt !== null) {
-        return { status: "already_settled" as const, fork: forkBefore };
-      }
-      if (row.settledOutcome !== null) {
-        return { status: "already_settled" as const, fork: forkBefore };
-      }
-
       const settledAt = yield* nowIso;
-      yield* wrapSql(sql`
-        UPDATE projection_ticket_fork_child
-        SET settled_outcome = ${input.outcome}, settled_at = ${settledAt}
-        WHERE child_ticket_id = ${input.childTicketId}
-          AND settled_outcome IS NULL
-      `);
+      return yield* wrapSql(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const mapping = yield* sql<{
+              readonly stepRunId: string;
+              readonly settledOutcome: string | null;
+            }>`
+              SELECT
+                step_run_id AS "stepRunId",
+                settled_outcome AS "settledOutcome"
+              FROM projection_ticket_fork_child
+              WHERE child_ticket_id = ${input.childTicketId}
+            `;
+            const row = mapping[0];
+            if (row === undefined) {
+              return { status: "unknown_child" as const };
+            }
 
-      const fork = yield* loadFork(sql, row.stepRunId);
-      if (fork === null) {
-        return { status: "unknown_child" as const };
-      }
+            const forkBefore = yield* loadForkRaw(sql, row.stepRunId);
+            if (forkBefore === null) {
+              return { status: "unknown_child" as const };
+            }
 
-      const outcomes: BranchOutcome[] = fork.children.map((c) =>
-        c.settledOutcome === null ? "unsettled" : c.settledOutcome,
+            if (forkBefore.resolvedAt !== null) {
+              if (row.settledOutcome === null) {
+                yield* sql`
+                  UPDATE projection_ticket_fork_child
+                  SET settled_outcome = ${input.outcome}, settled_at = ${settledAt}
+                  WHERE child_ticket_id = ${input.childTicketId}
+                    AND settled_outcome IS NULL
+                `;
+              }
+              const latest = (yield* loadForkRaw(sql, row.stepRunId)) ?? forkBefore;
+              return { status: "already_settled" as const, fork: latest };
+            }
+
+            if (row.settledOutcome !== null) {
+              return { status: "already_settled" as const, fork: forkBefore };
+            }
+
+            yield* sql`
+              UPDATE projection_ticket_fork_child
+              SET settled_outcome = ${input.outcome}, settled_at = ${settledAt}
+              WHERE child_ticket_id = ${input.childTicketId}
+                AND settled_outcome IS NULL
+            `;
+            // Confirm we claimed the child row (idempotent concurrent settlers).
+            const afterClaim = yield* sql<{ readonly settledOutcome: string | null }>`
+              SELECT settled_outcome AS "settledOutcome"
+              FROM projection_ticket_fork_child
+              WHERE child_ticket_id = ${input.childTicketId}
+            `;
+            if (afterClaim[0]?.settledOutcome !== input.outcome) {
+              const latest = (yield* loadForkRaw(sql, row.stepRunId)) ?? forkBefore;
+              return { status: "already_settled" as const, fork: latest };
+            }
+
+            const fork = yield* loadForkRaw(sql, row.stepRunId);
+            if (fork === null) {
+              return { status: "unknown_child" as const };
+            }
+
+            const outcomes: BranchOutcome[] = fork.children.map((c) =>
+              c.settledOutcome === null ? "unsettled" : c.settledOutcome,
+            );
+            const join = evaluateJoin(outcomes, {
+              require: fork.joinRequire,
+              onBranchFailure: fork.onBranchFailure,
+            });
+
+            if (join.result === "wait") {
+              return { status: "waiting" as const, fork, join };
+            }
+
+            // Claim resolve: only the winner of resolved_at IS NULL returns resolved.
+            yield* sql`
+              UPDATE projection_ticket_fork
+              SET
+                resolved_at = ${settledAt},
+                resolution = ${join.result},
+                resolution_succeeded = ${join.succeeded},
+                resolution_failed = ${join.failed},
+                resolution_cancelled = ${join.cancelled}
+              WHERE step_run_id = ${fork.stepRunId}
+                AND resolved_at IS NULL
+            `;
+            const changed = yield* sql<{ readonly n: number }>`SELECT changes() AS n`;
+            const afterResolve = yield* loadForkRaw(sql, row.stepRunId);
+            if (afterResolve === null) {
+              return { status: "unknown_child" as const };
+            }
+            if ((changed[0]?.n ?? 0) > 0) {
+              return { status: "resolved" as const, fork: afterResolve, join };
+            }
+            return { status: "already_settled" as const, fork: afterResolve };
+          }),
+        ),
       );
-      const join = evaluateJoin(outcomes, {
-        require: fork.joinRequire,
-        onBranchFailure: fork.onBranchFailure,
-      });
-
-      if (join.result === "wait") {
-        return { status: "waiting" as const, fork, join };
-      }
-
-      yield* wrapSql(sql`
-        UPDATE projection_ticket_fork
-        SET
-          resolved_at = ${settledAt},
-          resolution = ${join.result},
-          resolution_succeeded = ${join.succeeded},
-          resolution_failed = ${join.failed},
-          resolution_cancelled = ${join.cancelled}
-        WHERE step_run_id = ${fork.stepRunId}
-          AND resolved_at IS NULL
-      `);
-
-      const resolved = yield* loadFork(sql, row.stepRunId);
-      return {
-        status: "resolved" as const,
-        fork: resolved ?? fork,
-        join,
-      };
     });
 
   const getForkByStepRunId: ForkJoinCoordinatorShape["getForkByStepRunId"] = (stepRunId) =>
-    loadFork(sql, stepRunId as string);
+    wrapSql(loadForkRaw(sql, stepRunId as string));
 
   const getUnresolvedForkForParent: ForkJoinCoordinatorShape["getUnresolvedForkForParent"] = (
     parentTicketId,
@@ -230,7 +258,7 @@ const make = Effect.gen(function* () {
       `);
       const id = rows[0]?.stepRunId;
       if (id === undefined) return null;
-      return yield* loadFork(sql, id);
+      return yield* wrapSql(loadForkRaw(sql, id));
     });
 
   const getForkForChild: ForkJoinCoordinatorShape["getForkForChild"] = (childTicketId) =>
@@ -243,7 +271,7 @@ const make = Effect.gen(function* () {
       `);
       const id = rows[0]?.stepRunId;
       if (id === undefined) return null;
-      return yield* loadFork(sql, id);
+      return yield* wrapSql(loadForkRaw(sql, id));
     });
 
   return {

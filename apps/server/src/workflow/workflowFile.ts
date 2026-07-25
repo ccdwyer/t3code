@@ -404,6 +404,14 @@ export const lintWorkflowDefinition = (
       }
 
       if (step.type === "fork") {
+        if (lane.terminal === true) {
+          errors.push({
+            code: "invalid_fork",
+            laneKey,
+            stepKey,
+            message: `Fork step "${stepKey}" cannot live in terminal lane "${laneKey}"`,
+          });
+        }
         const pipeline = lane.pipeline ?? [];
         const isLast = pipeline[pipeline.length - 1]?.key === step.key;
         if (!isLast) {

@@ -69,6 +69,7 @@ import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
 import { resolveParkActions } from "../parkActions.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
+import { isParallelismHoldReason } from "../worktreeOverlap.ts";
 
 type PipelineResult = "success" | "failure" | "blocked";
 type StepResult = "completed" | "failed" | "blocked";
@@ -325,6 +326,12 @@ interface StepRunOutcome {
   // blocked reason, or a fixed marker like `rejected`. Used to build a park
   // reason when the pipeline parks in place.
   readonly detail?: string;
+  /**
+   * Worktree serialize hold (SPEC §2.4): ticket stays in lane with its entry
+   * token; completePipelineFrom must NOT run step/lane on.blocked routing.
+   * TicketBlocked is still emitted for attention.
+   */
+  readonly parallelismHold?: boolean;
 }
 
 // Defensive clamp so a hand-edited workflow file cannot retry unboundedly;
@@ -1084,7 +1091,13 @@ const make = Effect.gen(function* () {
               ticketId,
               payload: { stepRunId, reason: terminalResult.reason },
             });
-            return { result: "blocked", noRetry: false, detail: terminalResult.reason };
+            const hold = isParallelismHoldReason(terminalResult.reason);
+            return {
+              result: "blocked",
+              noRetry: hold,
+              detail: terminalResult.reason,
+              parallelismHold: hold,
+            };
           }
           yield* commit({
             type: "StepCompleted",
@@ -1121,7 +1134,13 @@ const make = Effect.gen(function* () {
           ticketId,
           payload: { stepRunId, reason: outcome.reason },
         });
-        return { result: "blocked", noRetry: false, detail: outcome.reason };
+        const hold = isParallelismHoldReason(outcome.reason);
+        return {
+          result: "blocked",
+          noRetry: hold,
+          detail: outcome.reason,
+          parallelismHold: hold,
+        };
       }
 
       yield* commit({
@@ -1204,13 +1223,21 @@ const make = Effect.gen(function* () {
     // nulled it in the interim, so even the first recovered step must token-check
     // before starting new agent/script work.
     exemptFirstStep = true,
+    // Recovery may enter already held (serialize hold terminal) without a further
+    // step dispatch — bypass on.blocked routing the same way as a live hold.
+    initialParallelismHold = false,
+    initialHoldDetail?: string,
   ): Effect.Effect<void, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       let result: PipelineResult = initialResult;
-      let routeDecision: RouteDecision | null = initialRouteDecision ?? null;
+      let routeDecision: RouteDecision | null = initialParallelismHold
+        ? null
+        : (initialRouteDecision ?? null);
       // The error text / blocked reason of the step that ended the pipeline —
       // sourced from the step outcome so a park can report why it happened.
-      let failureDetail: string | undefined;
+      let failureDetail: string | undefined = initialHoldDetail;
+      // Serialize hold: skip on.blocked routing; keep lane entry token (SPEC §2.4).
+      let parallelismHeld = initialParallelismHold;
       const laneStepKeys = steps.map((s) => s.key);
 
       if (routeDecision === null) {
@@ -1287,6 +1314,12 @@ const make = Effect.gen(function* () {
           if (result !== "success") {
             failureDetail = stepOutcome.detail;
           }
+          if (stepOutcome.parallelismHold === true) {
+            // SPEC §2.4: held outcome bypasses step/lane on.blocked routing.
+            parallelismHeld = true;
+            routeDecision = null;
+            break;
+          }
           routeDecision = stepRouteDecision(step, result);
           if (routeDecision !== null || result !== "success") {
             break;
@@ -1299,7 +1332,7 @@ const make = Effect.gen(function* () {
         pipelineRunId,
         result,
       });
-      if (routeDecision === null) {
+      if (routeDecision === null && !parallelismHeld) {
         routeDecision =
           (yield* laneTransitionDecision(lane, contextSnapshot)) ?? laneOnDecision(lane, result);
       }
@@ -1310,7 +1343,7 @@ const make = Effect.gen(function* () {
         payload: { pipelineRunId, result },
       });
 
-      if (routeDecision !== null) {
+      if (routeDecision !== null && !parallelismHeld) {
         if (routeDecision.kind === "park") {
           yield* parkTicket(
             ticketId,
@@ -1344,7 +1377,11 @@ const make = Effect.gen(function* () {
             yield* commit({
               type: "TicketBlocked",
               ticketId,
-              payload: { reason: `pipeline ${result} with no route` },
+              payload: {
+                reason: parallelismHeld
+                  ? truncateReason(failureDetail ?? "worktree serialize hold")
+                  : `pipeline ${result} with no route`,
+              },
             });
           }),
         );
@@ -3763,6 +3800,10 @@ const make = Effect.gen(function* () {
           : terminalResult._tag === "blocked"
             ? "blocked"
             : "failed";
+      let recoveredParallelismHold =
+        terminalResult._tag === "blocked" && isParallelismHoldReason(terminalResult.reason);
+      let recoveredHoldDetail =
+        terminalResult._tag === "blocked" ? terminalResult.reason : undefined;
 
       // Resume the retry loop across restarts: a failed attempt recovered
       // mid-policy keeps consuming its remaining attempts (with escalation),
@@ -3798,13 +3839,16 @@ const make = Effect.gen(function* () {
         }
         if (attempt > (recovered.stepStarted.payload.attempt ?? 1)) {
           finalResult = outcome.result;
+          recoveredParallelismHold = outcome.parallelismHold === true;
+          recoveredHoldDetail = outcome.detail;
         }
       }
 
       const recoveredResult: PipelineResult = pipelineResultForStep(finalResult);
-      const initialRouteDecision = recoveredStep
-        ? stepRouteDecision(recoveredStep, recoveredResult)
-        : null;
+      const initialRouteDecision =
+        recoveredStep && !recoveredParallelismHold
+          ? stepRouteDecision(recoveredStep, recoveredResult)
+          : null;
 
       // Guard once more before handing off to completePipelineFrom: a park may
       // have landed during the retry loop's final attempt. completePipelineFrom
@@ -3832,6 +3876,8 @@ const make = Effect.gen(function* () {
         // token was read before this continuation and an external park can have
         // nulled it since.
         false,
+        recoveredParallelismHold,
+        recoveredHoldDetail,
       );
     });
 

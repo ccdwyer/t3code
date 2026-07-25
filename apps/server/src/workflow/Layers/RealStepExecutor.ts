@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   ProviderInstanceId,
   TrimmedNonEmptyString,
@@ -72,6 +74,11 @@ import {
   validateStepOutput,
   type OutputDiagnostic,
 } from "../stepOutputContract.ts";
+import { WorktreeCoordinator, type OverlapGateResult } from "../Services/WorktreeCoordinator.ts";
+import { BoardRegistry } from "../Services/BoardRegistry.ts";
+import { PARALLELISM_HOLD_REASON_ACTIVE, serializeHoldReason } from "../worktreeOverlap.ts";
+
+const execFileAsync = promisify(execFile);
 
 const toExecutorError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });
@@ -116,6 +123,8 @@ const make = Effect.gen(function* () {
   const agentSessions = yield* WorkflowAgentSessionStore;
   const handoffReader = yield* StepOutputHandoffReader;
   const fileSystem = yield* FileSystem.FileSystem;
+  const worktreeCoordinator = yield* Effect.serviceOption(WorktreeCoordinator);
+  const boardRegistry = yield* Effect.serviceOption(BoardRegistry);
   // Optional: token-usage capture is best-effort telemetry, absent in older
   // test stacks.
   const usageReader = Context.getOption(
@@ -147,6 +156,65 @@ const make = Effect.gen(function* () {
       const hasBaseline = yield* ticketCheckpoints.hasBaseline(ctx.ticketId, worktree.path);
       if (!hasBaseline) {
         yield* ticketCheckpoints.captureBaseline(ctx.ticketId, worktree.path);
+      }
+
+      // Phase A worktree parallelism: registry + early overlap gate.
+      // Gate is one step stale by design (cache fills post-checkpoint only) —
+      // a ticket's first step always sees empty ownPaths and proceeds (SPEC non-goal).
+      if (Option.isSome(worktreeCoordinator)) {
+        const coord = worktreeCoordinator.value;
+        const activeHold = yield* coord.hasActiveHold(ctx.ticketId);
+        if (activeHold) {
+          return {
+            _tag: "blocked",
+            reason: PARALLELISM_HOLD_REASON_ACTIVE,
+          } satisfies StepOutcome;
+        }
+        yield* coord
+          .upsertRegistry({
+            ticketId: ctx.ticketId,
+            // Canonical repo identity for cross-ticket overlap (not the worktree path).
+            repoRoot: worktree.repoRoot,
+            branch: worktree.worktreeRef,
+          })
+          .pipe(Effect.catch(() => Effect.void));
+
+        if (Option.isSome(boardRegistry)) {
+          const definition = yield* boardRegistry.value.getDefinition(ctx.boardId);
+          const policy = definition?.settings?.parallelism?.conflictPolicy ?? "off";
+          const ignorePaths = definition?.settings?.parallelism?.overlapIgnorePaths ?? [];
+          if (policy === "warn" || policy === "serialize") {
+            const noneGate: OverlapGateResult = {
+              decision: { action: "none" },
+              withTicketId: null,
+            };
+            const gate = yield* coord
+              .evaluateOverlapGate({
+                ticketId: ctx.ticketId,
+                boardId: ctx.boardId,
+                policy,
+                ignorePaths: ignorePaths.map(String),
+                laneKey: ctx.laneKey as string,
+                laneEntryToken: ctx.laneEntryToken as string,
+                pipelineRunId: ctx.pipelineRunId as string,
+                stepRunId: ctx.stepRunId as string,
+              })
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("worktree overlap gate failed open", {
+                    ticketId: ctx.ticketId,
+                    error: String(error),
+                  }).pipe(Effect.as(noneGate)),
+                ),
+              );
+            if (gate.hold !== undefined) {
+              return {
+                _tag: "blocked",
+                reason: serializeHoldReason(gate.hold.blockedByTicketId as string),
+              } satisfies StepOutcome;
+            }
+          }
+        }
       }
 
       const guarded = yield* options?.preSetupGuard?.(worktree) ?? Effect.succeed(null);
@@ -208,6 +276,44 @@ const make = Effect.gen(function* () {
           worktree.path,
           "post",
         );
+        // Refresh path cache when conflictPolicy is active (Phase A).
+        // SPEC: git diff --name-only -z <baselineRef> <latestPostRef>
+        // On git failure: leave the prior cache intact (fail-closed for serialize).
+        if (Option.isSome(worktreeCoordinator) && Option.isSome(boardRegistry)) {
+          const definition = yield* boardRegistry.value
+            .getDefinition(ctx.boardId)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          const policy = definition?.settings?.parallelism?.conflictPolicy ?? "off";
+          if (policy === "warn" || policy === "serialize") {
+            const baseline = ticketBaseRef(ctx.ticketId);
+            const pathsExit = yield* Effect.tryPromise({
+              try: async () => {
+                const { stdout } = await execFileAsync(
+                  "git",
+                  ["-C", worktree.path, "diff", "--name-only", "-z", baseline, postRef],
+                  { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+                );
+                // -z already delimits; do not trim (paths may have intentional spaces).
+                return stdout.split("\0").filter((p) => p.length > 0);
+              },
+              catch: (cause) => cause,
+            }).pipe(Effect.exit);
+            if (Exit.isSuccess(pathsExit)) {
+              yield* worktreeCoordinator.value
+                .replaceChangedPaths({
+                  ticketId: ctx.ticketId,
+                  sourceRef: postRef,
+                  paths: pathsExit.value,
+                })
+                .pipe(Effect.catch(() => Effect.void));
+            } else {
+              yield* Effect.logWarning("worktree path cache refresh skipped (git failed)", {
+                ticketId: ctx.ticketId,
+                error: String(pathsExit.cause),
+              });
+            }
+          }
+        }
         const eventId = yield* ids.eventId();
         const occurredAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
         yield* committer.commit({

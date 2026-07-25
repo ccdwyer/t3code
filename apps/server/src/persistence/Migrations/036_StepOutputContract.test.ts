@@ -27,8 +27,10 @@ layer("035_StepOutputContract", (it) => {
       const onames = new Set(outboxCols.map((c) => c.name));
       assert.isTrue(onames.has("dispatch_seq"));
 
-      const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 35);
+      // Columns exist once 035 has applied (higher migrations may also be present).
+      assert.isTrue(
+        migrationEntries.some(([id, name]) => id === 35 && name === "StepOutputContract"),
+      );
     }),
   );
 });

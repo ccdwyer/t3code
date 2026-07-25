@@ -262,6 +262,13 @@ export interface StepRunRow {
   readonly blockedReason: string | null;
   readonly error?: string | null;
   readonly providerResponseKind: "request" | "user-input" | null;
+  // Checkpoint form cache (projection_step_run). The StepAwaitingUser event
+  // remains the authority; these let a view render without replaying events.
+  readonly checkpointFormJson?: string | null | undefined;
+  readonly checkpointDecision?: string | null | undefined;
+  readonly checkpointAnswersJson?: string | null | undefined;
+  // Feeds stuck diagnosis: Retry must not be offered for a non-retryable step.
+  readonly retryable?: number | boolean | null | undefined;
   readonly scriptThreadId: string | null;
   readonly terminalId: string | null;
   readonly scriptStatus: string | null;

@@ -562,6 +562,11 @@ const make = Effect.gen(function* () {
           yield* sql`
             UPDATE projection_step_run
             SET status = 'awaiting_user',
+                checkpoint_form_json = ${
+                  event.payload.formSnapshot === undefined
+                    ? null
+                    : encodeJsonString(event.payload.formSnapshot)
+                },
                 waiting_reason = ${event.payload.waitingReason},
                 provider_response_kind = ${event.payload.providerResponseKind ?? null}
             WHERE step_run_id = ${event.payload.stepRunId}
@@ -586,6 +591,12 @@ const make = Effect.gen(function* () {
           yield* sql`
             UPDATE projection_step_run
             SET status = 'running',
+                checkpoint_decision = ${event.payload.decision ?? null},
+                checkpoint_answers_json = ${
+                  event.payload.answers === undefined
+                    ? null
+                    : encodeJsonString(event.payload.answers)
+                },
                 waiting_reason = NULL,
                 provider_response_kind = NULL
             WHERE step_run_id = ${event.payload.stepRunId}

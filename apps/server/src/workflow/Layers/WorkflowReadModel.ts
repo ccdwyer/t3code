@@ -1299,6 +1299,10 @@ const make = Effect.gen(function* () {
           step.status,
           step.waiting_reason AS "waitingReason",
           step.provider_response_kind AS "providerResponseKind",
+          step.checkpoint_form_json AS "checkpointFormJson",
+          step.checkpoint_decision AS "checkpointDecision",
+          step.checkpoint_answers_json AS "checkpointAnswersJson",
+          step.retryable AS "retryable",
           CASE
             WHEN step.status = 'blocked' THEN step.error
             ELSE NULL

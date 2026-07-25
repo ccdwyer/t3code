@@ -196,6 +196,36 @@ layer("WorkflowEngine checkpoint forms", (it) => {
     }),
   );
 
+  it.effect("surfaces the form on the step view while waiting, and the answers after", () =>
+    Effect.gen(function* () {
+      // Goes through the PROJECTION and the read model, not just the engine:
+      // without this the drawer has no form to render and the feature is
+      // unreachable however correct the engine is.
+      const engine = yield* WorkflowEngine;
+      const read = yield* WorkflowReadModel;
+      const { ticketId, stepRunId } = yield* startWaiting("b-view", checkpointForm);
+
+      const waiting = yield* read.getTicketDetail(ticketId);
+      const waitingStep = waiting?.steps.find((step) => step.stepRunId === stepRunId);
+      assert.isDefined(waitingStep?.checkpointFormJson);
+
+      yield* engine.resolveApproval(stepRunId as never, {
+        approved: true,
+        decision: "changes",
+        answers: { why: "needs tests" } as never,
+      });
+      yield* awaitTicketWhere(
+        ticketId as string,
+        (detail) => detail?.ticket.currentLaneKey === "rework",
+      );
+
+      const resolved = yield* read.getTicketDetail(ticketId);
+      const resolvedStep = resolved?.steps.find((step) => step.stepRunId === stepRunId);
+      assert.equal(resolvedStep?.checkpointDecision, "changes");
+      assert.include(resolvedStep?.checkpointAnswersJson ?? "", "needs tests");
+    }),
+  );
+
   it.effect("rejects a decision that is not on the snapshot", () =>
     Effect.gen(function* () {
       const engine = yield* WorkflowEngine;

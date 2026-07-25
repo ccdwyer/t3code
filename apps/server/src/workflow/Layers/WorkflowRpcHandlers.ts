@@ -402,6 +402,21 @@ const toStepUsageView = (step: StepRunRow) => {
   };
 };
 
+/**
+ * Decode a cached checkpoint JSON column.
+ *
+ * The column is written only by the projection from already-decoded events, so a
+ * parse failure means corruption rather than untrusted input: degrade to absent
+ * instead of failing the whole ticket read that carries it.
+ */
+const decodeCheckpointJson = <A>(raw: string | null | undefined): A | undefined => {
+  if (typeof raw !== "string" || raw.length === 0) {
+    return undefined;
+  }
+  const parsed = decodeUnknownJsonStringSync(raw);
+  return parsed === undefined || parsed === null ? undefined : (parsed as A);
+};
+
 const toStepRunView = (step: StepRunRow): WorkflowStepRunView => ({
   stepRunId: step.stepRunId as never,
   stepKey: step.stepKey as never,
@@ -412,6 +427,16 @@ const toStepRunView = (step: StepRunRow): WorkflowStepRunView => ({
   blockedReason: step.blockedReason,
   ...(step.error === undefined ? {} : { error: step.error }),
   providerResponseKind: step.providerResponseKind,
+  // Checkpoint form: the snapshot from the wait, plus what the reviewer answered.
+  ...(decodeCheckpointJson(step.checkpointFormJson) === undefined
+    ? {}
+    : { form: decodeCheckpointJson(step.checkpointFormJson) as never }),
+  ...(step.checkpointDecision === null || step.checkpointDecision === undefined
+    ? {}
+    : { formDecision: step.checkpointDecision }),
+  ...(decodeCheckpointJson(step.checkpointAnswersJson) === undefined
+    ? {}
+    : { formAnswers: decodeCheckpointJson(step.checkpointAnswersJson) as never }),
   scriptThreadId: step.scriptThreadId as never,
   terminalId: step.terminalId,
   scriptStatus: step.scriptStatus as never,
@@ -440,6 +465,7 @@ const workflowRpcError = (message: string, cause?: unknown) =>
     ...(cause === undefined ? {} : { cause }),
   });
 
+const decodeUnknownJsonStringSync = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
 const decodeWorkflowDefinition = Schema.decodeUnknownEffect(WorkflowDefinition);
 const decodeWorkflowCreateBoardInput = Schema.decodeUnknownEffect(WorkflowCreateBoardInput);
 const decodeWorkflowRenameBoardInput = Schema.decodeUnknownEffect(WorkflowRenameBoardInput);

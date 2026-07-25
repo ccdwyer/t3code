@@ -24,6 +24,7 @@ import type {
   WorkflowSaveBoardDefinitionResult,
   WorkflowStepRunView,
   CheckpointAnswers,
+  WorkflowStuckDiagnosis,
   WorkflowGetBoardTimelineInput,
   WorkflowGetBoardTimelineResult,
   WorkflowGetTicketTimelineInput,
@@ -107,6 +108,7 @@ import type {
 import type { WorkflowEngineShape } from "../Services/WorkflowEngine.ts";
 import type { WorkflowEventStoreShape } from "../Services/WorkflowEventStore.ts";
 import { buildBoardTimeline, buildTicketTimeline } from "./workflowTimeline.ts";
+import { diagnoseTicket } from "../stuckDiagnosis.ts";
 import type { WorkflowFileLoaderShape } from "../Services/WorkflowFileLoader.ts";
 import type {
   BoardRow,
@@ -329,9 +331,98 @@ const ENV_BOUND_LINT_CODES: ReadonlySet<LintError["code"]> = new Set([
   "missing_instruction_file",
 ]);
 
+/**
+ * Lane occupancy for the WIP rule, derived from the ticket rows themselves
+ * rather than a second query: a ticket is admitted exactly when it holds a lane
+ * entry token, which every ticket selection already carries.
+ */
+export const laneAdmittedCounts = (
+  tickets: ReadonlyArray<TicketRow>,
+): ReadonlyMap<string, number> => {
+  const counts = new Map<string, number>();
+  for (const ticket of tickets) {
+    if (ticket.currentLaneEntryToken === null || ticket.currentLaneEntryToken === undefined) {
+      continue;
+    }
+    counts.set(ticket.currentLaneKey, (counts.get(ticket.currentLaneKey) ?? 0) + 1);
+  }
+  return counts;
+};
+
+const toDiagnosis = (
+  ticket: TicketRow,
+  definition: WorkflowDefinitionType | null,
+  admittedCounts: ReadonlyMap<string, number>,
+  latestStep: StepRunRow | undefined,
+): WorkflowStuckDiagnosis | undefined => {
+  const laneDef = definition?.lanes.find((candidate) => candidate.key === ticket.currentLaneKey);
+  // The pure function cannot see other lanes, so the first declared action whose
+  // target still exists is resolved here.
+  const moveAction = laneDef?.actions?.find((action) =>
+    definition?.lanes.some((candidate) => candidate.key === action.to),
+  );
+  return diagnoseTicket({
+    ticket: {
+      status: ticket.status,
+      currentLaneKey: ticket.currentLaneKey,
+      queuedAt: ticket.queuedAt,
+      currentLaneEnteredAt: ticket.currentLaneEnteredAt,
+      updatedAt: ticket.updatedAt ?? "",
+      terminalAt: ticket.terminalAt,
+      attentionKind: ticket.attentionKind,
+      attentionReason: ticket.attentionReason,
+      unresolvedDependencyCount: ticket.unresolvedDependencyCount,
+      dependsOn: ticket.dependsOn as ReadonlyArray<TicketId> | undefined,
+      tokenBudget: ticket.tokenBudget,
+      totalTokens: ticket.totalTokens,
+      currentLaneEntryToken: ticket.currentLaneEntryToken,
+    },
+    lane:
+      laneDef === undefined
+        ? undefined
+        : {
+            key: laneDef.key as never,
+            name: laneDef.name,
+            entry: laneDef.entry === "auto" ? "auto" : "manual",
+            ...(laneDef.wipLimit === undefined ? {} : { wipLimit: laneDef.wipLimit }),
+            pipelineStepCount: laneDef.pipeline?.length ?? 0,
+            ...(laneDef.terminal === undefined ? {} : { terminal: laneDef.terminal }),
+          },
+    laneAdmittedCount: admittedCounts.get(ticket.currentLaneKey) ?? 0,
+    latestStep:
+      latestStep === undefined
+        ? undefined
+        : {
+            stepRunId: latestStep.stepRunId as never,
+            status: latestStep.status,
+            stepType: latestStep.stepType,
+            providerResponseKind: latestStep.providerResponseKind,
+            error: latestStep.error,
+            // The projection stores this as 0/1.
+            retryable:
+              latestStep.retryable === null || latestStep.retryable === undefined
+                ? undefined
+                : Boolean(latestStep.retryable),
+            attempt: latestStep.attempt,
+            finishedAt: latestStep.finishedAt,
+            hasCheckpointForm:
+              typeof latestStep.checkpointFormJson === "string" &&
+              latestStep.checkpointFormJson.length > 0,
+          },
+    firstUnresolvedDependency: undefined,
+    ...(moveAction === undefined
+      ? { moveTarget: undefined }
+      : { moveTarget: { toLane: moveAction.to as never, label: moveAction.label } }),
+  });
+};
+
 const toBoardTicketView = (
   ticket: TicketRow,
   definition: WorkflowDefinitionType | null,
+  diagnosisContext?: {
+    readonly admittedCounts: ReadonlyMap<string, number>;
+    readonly latestStep?: StepRunRow | undefined;
+  },
 ): BoardTicketView => {
   const parked = toParkedTicketView(ticket, definition);
   return {
@@ -357,6 +448,18 @@ const toBoardTicketView = (
       ? { totalDurationMs: ticket.totalDurationMs }
       : {}),
     ...(ticket.pr === undefined ? {} : { pr: ticket.pr }),
+    // Why this ticket is stuck, when a caller supplied the context to decide.
+    ...(diagnosisContext === undefined
+      ? {}
+      : (() => {
+          const diagnosis = toDiagnosis(
+            ticket,
+            definition,
+            diagnosisContext.admittedCounts,
+            diagnosisContext.latestStep,
+          );
+          return diagnosis === undefined ? {} : { diagnosis };
+        })()),
     // Attention fields — present when the ticket is in a needs-attention state.
     ...(validAttentionKind(ticket.attentionKind) === null
       ? {}
@@ -586,7 +689,12 @@ const boardSnapshot = (
           ...(lane.sla === undefined ? {} : { sla: lane.sla }),
         })),
       },
-      tickets: tickets.map((ticket) => toBoardTicketView(ticket, definition)),
+      tickets: (() => {
+        // Occupancy comes from the same rows, so every card on a board agrees
+        // about whether its lane is full.
+        const admittedCounts = laneAdmittedCounts(tickets);
+        return tickets.map((ticket) => toBoardTicketView(ticket, definition, { admittedCounts }));
+      })(),
     } satisfies BoardSnapshot;
   });
 
@@ -678,7 +786,12 @@ const ticketDetail = (
               },
             }),
       })),
-      ticket: toBoardTicketView(detail.ticket, definition),
+      ticket: toBoardTicketView(detail.ticket, definition, {
+        admittedCounts: laneAdmittedCounts([detail.ticket]),
+        // The detail read has steps, so the blocked rules can see the failure
+        // that caused the stall rather than only the ticket's reason.
+        ...(detail.steps.length === 0 ? {} : { latestStep: detail.steps[detail.steps.length - 1] }),
+      }),
       steps: detail.steps.map(toStepRunView),
       messages: detail.messages.map((message) => ({
         messageId: message.messageId,

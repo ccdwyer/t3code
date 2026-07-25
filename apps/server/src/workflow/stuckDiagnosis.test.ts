@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
+import { laneAdmittedCounts } from "./Layers/WorkflowRpcHandlers.ts";
 import { diagnoseTicket, type DiagnoseTicketInput } from "./stuckDiagnosis.ts";
 
 const NOW = "2026-07-25T12:00:00.000Z";
@@ -388,5 +389,28 @@ describe("diagnoseTicket", () => {
         ),
       );
     });
+  });
+});
+
+describe("laneAdmittedCounts", () => {
+  it("counts only tickets holding a lane entry token", () => {
+    // Occupancy is admission, not presence: a queued ticket sitting in a lane
+    // does not consume its WIP slot, so counting it would report a lane as full
+    // when it is not.
+    const counts = laneAdmittedCounts([
+      { currentLaneKey: "build", currentLaneEntryToken: "tok" },
+      { currentLaneKey: "build", currentLaneEntryToken: "tok2" },
+      { currentLaneKey: "build", currentLaneEntryToken: null },
+      { currentLaneKey: "review", currentLaneEntryToken: "tok3" },
+    ] as never);
+    assert.equal(counts.get("build"), 2);
+    assert.equal(counts.get("review"), 1);
+  });
+
+  it("reports nothing for a lane with no admitted tickets", () => {
+    const counts = laneAdmittedCounts([
+      { currentLaneKey: "build", currentLaneEntryToken: null },
+    ] as never);
+    assert.isUndefined(counts.get("build"));
   });
 });

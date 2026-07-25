@@ -21,6 +21,13 @@ import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
+  /**
+   * Set false ONLY if the caller consumes `handle.stderr` itself. Leaving the
+   * child's stderr unread lets its pipe fill (64KB on most systems), at which
+   * point the child blocks on write and stops answering protocol requests —
+   * so the default is to drain.
+   */
+  readonly drainStderr?: boolean;
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
@@ -259,9 +266,13 @@ export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   options: CodexAppServerClientOptions = {},
 ): Layer.Layer<CodexAppServerClient> =>
-  // The caller owns the handle and may consume stderr itself — draining it
-  // here would compete for the same chunks and drop diagnostics.
-  Layer.effect(CodexAppServerClient, makeChildProcessClient(handle, options, false));
+  // Drain stderr unless the caller opts out. The previous default assumed the
+  // caller would consume it, but no caller does, so a child emitting more than
+  // a pipe buffer of diagnostics deadlocked mid-protocol.
+  Layer.effect(
+    CodexAppServerClient,
+    makeChildProcessClient(handle, options, options.drainStderr !== false),
+  );
 
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",

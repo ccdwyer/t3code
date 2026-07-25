@@ -82,6 +82,35 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
       return yield* spawner.spawn(command);
     });
 
+  it.effect("drains agent stderr so large diagnostics cannot block the protocol", () =>
+    Effect.gen(function* () {
+      // 512KB is far past a pipe buffer, so an undrained stderr blocks the peer
+      // on its own write and initialize never gets answered.
+      const handle = yield* makeHandle({ ACP_MOCK_STDERR_BYTES: String(512 * 1024) });
+      const scope = yield* Scope.make();
+      const acpLayer = AcpClient.layerChildProcess(handle);
+      const context = yield* Layer.buildWithScope(acpLayer, scope);
+
+      const initialized = yield* Effect.gen(function* () {
+        const acp = yield* AcpClient.AcpClient;
+        return yield* acp.agent.initialize({
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: false, writeTextFile: false },
+            terminal: false,
+          },
+          clientInfo: { name: "effect-acp-test", version: "0.0.0" },
+        });
+      }).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.provide(context),
+        Effect.ensuring(Scope.close(scope, Exit.void)),
+      );
+
+      assert.equal(initialized.protocolVersion, 1);
+    }),
+  );
+
   it.effect("initializes, prompts, receives updates, and handles permission requests", () =>
     Effect.gen(function* () {
       const updates = yield* Ref.make<Array<unknown>>([]);

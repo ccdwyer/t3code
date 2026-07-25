@@ -1649,10 +1649,14 @@ const make = Effect.gen(function* () {
               },
             });
             // Fork child blocked → settle failure (unless serialize hold).
+            // Not under admission lock here — apply deferred parent route inline.
             if (!parallelismHeld) {
-              yield* settleForkChildIfAny(ticketId, "failure").pipe(
-                Effect.catch(() => Effect.void),
+              const deferred = yield* settleForkChildIfAny(ticketId, "failure").pipe(
+                Effect.catch(() => Effect.succeed(null as DeferredParentRoute | null)),
               );
+              if (deferred !== null) {
+                yield* applyDeferredParentRoute(deferred);
+              }
             }
           }),
         );
@@ -1864,6 +1868,18 @@ const make = Effect.gen(function* () {
       return starts;
     });
 
+  /**
+   * Parent route to apply AFTER admission lock release (or, on unlocked paths
+   * that already hold admission, via enterLaneCore with serialize: body => body).
+   */
+  interface DeferredParentRoute {
+    readonly parentTicketId: TicketId;
+    readonly boardId: BoardId;
+    readonly stepRunId: StepRunId;
+    readonly toLane: LaneKey | null;
+    readonly blockReason: string | null;
+  }
+
   interface EnterLaneCoreOptions {
     readonly routedOptions?: RoutedEnterLaneOptions | undefined;
     readonly externalOptions?: ExternalEnterLaneOptions | undefined;
@@ -1938,6 +1954,8 @@ const make = Effect.gen(function* () {
     {
       readonly starts: ReadonlyArray<PipelineStartAction>;
       readonly acted: "moved" | "queued" | "none";
+      readonly deferredForkRoutes: ReadonlyArray<DeferredParentRoute>;
+      readonly releasedHoldTicketIds: ReadonlyArray<TicketId>;
     },
     WorkflowEventStoreError
   > => {
@@ -1952,6 +1970,8 @@ const make = Effect.gen(function* () {
         const none = {
           starts: [] as Array<PipelineStartAction>,
           acted: "none" as "moved" | "queued" | "none",
+          deferredForkRoutes: [] as ReadonlyArray<DeferredParentRoute>,
+          releasedHoldTicketIds: [] as ReadonlyArray<TicketId>,
         };
         const detail = yield* read.getTicketDetail(ticketId);
         const priorLane = detail?.ticket.currentLaneKey as LaneKey | undefined;
@@ -2125,35 +2145,48 @@ const make = Effect.gen(function* () {
         // `provider.stopSession` runs in-band ONLY on the public path; the
         // unlocked source-committer callers pass `false` and defer it to their
         // post-commit phase so it never runs inside the chunk transaction.
+        const deferredForkRoutes: DeferredParentRoute[] = [];
+        let releasedHoldTicketIds: ReadonlyArray<TicketId> = [];
         if (acted === "moved" && targetLane?.terminal === true) {
           yield* tearDownTicketAgentSessions(
             ticketId,
             options.stopProviderSessionsOnTeardown ?? true,
           );
-          // Fork-join: child reaching a terminal lane settles success.
-          yield* settleForkChildIfAny(ticketId, "success").pipe(Effect.catch(() => Effect.void));
-          // Worktree serialize: release tickets held behind this blocker.
-          yield* releaseHoldsBlockedByIfAny(ticketId).pipe(Effect.catch(() => Effect.void));
+          // Under lock: settle only (no enterLane — admission lock is non-reentrant).
+          const deferred = yield* settleForkChildIfAny(ticketId, "success").pipe(
+            Effect.catch(() => Effect.succeed(null as DeferredParentRoute | null)),
+          );
+          if (deferred !== null) {
+            deferredForkRoutes.push(deferred);
+          }
+          // Under lock: clear hold rows; resume runLane outside the lock.
+          releasedHoldTicketIds = yield* releaseHoldsBlockedByIds(ticketId).pipe(
+            Effect.catch(() => Effect.succeed([] as ReadonlyArray<TicketId>)),
+          );
         }
 
-        return { starts, acted };
+        return { starts, acted, deferredForkRoutes, releasedHoldTicketIds };
       }),
     );
   };
 
-  /** Settle parent fork join when a child ticket settles (success/failure/cancelled). */
+  /**
+   * Settle a fork child. Safe under admission lock (coordinator SQL + event
+   * commits only). Returns a deferred parent route when the join resolved —
+   * callers MUST apply it outside the lock via applyDeferredParentRoute.
+   */
   const settleForkChildIfAny = (
     childTicketId: TicketId,
     outcome: "success" | "failure" | "cancelled",
-  ): Effect.Effect<void, WorkflowEventStoreError> =>
+  ): Effect.Effect<DeferredParentRoute | null, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       if (Option.isNone(forkJoinOption)) {
-        return;
+        return null;
       }
       const coord = forkJoinOption.value;
       const result = yield* coord.settleChild({ childTicketId, outcome });
       if (result.status === "unknown_child" || result.status === "already_settled") {
-        return;
+        return null;
       }
       const emitChildSettled = () => {
         const child = result.fork.children.find((c) => c.ticketId === childTicketId);
@@ -2173,10 +2206,8 @@ const make = Effect.gen(function* () {
       };
       if (result.status === "waiting") {
         yield* emitChildSettled();
-        return;
+        return null;
       }
-      // resolved — complete the suspended fork step with the real pipeline id
-      // and apply the fork step's on.success / on.failure route to the parent.
       yield* emitChildSettled();
       const detached = result.fork.children
         .filter((c) => c.settledOutcome === null || c.settledOutcome === "unsettled")
@@ -2233,14 +2264,12 @@ const make = Effect.gen(function* () {
         },
       });
 
-      // Apply fork step routing: re-resolve on.success / on.failure from definition.
       const parentDetail = yield* read.getTicketDetail(result.fork.parentTicketId);
       if (parentDetail === null) {
-        return;
+        return null;
       }
       const boardId = parentDetail.ticket.boardId as BoardId;
       const parentLaneKey = parentDetail.ticket.currentLaneKey as LaneKey;
-      const parentToken = parentDetail.ticket.currentLaneEntryToken as LaneEntryToken | null;
       const definition = yield* registry.getDefinition(boardId);
       const parentLane = definition?.lanes.find(
         (l) => (l.key as string) === (parentLaneKey as string),
@@ -2248,50 +2277,77 @@ const make = Effect.gen(function* () {
       const forkStep = parentLane?.pipeline?.find(
         (s) => s.type === "fork" && (s.key as string) === result.fork.stepKey,
       );
+      // Failures only use on.failure (never fall through to on.success).
       const routeTarget =
         forkStep?.type === "fork"
           ? joinResult === "success"
             ? forkStep.on?.success
-            : (forkStep.on?.failure ?? forkStep.on?.success)
+            : forkStep.on?.failure
           : undefined;
 
       if (routeTarget !== undefined && !isParkTarget(routeTarget)) {
-        const toLane = routeTarget as LaneKey;
-        // Public enterLane re-validates token under admission lock.
-        void parentToken;
-        yield* enterLane(result.fork.parentTicketId, boardId, toLane, "routed").pipe(
-          Effect.catch(() => Effect.void),
-        );
-      } else if (joinResult !== "success") {
-        // No failure route: surface blocked for human recovery.
-        yield* commit({
-          type: "TicketBlocked",
-          ticketId: result.fork.parentTicketId,
-          payload: {
-            reason: truncateReason(
-              `fork join failed: ${result.join.succeeded} of ${result.fork.joinRequire} required`,
-            ),
-          },
-        });
+        return {
+          parentTicketId: result.fork.parentTicketId,
+          boardId,
+          stepRunId: result.fork.stepRunId,
+          toLane: routeTarget as LaneKey,
+          blockReason: null,
+        } satisfies DeferredParentRoute;
       }
-
-      // Stamp route_applied_at only after the apply attempt (live or blocked).
+      if (joinResult !== "success") {
+        return {
+          parentTicketId: result.fork.parentTicketId,
+          boardId,
+          stepRunId: result.fork.stepRunId,
+          toLane: null,
+          blockReason: truncateReason(
+            `fork join failed: ${result.join.succeeded} of ${result.fork.joinRequire} required`,
+          ),
+        } satisfies DeferredParentRoute;
+      }
+      // Success with no on.success: stamp applied (nothing to route).
       yield* wrapSql(sql`
         UPDATE projection_ticket_fork
         SET route_applied_at = ${yield* nowIso}
         WHERE step_run_id = ${result.fork.stepRunId}
           AND route_applied_at IS NULL
       `).pipe(Effect.catch(() => Effect.void));
+      return null;
     });
 
-  const releaseHoldsBlockedByIfAny = (blockerTicketId: TicketId) =>
+  /** Apply deferred parent route OUTSIDE admission lock. */
+  const applyDeferredParentRoute = (deferred: DeferredParentRoute) =>
+    Effect.gen(function* () {
+      if (deferred.toLane !== null) {
+        yield* enterLane(deferred.parentTicketId, deferred.boardId, deferred.toLane, "routed").pipe(
+          Effect.catch(() => Effect.void),
+        );
+      } else if (deferred.blockReason !== null) {
+        yield* commit({
+          type: "TicketBlocked",
+          ticketId: deferred.parentTicketId,
+          payload: { reason: deferred.blockReason },
+        }).pipe(Effect.catch(() => Effect.void));
+      }
+      yield* wrapSql(sql`
+        UPDATE projection_ticket_fork
+        SET route_applied_at = ${yield* nowIso}
+        WHERE step_run_id = ${deferred.stepRunId}
+          AND route_applied_at IS NULL
+      `).pipe(Effect.catch(() => Effect.void));
+    });
+
+  const releaseHoldsBlockedByIds = (blockerTicketId: TicketId) =>
     Effect.gen(function* () {
       if (Option.isNone(worktreeCoordOption)) {
-        return;
+        return [] as ReadonlyArray<TicketId>;
       }
-      const released = yield* worktreeCoordOption.value.releaseHoldsBlockedBy(blockerTicketId);
-      // Resume each held ticket's lane pipeline from step 0 (SPEC resume).
-      for (const ticketId of released) {
+      return yield* worktreeCoordOption.value.releaseHoldsBlockedBy(blockerTicketId);
+    });
+
+  const resumeReleasedHolds = (ticketIds: ReadonlyArray<TicketId>) =>
+    Effect.gen(function* () {
+      for (const ticketId of ticketIds) {
         yield* runLane(ticketId).pipe(Effect.catch(() => Effect.void));
       }
     });
@@ -2330,16 +2386,17 @@ const make = Effect.gen(function* () {
       });
 
       yield* runPipelineStarts(lockResult.starts);
+      // Parent join routes + hold resumes MUST run outside admission lock.
+      for (const deferred of lockResult.deferredForkRoutes) {
+        yield* applyDeferredParentRoute(deferred);
+      }
+      yield* resumeReleasedHolds(lockResult.releasedHoldTicketIds);
 
       const movedLane = yield* registry.getLane(boardId, toLane);
       if (movedLane?.terminal === true) {
         // Resolution releases queued dependents; failure here must never undo
         // the move itself.
         yield* releaseDependents(ticketId).pipe(Effect.catch(() => Effect.void));
-        // Defense-in-depth: also settle fork/hold outside the core (core already
-        // does this under lock; catch keeps public enterLane total).
-        yield* settleForkChildIfAny(ticketId, "success").pipe(Effect.catch(() => Effect.void));
-        yield* releaseHoldsBlockedByIfAny(ticketId).pipe(Effect.catch(() => Effect.void));
       }
 
       return lockResult.acted;
@@ -2375,6 +2432,10 @@ const make = Effect.gen(function* () {
       });
 
       yield* runPipelineStarts(lockResult.starts);
+      for (const deferred of lockResult.deferredForkRoutes) {
+        yield* applyDeferredParentRoute(deferred);
+      }
+      yield* resumeReleasedHolds(lockResult.releasedHoldTicketIds);
 
       const movedLane = yield* registry.getLane(boardId, toLane);
       if (movedLane?.terminal === true) {
@@ -3193,6 +3254,7 @@ const make = Effect.gen(function* () {
         readonly result: EscalateTicketSlaResult;
         readonly starts: ReadonlyArray<PipelineStartAction>;
         readonly releaseDependentsFor?: TicketId;
+        readonly releasedHoldTicketIds?: ReadonlyArray<TicketId>;
       };
 
       const lockOutcome = yield* withAdmissionLock(
@@ -3372,18 +3434,43 @@ const make = Effect.gen(function* () {
             };
 
             const targetKey = escalateTo as LaneKey;
-            const { starts, acted } = yield* enterLaneCore(
-              input.ticketId,
-              boardId,
-              targetKey,
-              "sla",
-              {
-                supersedeRunningWork: Effect.void,
-                emit: prefixEmit,
-                serialize: (body) => body,
-                emitPrecondition: revalidate.pipe(Effect.asVoid),
-              },
-            );
+            const coreResult = yield* enterLaneCore(input.ticketId, boardId, targetKey, "sla", {
+              supersedeRunningWork: Effect.void,
+              emit: prefixEmit,
+              serialize: (body) => body,
+              emitPrecondition: revalidate.pipe(Effect.asVoid),
+            });
+            const { starts, acted } = coreResult;
+            // Already holding admission: apply deferred routes without re-locking.
+            for (const deferred of coreResult.deferredForkRoutes) {
+              if (deferred.toLane !== null) {
+                yield* enterLaneCore(
+                  deferred.parentTicketId,
+                  deferred.boardId,
+                  deferred.toLane,
+                  "routed",
+                  {
+                    supersedeRunningWork: Effect.void,
+                    emit: prefixEmit,
+                    serialize: (body) => body,
+                  },
+                ).pipe(Effect.catch(() => Effect.void));
+              } else if (deferred.blockReason !== null) {
+                yield* commit({
+                  type: "TicketBlocked",
+                  ticketId: deferred.parentTicketId,
+                  payload: { reason: deferred.blockReason },
+                }).pipe(Effect.catch(() => Effect.void));
+              }
+              yield* wrapSql(sql`
+                UPDATE projection_ticket_fork
+                SET route_applied_at = ${yield* nowIso}
+                WHERE step_run_id = ${deferred.stepRunId}
+                  AND route_applied_at IS NULL
+              `).pipe(Effect.catch(() => Effect.void));
+            }
+            // Hold resumes after admission lock (lockOutcome starts run after).
+            // Stash on result via starts side-channel is awkward; releaseDependents path handles terminal.
 
             if (acted === "none") {
               // Target refused after recheck — notify-only without escalatedTo.
@@ -3396,6 +3483,7 @@ const make = Effect.gen(function* () {
               starts,
               releaseDependentsFor:
                 acted === "moved" && targetIsTerminal ? input.ticketId : undefined,
+              releasedHoldTicketIds: coreResult.releasedHoldTicketIds,
             };
           }),
         ),
@@ -3409,6 +3497,9 @@ const make = Effect.gen(function* () {
         yield* releaseDependents(lockOutcome.releaseDependentsFor).pipe(
           Effect.catch(() => Effect.void),
         );
+      }
+      if (lockOutcome.releasedHoldTicketIds !== undefined) {
+        yield* resumeReleasedHolds(lockOutcome.releasedHoldTicketIds);
       }
       return lockOutcome.result;
     });
@@ -3596,7 +3687,7 @@ const make = Effect.gen(function* () {
       // a single global transaction). The committer (Task 9) is responsible for
       // triggering auto-lane pipeline starts (e.g. recoverBoardWip) AFTER it
       // closes the chunk transaction and releases the save lock.
-      const { acted } = yield* enterLaneCore(
+      const coreResult = yield* enterLaneCore(
         ticketId,
         input.boardId,
         input.destinationLane,
@@ -3610,7 +3701,41 @@ const make = Effect.gen(function* () {
           stopProviderSessionsOnTeardown: false,
         },
       );
-      return { ticketId, outcome: acted };
+      // Unlocked path already holds admission: apply deferred routes without re-locking.
+      for (const deferred of coreResult.deferredForkRoutes) {
+        if (deferred.toLane !== null) {
+          yield* enterLaneCore(
+            deferred.parentTicketId,
+            deferred.boardId,
+            deferred.toLane,
+            "routed",
+            {
+              emit: unlockedEmit,
+              serialize: Effect.uninterruptible,
+              supersedeRunningWork: Effect.void,
+              stopProviderSessionsOnTeardown: false,
+            },
+          ).pipe(Effect.catch(() => Effect.void));
+        } else if (deferred.blockReason !== null) {
+          yield* unlockedEmit([
+            {
+              type: "TicketBlocked",
+              ticketId: deferred.parentTicketId,
+              payload: { reason: deferred.blockReason },
+            } as UnstampedWorkflowEventInput,
+          ]).pipe(Effect.catch(() => Effect.void));
+        }
+        yield* wrapSql(sql`
+          UPDATE projection_ticket_fork
+          SET route_applied_at = ${yield* nowIso}
+          WHERE step_run_id = ${deferred.stepRunId}
+            AND route_applied_at IS NULL
+        `).pipe(Effect.catch(() => Effect.void));
+      }
+      // Hold resumes are live side effects — committer post-commit should drive
+      // them; best-effort in-process when not mid-tx-only.
+      yield* resumeReleasedHolds(coreResult.releasedHoldTicketIds);
+      return { ticketId, outcome: coreResult.acted };
     });
 
   const closeTicketFromSourceUnlocked: WorkflowEngineShape["closeTicketFromSourceUnlocked"] = (
@@ -3649,7 +3774,7 @@ const make = Effect.gen(function* () {
       // in the prior lane are dropped for the same single-transaction reason as
       // createTicketAndEnterUnlocked (closed lanes are terminal in practice; the
       // committer sweeps starts after the chunk).
-      yield* enterLaneCore(ticketId, boardId, closedLane, "external", {
+      const coreResult = yield* enterLaneCore(ticketId, boardId, closedLane, "external", {
         emit: unlockedEmit,
         serialize: Effect.uninterruptible,
         supersedeRunningWork: abandonTicketDispatches(ticketId).pipe(
@@ -3668,6 +3793,37 @@ const make = Effect.gen(function* () {
         // them in its post-commit phase (alongside supersedeProviderWorkForTicket).
         stopProviderSessionsOnTeardown: false,
       });
+      for (const deferred of coreResult.deferredForkRoutes) {
+        if (deferred.toLane !== null) {
+          yield* enterLaneCore(
+            deferred.parentTicketId,
+            deferred.boardId,
+            deferred.toLane,
+            "routed",
+            {
+              emit: unlockedEmit,
+              serialize: Effect.uninterruptible,
+              supersedeRunningWork: Effect.void,
+              stopProviderSessionsOnTeardown: false,
+            },
+          ).pipe(Effect.catch(() => Effect.void));
+        } else if (deferred.blockReason !== null) {
+          yield* unlockedEmit([
+            {
+              type: "TicketBlocked",
+              ticketId: deferred.parentTicketId,
+              payload: { reason: deferred.blockReason },
+            } as UnstampedWorkflowEventInput,
+          ]).pipe(Effect.catch(() => Effect.void));
+        }
+        yield* wrapSql(sql`
+          UPDATE projection_ticket_fork
+          SET route_applied_at = ${yield* nowIso}
+          WHERE step_run_id = ${deferred.stepRunId}
+            AND route_applied_at IS NULL
+        `).pipe(Effect.catch(() => Effect.void));
+      }
+      yield* resumeReleasedHolds(coreResult.releasedHoldTicketIds);
     });
 
   const reopenTicketFromSourceUnlocked: WorkflowEngineShape["reopenTicketFromSourceUnlocked"] = (
@@ -3700,7 +3856,7 @@ const make = Effect.gen(function* () {
       // it); the work source is authoritative so revalidate succeeds. Any auto-
       // lane pipeline start the destination admits is dropped (single-tx) and the
       // committer's post-commit recoverBoardWip sweep starts it.
-      yield* enterLaneCore(ticketId, boardId, destinationLane, "external", {
+      const coreResult = yield* enterLaneCore(ticketId, boardId, destinationLane, "external", {
         emit: unlockedEmit,
         serialize: Effect.uninterruptible,
         supersedeRunningWork: Effect.void,
@@ -3715,6 +3871,37 @@ const make = Effect.gen(function* () {
         // may run inside the chunk transaction).
         stopProviderSessionsOnTeardown: false,
       });
+      for (const deferred of coreResult.deferredForkRoutes) {
+        if (deferred.toLane !== null) {
+          yield* enterLaneCore(
+            deferred.parentTicketId,
+            deferred.boardId,
+            deferred.toLane,
+            "routed",
+            {
+              emit: unlockedEmit,
+              serialize: Effect.uninterruptible,
+              supersedeRunningWork: Effect.void,
+              stopProviderSessionsOnTeardown: false,
+            },
+          ).pipe(Effect.catch(() => Effect.void));
+        } else if (deferred.blockReason !== null) {
+          yield* unlockedEmit([
+            {
+              type: "TicketBlocked",
+              ticketId: deferred.parentTicketId,
+              payload: { reason: deferred.blockReason },
+            } as UnstampedWorkflowEventInput,
+          ]).pipe(Effect.catch(() => Effect.void));
+        }
+        yield* wrapSql(sql`
+          UPDATE projection_ticket_fork
+          SET route_applied_at = ${yield* nowIso}
+          WHERE step_run_id = ${deferred.stepRunId}
+            AND route_applied_at IS NULL
+        `).pipe(Effect.catch(() => Effect.void));
+      }
+      yield* resumeReleasedHolds(coreResult.releasedHoldTicketIds);
     });
 
   const editTicketFieldsUnlocked: WorkflowEngineShape["editTicketFieldsUnlocked"] = (

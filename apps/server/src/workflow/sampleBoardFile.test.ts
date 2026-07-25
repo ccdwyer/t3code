@@ -16,7 +16,16 @@ it.layer(NodeServices.layer)("sample delivery board", (it) => {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const repoRoot = path.join(process.cwd(), "../..");
-      const raw = yield* fileSystem.readFileString(path.join(repoRoot, ".t3/boards/delivery.json"));
+      // `.t3/` is gitignored developer state, so this board is absent on a fresh
+      // clone and in CI. Validate it when present (it guards a real local board
+      // against schema/lint drift) and skip otherwise rather than failing a
+      // checkout that never had the file. The tracked example board below gives
+      // this suite its clone-independent coverage.
+      const boardPath = path.join(repoRoot, ".t3/boards/delivery.json");
+      if (!(yield* fileSystem.exists(boardPath))) {
+        return;
+      }
+      const raw = yield* fileSystem.readFileString(boardPath);
       const definition = yield* decodeWorkflowDefinitionJson(raw);
       const lintErrors = lintWorkflowDefinition(definition, {
         providerInstanceExists: (instanceId) => instanceId === "codex",

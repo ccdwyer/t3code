@@ -1770,6 +1770,7 @@ captureLayer(undefined)("RealStepExecutor missing output capture", (it) => {
       assert.deepEqual(outcome, {
         _tag: "failed",
         error: "missing or invalid structured output",
+        failureClass: "agent_error",
       });
     }),
   );
@@ -1935,7 +1936,11 @@ mk({ ok: false, turnId: "turn-stub" as never, error: "provider failed" })(
 
         const outcome = yield* executor.execute(context);
 
-        assert.deepEqual(outcome, { _tag: "failed", error: "provider failed" });
+        assert.deepEqual(outcome, {
+          _tag: "failed",
+          error: "provider failed",
+          failureClass: "agent_error",
+        });
         assert.deepEqual(checkpointCalls, [
           "hasBaseline:/tmp/wt-ticket-1",
           "captureBaseline:/tmp/wt-ticket-1",
@@ -2189,6 +2194,9 @@ terminalTimeoutLayer("RealStepExecutor terminal-wait timeout", (it) => {
       assert.deepEqual(outcome, {
         _tag: "failed",
         error: "turn did not reach a terminal state before timeout",
+        // Synthetic outbox timeout is infrastructure, not an agent mistake, so a
+        // byClass infra policy (not agent_error) governs its retry.
+        failureClass: "infra",
       });
       // The still-live agent must be interrupted and its session stopped so
       // it cannot keep mutating the worktree after the pipeline routed on.

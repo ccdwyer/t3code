@@ -219,6 +219,7 @@ it.effect("workflowRpcHandlers maps createTicket and subscribeBoard", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -3971,6 +3972,7 @@ it.effect("workflowRpcHandlers rejects lint-invalid board saves without writing"
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4091,6 +4093,7 @@ it.effect("workflowRpcHandlers rejects stale board saves without writing", () =>
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4230,6 +4233,7 @@ it.effect("workflowRpcHandlers rejects saves when the board file changed on disk
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4382,6 +4386,7 @@ it.effect("workflowRpcHandlers serializes same-base board saves so only one succ
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4545,6 +4550,7 @@ it.effect("workflowRpcHandlers serializes deleteBoard with an in-flight save", (
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4726,6 +4732,7 @@ it.effect("workflowRpcHandlers rejects unsafe instruction paths without writing"
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4847,6 +4854,7 @@ it.effect("workflowRpcHandlers rejects board saves whose derived path is not a b
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: {
         ...noopReadModel,
@@ -4972,6 +4980,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         },
         readModel: {
           ...noopReadModel,
@@ -5153,6 +5162,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         },
         readModel: {
           ...noopReadModel,
@@ -5270,6 +5280,7 @@ it.effect(
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          steerTicketStep: () => Effect.succeed({ accepted: true as const }),
         },
         readModel: {
           ...noopReadModel,
@@ -5403,6 +5414,7 @@ const noopEngineForParkedViewTests = {
   cancelTicketPipelines: () => Effect.void,
   recoverBoardWip: () => Effect.void,
   completeRecoveredStep: () => Effect.void,
+  steerTicketStep: () => Effect.succeed({ accepted: true as const }),
 };
 
 const parkedViewDeps = (input: {
@@ -5650,6 +5662,7 @@ const importNoopEngine = {
   cancelTicketPipelines: () => Effect.void,
   recoverBoardWip: () => Effect.void,
   completeRecoveredStep: () => Effect.void,
+  steerTicketStep: () => Effect.succeed({ accepted: true as const }),
 } as never;
 
 interface ImportHarnessOptions {
@@ -8460,6 +8473,7 @@ it.effect("listImportableWorkItems annotates mapped items + reports sources", ()
     const handlers = workflowRpcHandlers({
       engine: {
         createTicket: () => Effect.die("unused"),
+        steerTicketStep: () => Effect.die("unused"),
         editTicket: () => Effect.die("unused"),
         moveTicket: () => Effect.die("unused"),
         escalateTicketSla: () => Effect.succeed("stale" as const),
@@ -8585,6 +8599,7 @@ it.effect("gates mutating RPCs behind readiness while reads bypass the gate", ()
         cancelTicketPipelines: () => Effect.void,
         recoverBoardWip: () => Effect.void,
         completeRecoveredStep: () => Effect.void,
+        steerTicketStep: () => Effect.succeed({ accepted: true as const }),
       },
       readModel: noopReadModel,
       boardRegistry: {
@@ -8662,6 +8677,7 @@ it.effect("gates importWorkItems behind readiness; listImportableWorkItems bypas
     const handlers = workflowRpcHandlers({
       engine: {
         createTicket: () => Effect.die("unused"),
+        steerTicketStep: () => Effect.die("unused"),
         editTicket: () => Effect.die("unused"),
         moveTicket: () => Effect.die("unused"),
         escalateTicketSla: () => Effect.succeed("stale" as const),
@@ -8851,6 +8867,7 @@ const makeImportDeps = (opts: {
   const handlers = workflowRpcHandlers({
     engine: {
       createTicket: () => Effect.die("unused"),
+      steerTicketStep: () => Effect.die("unused"),
       editTicket: () => Effect.die("unused"),
       moveTicket: () => Effect.die("unused"),
       escalateTicketSla: () => Effect.succeed("stale" as const),

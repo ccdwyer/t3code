@@ -1102,6 +1102,18 @@ const make = Effect.gen(function* () {
       if (step.type === "approval") {
         return { _tag: "completed" } satisfies StepOutcome;
       }
+      if (step.type === "fork") {
+        // Fork steps are resolved by the engine before dispatch (it spawns children
+        // and suspends the pipeline with `awaiting_children`), so the executor must
+        // never see one. Fail closed instead of falling through to the agent arm
+        // below, which would run the fork step as an agent turn.
+        return {
+          _tag: "failed",
+          error: "fork step reached the executor; forks are handled by the engine",
+          retryable: false,
+          failureClass: "infra",
+        } satisfies StepOutcome;
+      }
       if (step.type === "script") {
         return yield* prepareWorktreeStep(
           ctx,

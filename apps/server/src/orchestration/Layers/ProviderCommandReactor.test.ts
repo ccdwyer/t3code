@@ -94,7 +94,12 @@ async function waitFor(
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderCommandReactor | ProjectionSnapshotQuery,
+    // SqlClient comes from the merged SqlitePersistenceMemory layer below; tests
+    // that assert on outbox rows use it directly.
+    | OrchestrationEngineService
+    | ProviderCommandReactor
+    | ProjectionSnapshotQuery
+    | SqlClient.SqlClient,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -2867,6 +2872,7 @@ describe("ProviderCommandReactor", () => {
             attachments: [],
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
           createdAt: now,
         }),
       );
@@ -2938,6 +2944,7 @@ describe("ProviderCommandReactor", () => {
             attachments: [],
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
           createdAt: now,
         }),
       );
@@ -3015,6 +3022,7 @@ describe("ProviderCommandReactor", () => {
             attachments: [],
           },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
           createdAt: now,
         }),
       );

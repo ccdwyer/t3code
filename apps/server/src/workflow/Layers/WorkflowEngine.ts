@@ -342,7 +342,7 @@ interface StepRunOutcome {
   // Human-readable cause of a non-success outcome: the failure error text, the
   // blocked reason, or a fixed marker like `rejected`. Used to build a park
   // reason when the pipeline parks in place.
-  readonly detail?: string;
+  readonly detail?: string | undefined;
   /**
    * Worktree serialize hold (SPEC §2.4): ticket stays in lane with its entry
    * token; completePipelineFrom must NOT run step/lane on.blocked routing.
@@ -350,9 +350,9 @@ interface StepRunOutcome {
    */
   readonly parallelismHold?: boolean;
   /** Closed taxonomy class for failed outcomes (feeds decideRetry). */
-  readonly failureClass?: FailureClass;
+  readonly failureClass?: FailureClass | undefined;
   /** Explicit retryable flag from StepOutcome when present. */
-  readonly retryable?: boolean;
+  readonly retryable?: boolean | undefined;
   /** Failed step run id — needed for StepRetryScheduled payload. */
   readonly stepRunId?: StepRunId;
   readonly stepKey?: StepKey;
@@ -1369,6 +1369,27 @@ const make = Effect.gen(function* () {
           noRetry: hold,
           detail: outcome.reason,
           parallelismHold: hold,
+        };
+      }
+
+      if (outcome._tag === "awaiting_children") {
+        // Fork suspension is decided by the engine before dispatch (see the fork
+        // branch above) and RealStepExecutor guards fork steps, so an executor must
+        // never produce this outcome. Fail closed rather than falling through to the
+        // completed path, which would commit StepCompleted and defeat the join.
+        const error = "executor returned awaiting_children for a non-fork step";
+        yield* commit({
+          type: "StepFailed",
+          ticketId,
+          payload: stepFailedPayload(stepRunId, error, undefined, false, undefined, "infra"),
+        });
+        return {
+          result: "failed",
+          noRetry: true,
+          detail: error,
+          failureClass: "infra",
+          retryable: false,
+          stepRunId,
         };
       }
 
@@ -3157,6 +3178,15 @@ const make = Effect.gen(function* () {
           threadId: target.threadId,
           messageId: input.messageId,
           text: framed,
+          // Mirror the in-flight dispatch's mode: a steer adds a message to an
+          // existing turn and must never change the step's permissions. Unknown
+          // or legacy values fall back to the workflow default used at dispatch.
+          runtimeMode:
+            target.runtimeMode === "approval-required" ||
+            target.runtimeMode === "auto-accept-edits" ||
+            target.runtimeMode === "full-access"
+              ? target.runtimeMode
+              : "full-access",
         }),
       );
       if (exit._tag === "Failure") {

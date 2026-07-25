@@ -51,6 +51,8 @@ export interface ProviderTurnPortShape {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
     readonly text: string;
+    /** Must mirror the in-flight dispatch so steering cannot change permissions. */
+    readonly runtimeMode: "approval-required" | "auto-accept-edits" | "full-access";
   }) => Effect.Effect<void, WorkflowEventStoreError>;
 }
 
@@ -80,6 +82,8 @@ export interface SteerTarget {
   readonly captureOutput: boolean;
   readonly panelSize: number | null;
   readonly steerPendingMessageId: string | null;
+  /** Runtime mode the dispatch was started with; a steer must not change it. */
+  readonly runtimeMode: string | null;
 }
 
 /** Staged delivered steer awaiting a durable `StepSteered` append. */

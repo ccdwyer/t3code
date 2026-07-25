@@ -78,7 +78,7 @@ it.effect("starts provider dispatch idempotently and confirms from terminal turn
       yield* Effect.yieldNow;
       yield* TestClock.adjust("500 millis");
       const terminal = yield* Fiber.join(terminalFiber);
-      assert.deepEqual(terminal, { ok: true, turnId: "turn-1" });
+      assert.deepEqual(terminal, { ok: true, turnId: "turn-1" as never });
 
       const confirmed = yield* sql<{ readonly status: string }>`
         SELECT status FROM workflow_dispatch_outbox WHERE dispatch_id = ${request.dispatchId}
@@ -119,7 +119,7 @@ it.effect("confirms the outbox row when the terminal wait times out", () =>
       const terminal = yield* Fiber.join(terminalFiber);
       assert.deepEqual(terminal, {
         ok: false,
-        turnId: "turn-1",
+        turnId: "turn-1" as never,
         error: "turn did not reach a terminal state before timeout",
       });
 

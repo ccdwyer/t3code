@@ -12,7 +12,11 @@ import { TurnProjectionPortLive, TurnStateReaderLive } from "./TurnStateReader.t
 const stub = (state: string) =>
   Layer.succeed(TurnProjectionPort, {
     getLatestTurnState: () =>
-      Effect.succeed({ state, completed: state === "completed" || state === "error" }),
+      Effect.succeed({
+        state,
+        completed: state === "completed" || state === "error",
+        turnId: null,
+      }),
   });
 
 const mk = (state: string) =>

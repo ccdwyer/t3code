@@ -288,6 +288,7 @@ const target: SteerTarget = {
   dispatchId: "dispatch-steer" as never,
   threadId: "thread-steer" as never,
   turnId: "turn-steer" as never,
+  runtimeMode: "full-access",
   captureOutput: false,
   panelSize: 1,
   steerPendingMessageId: null,

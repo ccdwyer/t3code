@@ -51,9 +51,11 @@ export type RetryAction =
     };
 
 export type ClassRetryPolicy = {
-  readonly action?: "retry" | "backoff" | "escalate_model" | "give_up";
-  readonly backoffMs?: number;
-  readonly maxAttempts?: number;
+  // `| undefined` on each optional keeps this structurally compatible with the
+  // schema-derived board definition type under `exactOptionalPropertyTypes`.
+  readonly action?: "retry" | "backoff" | "escalate_model" | "give_up" | undefined;
+  readonly backoffMs?: number | undefined;
+  readonly maxAttempts?: number | undefined;
 };
 
 /**
@@ -65,17 +67,22 @@ export const decideRetry = (input: {
   readonly failureClass: FailureClass;
   readonly attempt: number; // 1-based completed attempts
   readonly maxAttempts: number;
-  readonly retryable?: boolean;
-  readonly byClass?: Readonly<
-    Partial<
-      Record<"agent_error" | "script_failure" | "timeout" | "infra" | "unknown", ClassRetryPolicy>
-    >
-  >;
-  readonly error?: string;
+  readonly retryable?: boolean | undefined;
+  readonly byClass?:
+    | Readonly<
+        Partial<
+          Record<
+            "agent_error" | "script_failure" | "timeout" | "infra" | "unknown",
+            ClassRetryPolicy | undefined
+          >
+        >
+      >
+    | undefined;
+  readonly error?: string | undefined;
   /** Legacy boards: step.retry.escalate is set → escalate from attempt 2. */
-  readonly stepHasEscalate?: boolean;
+  readonly stepHasEscalate?: boolean | undefined;
   /** recovery mode never sleeps */
-  readonly mode?: "live" | "recovery";
+  readonly mode?: "live" | "recovery" | undefined;
 }): RetryAction => {
   if (
     input.failureClass === "human_rejection" ||

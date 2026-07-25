@@ -97,8 +97,9 @@ const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   Layer.provideMerge(TurnStateReaderLive),
   Layer.provideMerge(SetupRunServiceLive),
   Layer.provideMerge(WorktreeLeaseServiceLive),
-  Layer.provideMerge(WorktreeCoordinatorLive),
-  Layer.provideMerge(ForkJoinCoordinatorLive),
+  // Both coordinators are SQL-only and independent of each other; merged into one
+  // provideMerge to keep this pipe within the 20-argument overload limit.
+  Layer.provideMerge(Layer.mergeAll(WorktreeCoordinatorLive, ForkJoinCoordinatorLive)),
   Layer.provideMerge(DurableApprovalResumeLive),
   Layer.provideMerge(WorkflowBoardEventsLive),
   Layer.provideMerge(WorkflowEventCommitterLive),
@@ -108,8 +109,8 @@ const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   Layer.provideMerge(PredicateEvaluatorLive),
   Layer.provideMerge(WorkflowRoutingContextBuilderLive),
   Layer.provideMerge(ApprovalGateLive),
-  Layer.provideMerge(ProjectionTurnRepositoryLive),
-  Layer.provideMerge(ProjectionThreadMessageRepositoryLive),
+  // Independent SQL-only projection repositories; merged for the same reason.
+  Layer.provideMerge(Layer.mergeAll(ProjectionTurnRepositoryLive, ProjectionThreadMessageRepositoryLive)),
 );
 
 export const WorkflowRuntimeCoreLive = WorkflowRuntimeCoreBaseLive.pipe(

@@ -54,13 +54,19 @@ interface EqpRow {
 function assertIndexUsed(
   planRows: ReadonlyArray<EqpRow>,
   queryLabel: string,
-  expectedIndex: string,
+  // Usually one index. Pass several when more than one index legitimately serves
+  // the predicate (e.g. a single-column index and a composite sharing its leading
+  // column) — SQLite's choice between equally selective candidates is not a
+  // behaviour this suite should pin.
+  expectedIndex: string | ReadonlyArray<string>,
 ): void {
   const details = Array.from(planRows).map((r) => r.detail ?? "");
+  const acceptable = typeof expectedIndex === "string" ? [expectedIndex] : expectedIndex;
 
-  // The expected index must appear by name in some plan row (this implies
-  // USING INDEX, since the name only renders inside a "USING ... INDEX" clause).
-  const usesExpectedIndex = details.some((d) => d.includes(expectedIndex));
+  // One of the acceptable indexes must appear by name in some plan row (this
+  // implies USING INDEX, since the name only renders inside a "USING ... INDEX"
+  // clause).
+  const usesExpectedIndex = details.some((d) => acceptable.some((idx) => d.includes(idx)));
 
   // No row may be a bare SCAN <table> that lacks any USING clause. (A join's
   // PK-side lookup renders as "SEARCH ... USING INTEGER PRIMARY KEY", not a bare
@@ -69,7 +75,7 @@ function assertIndexUsed(
 
   assert.isTrue(
     usesExpectedIndex,
-    `[${queryLabel}] Expected plan to use index "${expectedIndex}" but it did not.\nPlan rows:\n${details.join("\n")}`,
+    `[${queryLabel}] Expected plan to use one of [${acceptable.join(", ")}] but it did not.\nPlan rows:\n${details.join("\n")}`,
   );
   assert.deepStrictEqual(
     bareScans,
@@ -156,7 +162,14 @@ layer("WorkflowIndexUsage — hot-path queries must use indexes", (it) => {
           FROM projection_ticket
           WHERE board_id = 'board-1'
         `;
-      assertIndexUsed(plan, "projection_ticket_by_board", "idx_projection_ticket_board");
+      // Either index answers `WHERE board_id = ?`: the dedicated one, or the
+      // SLA composite (board_id, current_lane_key, current_lane_entered_at)
+      // whose leading column is board_id. The guarantee under test is that this
+      // hot path never degrades to a full table scan.
+      assertIndexUsed(plan, "projection_ticket_by_board", [
+        "idx_projection_ticket_board",
+        "idx_projection_ticket_lane_entered_at",
+      ]);
     }),
   );
 

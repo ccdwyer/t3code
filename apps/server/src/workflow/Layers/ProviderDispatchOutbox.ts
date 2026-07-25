@@ -111,6 +111,7 @@ interface SteerTargetRow {
   readonly captureOutput: number | null;
   readonly panelSize: number | null;
   readonly steerPendingMessageId: string | null;
+  readonly runtimeMode: string | null;
 }
 
 interface DeadlineRow {
@@ -252,7 +253,8 @@ const make = Effect.gen(function* () {
         status,
         capture_output AS "captureOutput",
         panel_size AS "panelSize",
-        steer_pending_message_id AS "steerPendingMessageId"
+        steer_pending_message_id AS "steerPendingMessageId",
+        runtime_mode AS "runtimeMode"
       FROM workflow_dispatch_outbox
       WHERE step_run_id = ${stepRunId}
       ORDER BY dispatch_seq DESC, created_at DESC, dispatch_id DESC
@@ -271,6 +273,7 @@ const make = Effect.gen(function* () {
           captureOutput: row.captureOutput === 1,
           panelSize: row.panelSize,
           steerPendingMessageId: row.steerPendingMessageId,
+          runtimeMode: row.runtimeMode ?? null,
         };
       }),
     );
@@ -790,6 +793,7 @@ export const ProviderTurnPortLive = Layer.effect(
               attachments: [],
             },
             interactionMode: "default",
+            runtimeMode: input.runtimeMode,
             createdAt: now as never,
           })
           .pipe(

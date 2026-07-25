@@ -117,6 +117,7 @@ it.effect("steerTurn dispatches thread.turn.start with workflow-steer command id
         threadId: "thread-1" as never,
         messageId: "msg-steer-port" as never,
         text: "Mid-run guidance from the operator — incorporate it and continue the current task: fix package",
+        runtimeMode: "full-access",
       });
     }).pipe(Effect.provide(makeLayer(captured)));
 

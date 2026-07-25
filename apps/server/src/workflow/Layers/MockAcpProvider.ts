@@ -66,6 +66,7 @@ export const MockAcpProviderLive = Layer.unwrap(
             return {
               state: turn?.state ?? "pending",
               completed: turn?.state === "completed" || turn?.state === "error",
+              turnId: turn?.turnId ?? null,
             };
           }),
         ),

@@ -7,6 +7,7 @@ import {
   TicketId,
   type EnvironmentApi,
   type TerminalHistoryAttachStreamEvent,
+  type CheckpointForm,
   type WorkflowTimelineBase,
   type WorkflowTimelineItem,
 } from "@t3tools/contracts";
@@ -153,6 +154,10 @@ export interface TicketDrawerDetail {
     // disabled with a reason rather than hiding it.
     readonly canSteer?: boolean | undefined;
     readonly steerBlockedReason?: "awaiting_user" | "delivering" | undefined;
+    // Checkpoint form on an approval wait, plus what was answered once resolved.
+    readonly form?: CheckpointForm | undefined;
+    readonly formDecision?: string | undefined;
+    readonly formAnswers?: Record<string, string | ReadonlyArray<string>> | undefined;
     readonly steerCount?: number | undefined;
     readonly lastSteeredAt?: string | undefined;
     readonly output?: unknown;
@@ -275,7 +280,14 @@ export function TicketDrawer({
       >)
     | undefined;
   readonly onEditMessage?: ((messageId: string, body: string) => Promise<void>) | undefined;
-  readonly onApprove: (stepRunId: string, approved: boolean) => Promise<void>;
+  readonly onApprove: (
+    stepRunId: string,
+    approved: boolean,
+    submission?: {
+      readonly decision?: string | undefined;
+      readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+    },
+  ) => Promise<void>;
   readonly onEditTicket?: ((input: TicketDrawerEditInput) => Promise<void>) | undefined;
   readonly onDeleteTicket?: (() => Promise<void>) | undefined;
   readonly onMove?: ((toLane: string) => void) | undefined;
@@ -465,11 +477,18 @@ export function TicketDrawer({
     }
   };
 
-  const submitApproval = async (stepRunId: string, approved: boolean) => {
+  const submitApproval = async (
+    stepRunId: string,
+    approved: boolean,
+    submission?: {
+      readonly decision?: string | undefined;
+      readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+    },
+  ) => {
     setApprovalSubmittingStepRunId(stepRunId);
     setApprovalError(null);
     try {
-      await onApprove(stepRunId, approved);
+      await onApprove(stepRunId, approved, submission);
     } catch (error) {
       setApprovalError({
         stepRunId,
@@ -1625,6 +1644,148 @@ function TicketHistorySection({
   );
 }
 
+/**
+ * The reviewer-facing checkpoint form.
+ *
+ * The decision buttons ARE the submit: each carries its own routing outcome, so
+ * there is no separate approve/reject. Required fields are enforced server-side
+ * against the snapshot, and only for a success outcome; this form mirrors that
+ * rather than blocking a rejection on an unfilled field.
+ */
+function CheckpointFormFields({
+  form,
+  disabled,
+  onSubmit,
+}: {
+  readonly form: CheckpointForm;
+  readonly disabled: boolean;
+  readonly onSubmit: (
+    decision: string | undefined,
+    answers: Record<string, string | ReadonlyArray<string>>,
+  ) => void;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string | ReadonlyArray<string>>>({});
+  const decisionField = form.fields.find((field) => field.kind === "decision");
+
+  const setAnswer = (key: string, value: string | ReadonlyArray<string>) => {
+    setAnswers((prior) => ({ ...prior, [key]: value }));
+  };
+
+  return (
+    <div className="mt-2 space-y-2" data-testid="checkpoint-form">
+      {form.fields.map((field) => {
+        if (field.kind === "decision") {
+          return null;
+        }
+        if (field.kind === "text") {
+          return (
+            <label key={field.key} className="block">
+              <span className="text-xs text-muted-foreground">
+                {field.label}
+                {field.required === true ? " *" : ""}
+              </span>
+              <textarea
+                className="mt-0.5 w-full rounded border border-border/70 bg-background p-2 text-xs"
+                rows={2}
+                placeholder={field.placeholder ?? ""}
+                value={typeof answers[field.key] === "string" ? (answers[field.key] as string) : ""}
+                onChange={(event) => {
+                  setAnswer(field.key, event.target.value);
+                }}
+              />
+            </label>
+          );
+        }
+        if (field.kind === "select") {
+          return (
+            <label key={field.key} className="block">
+              <span className="text-xs text-muted-foreground">
+                {field.label}
+                {field.required === true ? " *" : ""}
+              </span>
+              <select
+                className="mt-0.5 w-full rounded border border-border/70 bg-background p-1.5 text-xs"
+                value={typeof answers[field.key] === "string" ? (answers[field.key] as string) : ""}
+                onChange={(event) => {
+                  setAnswer(field.key, event.target.value);
+                }}
+              >
+                <option value="">—</option>
+                {field.options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          );
+        }
+        const checked = Array.isArray(answers[field.key])
+          ? (answers[field.key] as ReadonlyArray<string>)
+          : [];
+        return (
+          <fieldset key={field.key} className="block">
+            <legend className="text-xs text-muted-foreground">
+              {field.label}
+              {field.requireAll === true ? " (all)" : field.required === true ? " *" : ""}
+            </legend>
+            {field.items.map((item) => (
+              <label key={item.value} className="flex items-center gap-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  checked={checked.includes(item.value)}
+                  onChange={(event) => {
+                    setAnswer(
+                      field.key,
+                      event.target.checked
+                        ? [...checked, item.value]
+                        : checked.filter((value) => value !== item.value),
+                    );
+                  }}
+                />
+                {item.label}
+              </label>
+            ))}
+          </fieldset>
+        );
+      })}
+
+      <div className="flex flex-wrap gap-2">
+        {decisionField !== undefined && decisionField.kind === "decision" ? (
+          decisionField.options.map((option) => (
+            <Button
+              key={option.value}
+              size="xs"
+              variant={option.outcome === "success" ? "default" : "outline"}
+              disabled={disabled}
+              title={option.hint ?? ""}
+              onClick={() => {
+                onSubmit(option.value, answers);
+              }}
+            >
+              {option.label}
+            </Button>
+          ))
+        ) : (
+          // A form with no decision field still needs a way to submit; the
+          // legacy approve/reject outcomes apply.
+          <>
+            <Button
+              size="xs"
+              disabled={disabled}
+              onClick={() => {
+                onSubmit(undefined, answers);
+              }}
+            >
+              Submit
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TicketDiscussionSection({
   messages,
   density,
@@ -2021,7 +2182,14 @@ function TicketStepRow({
   /** data-testid applied to the step output `<div>`. Pass undefined to omit. */
   readonly stepOutputTestId?: string | undefined;
   readonly onRunLane: () => void;
-  readonly submitApproval: (stepRunId: string, approved: boolean) => Promise<void>;
+  readonly submitApproval: (
+    stepRunId: string,
+    approved: boolean,
+    submission?: {
+      readonly decision?: string | undefined;
+      readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+    },
+  ) => Promise<void>;
   readonly onSteered?: (() => void) | undefined;
   readonly liClassName?: string | undefined;
 }) {
@@ -2094,7 +2262,18 @@ function TicketStepRow({
           />
         </div>
       ) : null}
-      {isAwaitingApprovalRequestStep(step) ? (
+      {isAwaitingApprovalRequestStep(step) && step.form !== undefined ? (
+        <CheckpointFormFields
+          form={step.form}
+          disabled={approvalSubmittingStepRunId === step.stepRunId}
+          onSubmit={(decision, answers) => {
+            // `approved` is ignored by the server when a decision is present;
+            // the chosen option's outcome decides the routing.
+            void submitApproval(step.stepRunId, true, { decision, answers });
+          }}
+        />
+      ) : null}
+      {isAwaitingApprovalRequestStep(step) && step.form === undefined ? (
         <div className="mt-2 flex flex-wrap gap-2">
           <Button
             size="xs"
@@ -2198,7 +2377,14 @@ interface TicketFullscreenReplyState {
 interface TicketFullscreenApprovalState {
   readonly approvalSubmittingStepRunId: string | null;
   readonly approvalError: { readonly stepRunId: string; readonly message: string } | null;
-  readonly submitApproval: (stepRunId: string, approved: boolean) => Promise<void>;
+  readonly submitApproval: (
+    stepRunId: string,
+    approved: boolean,
+    submission?: {
+      readonly decision?: string | undefined;
+      readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+    },
+  ) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

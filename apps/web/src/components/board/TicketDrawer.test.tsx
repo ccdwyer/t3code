@@ -1120,4 +1120,45 @@ describe("TicketDiffContent", () => {
     // Collapsed: nothing is fetched until the user asks for it.
     expect(markup).not.toContain("Loading history");
   });
+
+  it("renders a checkpoint form's own decision buttons instead of bare approve/reject", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={{
+          ...ticketDetail,
+          steps: [
+            {
+              stepRunId: "step-approval",
+              stepKey: "gate",
+              stepType: "approval",
+              status: "awaiting_user",
+              waitingReason: "Review it",
+              blockedReason: null,
+              form: {
+                fields: [
+                  {
+                    kind: "decision",
+                    key: "verdict",
+                    options: [
+                      { value: "ship", label: "Ship it", outcome: "success" },
+                      { value: "changes", label: "Needs changes", outcome: "failure" },
+                    ],
+                  },
+                  { kind: "text", key: "why", label: "Why?" },
+                ],
+              },
+            },
+          ],
+        }}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+      />,
+    );
+    expect(markup).toContain("checkpoint-form");
+    // The form's own options are the submit; a bare Approve/Reject pair would
+    // be rejected by the server for want of a decision.
+    expect(markup).toContain("Ship it");
+    expect(markup).toContain("Needs changes");
+    expect(markup).toContain("Why?");
+  });
 });

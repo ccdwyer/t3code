@@ -101,8 +101,23 @@ export const invokeParkAction = (
 ): Promise<WorkflowParkActionResult> =>
   api.workflow.invokeParkAction({ ticketId, actionIndex, parkedEventId });
 
-export const resolveApproval = (api: EnvironmentApi, stepRunId: StepRunId, approved: boolean) =>
-  api.workflow.resolveApproval({ stepRunId, approved });
+export const resolveApproval = (
+  api: EnvironmentApi,
+  stepRunId: StepRunId,
+  approved: boolean,
+  submission?: {
+    readonly decision?: string | undefined;
+    readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+  },
+) =>
+  api.workflow.resolveApproval({
+    stepRunId,
+    approved,
+    // A checkpoint form sends its chosen option; the server derives the routing
+    // outcome from it and ignores `approved`.
+    ...(submission?.decision === undefined ? {} : { decision: submission.decision }),
+    ...(submission?.answers === undefined ? {} : { answers: submission.answers as never }),
+  });
 
 export const postTicketMessage = (
   api: EnvironmentApi,

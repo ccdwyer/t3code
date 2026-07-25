@@ -719,8 +719,15 @@ function WorkflowBoardRouteView() {
     [routeApi, reloadTicketDetail, refreshBoardSnapshot, syncPendingParkActions],
   );
   const handleApprove = useCallback(
-    (stepRunId: string, approved: boolean): Promise<void> => {
-      return resolveApproval(routeApi, StepRunId.make(stepRunId), approved).then(
+    (
+      stepRunId: string,
+      approved: boolean,
+      submission?: {
+        readonly decision?: string | undefined;
+        readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+      },
+    ): Promise<void> => {
+      return resolveApproval(routeApi, StepRunId.make(stepRunId), approved, submission).then(
         reloadTicketDetail,
       );
     },

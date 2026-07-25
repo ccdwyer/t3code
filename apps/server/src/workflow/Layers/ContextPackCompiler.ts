@@ -74,9 +74,13 @@ const make = Effect.gen(function* () {
       );
       const body = ordered
         .map((row) => {
-          // Step keys are arbitrary strings rendered as headings, so they forge
-          // pack structure just as easily as a crafted filename would.
-          const heading = `### ${escapeForPack(row.stepKey)}`;
+          // Deliberately NOT a `###` heading. Section bodies get their
+          // line-leading `#` runs escaped at render time (so agent output cannot
+          // forge a section), and that escaping cannot tell the compiler's own
+          // sub-headings from forged ones — it would mangle them too. A marker
+          // that was never heading syntax sidesteps the whole question.
+          // The key is still escaped: it is an arbitrary string.
+          const heading = `— step ${escapeForPack(row.stepKey)} —`;
           // Redact BEFORE the per-step cap: redaction can expand short values.
           const text = redactAndCap(row.preview, CONTEXT_PACK_PER_STEP_MAX);
           // The query truncated mid-value, so this is a preview, not decodable

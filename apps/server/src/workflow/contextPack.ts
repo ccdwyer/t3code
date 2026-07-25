@@ -117,12 +117,17 @@ export const sectionsEqual = (
  * section key and the lane name would leave that wide open.
  *
  * A line-leading run of `#` is prefixed with a backslash, which still reads
- * plainly but can no longer open a heading. The split covers the Unicode line
- * separators too, so a body cannot start a line the scan would miss.
+ * plainly but can no longer open a heading.
+ *
+ * The split must cover EVERY character a consumer might treat as a line break,
+ * not just `\n`: vertical tab and form feed are C0 controls, and U+0085/U+2028/
+ * U+2029 are not controls at all, yet each starts a new line for some renderer
+ * or tokenizer. Miss one and `text<break>### notes` forges a section while
+ * reading as mid-line to this function.
  */
 export const escapeBodyStructure = (body: string): string =>
   body
-    .split(/(\r\n|\r|\n|\u0085|\u2028|\u2029)/)
+    .split(/(\r\n|\r|\n|\u000b|\u000c|\u0085|\u2028|\u2029)/)
     .map((part) => part.replace(/^(\s*)(#+)/, "$1\\$2"))
     .join("");
 

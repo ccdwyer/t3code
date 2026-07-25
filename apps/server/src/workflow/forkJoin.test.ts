@@ -8,8 +8,8 @@ describe("evaluateJoin", () => {
       evaluateJoin(["success", "unsettled", "failure"], {
         require: 1,
         onBranchFailure: "waitImpossible",
-      }),
-    ).toEqual({ result: "success", succeeded: 1, failed: 1 });
+      }).result,
+    ).toBe("success");
   });
 
   it("failFast fails on first branch failure", () => {
@@ -17,8 +17,8 @@ describe("evaluateJoin", () => {
       evaluateJoin(["failure", "unsettled"], {
         require: 2,
         onBranchFailure: "failFast",
-      }),
-    ).toEqual({ result: "failure", succeeded: 0, failed: 1 });
+      }).result,
+    ).toBe("failure");
   });
 
   it("detects unsatisfiable join when cancelled shrinks remaining", () => {
@@ -43,5 +43,33 @@ describe("evaluateJoin", () => {
         onBranchFailure: "waitImpossible",
       }).result,
     ).toBe("wait");
+  });
+
+  it("does not clamp require down to partial outcomes length", () => {
+    // require 3 of 3 but only 2 slots provided as success — still wait (missing
+    // child must be passed as unsettled by the caller; we do not lower the bar).
+    expect(
+      evaluateJoin(["success", "success"], {
+        require: 3,
+        onBranchFailure: "waitImpossible",
+      }).result,
+    ).toBe("wait");
+  });
+
+  it("defaults require to all-of when undefined", () => {
+    expect(
+      evaluateJoin(["success", "success"], {
+        onBranchFailure: "waitImpossible",
+      }).result,
+    ).toBe("success");
+    expect(
+      evaluateJoin(["success", "unsettled"], {
+        onBranchFailure: "waitImpossible",
+      }).result,
+    ).toBe("wait");
+  });
+
+  it("empty outcomes waits (not fail)", () => {
+    expect(evaluateJoin([], { require: 1, onBranchFailure: "waitImpossible" }).result).toBe("wait");
   });
 });

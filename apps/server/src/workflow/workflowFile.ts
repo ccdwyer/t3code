@@ -44,7 +44,8 @@ export type LintCode =
   | "invalid_continue_session"
   | "invalid_handoff_reference"
   | "invalid_sla"
-  | "invalid_output_contract";
+  | "invalid_output_contract"
+  | "invalid_fork";
 
 export interface LintError {
   readonly code: LintCode;
@@ -398,6 +399,113 @@ export const lintWorkflowDefinition = (
               stepKey,
               message: `Step "${stepKey}" panel+outputContract must declare exactly one required enum field "verdict"`,
             });
+          }
+        }
+      }
+
+      if (step.type === "fork") {
+        const pipeline = lane.pipeline ?? [];
+        const isLast = pipeline[pipeline.length - 1]?.key === step.key;
+        if (!isLast) {
+          errors.push({
+            code: "invalid_fork",
+            laneKey,
+            stepKey,
+            message: `Fork step "${stepKey}" must be the last step in its lane pipeline`,
+          });
+        }
+        if (step.on?.blocked !== undefined) {
+          errors.push({
+            code: "invalid_fork",
+            laneKey,
+            stepKey,
+            message: `Fork step "${stepKey}" cannot define on.blocked routing`,
+          });
+        }
+        if (step.on?.success === undefined) {
+          errors.push({
+            code: "invalid_fork",
+            laneKey,
+            stepKey,
+            message: `Fork step "${stepKey}" requires on.success routing`,
+          });
+        }
+        const childKeys = new Set<string>();
+        const childKeyList = step.children.map((c) => c.key as string);
+        if (step.children.length > 8) {
+          errors.push({
+            code: "invalid_fork",
+            laneKey,
+            stepKey,
+            message: `Fork step "${stepKey}" may have at most 8 children`,
+          });
+        }
+        const require = step.join?.require;
+        if (require !== undefined) {
+          if (require < 1 || require > step.children.length) {
+            errors.push({
+              code: "invalid_fork",
+              laneKey,
+              stepKey,
+              message: `Fork step "${stepKey}" join.require must be between 1 and children.length (${step.children.length})`,
+            });
+          }
+        }
+        for (let i = 0; i < step.children.length; i++) {
+          const child = step.children[i]!;
+          const ck = child.key as string;
+          if (childKeys.has(ck)) {
+            errors.push({
+              code: "invalid_fork",
+              laneKey,
+              stepKey,
+              message: `Fork step "${stepKey}" has duplicate child key "${ck}"`,
+            });
+          }
+          childKeys.add(ck);
+          if (!allKeys.has(child.lane as string)) {
+            errors.push({
+              code: "invalid_fork",
+              laneKey,
+              stepKey,
+              message: `Fork step "${stepKey}" child "${ck}" targets missing lane "${child.lane}"`,
+            });
+          } else if ((child.lane as string) === laneKey) {
+            errors.push({
+              code: "invalid_fork",
+              laneKey,
+              stepKey,
+              message: `Fork step "${stepKey}" child "${ck}" cannot target the fork's own lane`,
+            });
+          } else {
+            const childLane = def.lanes.find((l) => (l.key as string) === (child.lane as string));
+            if (childLane?.terminal === true) {
+              errors.push({
+                code: "invalid_fork",
+                laneKey,
+                stepKey,
+                message: `Fork step "${stepKey}" child "${ck}" cannot target terminal lane "${child.lane}"`,
+              });
+            }
+          }
+          for (const dep of child.dependsOn ?? []) {
+            const depKey = dep as string;
+            const depIndex = childKeyList.indexOf(depKey);
+            if (depIndex < 0) {
+              errors.push({
+                code: "invalid_fork",
+                laneKey,
+                stepKey,
+                message: `Fork step "${stepKey}" child "${ck}" dependsOn unknown key "${depKey}"`,
+              });
+            } else if (depIndex >= i) {
+              errors.push({
+                code: "invalid_fork",
+                laneKey,
+                stepKey,
+                message: `Fork step "${stepKey}" child "${ck}" dependsOn must reference earlier children only`,
+              });
+            }
           }
         }
       }

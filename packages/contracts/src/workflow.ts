@@ -167,6 +167,7 @@ export const WorkflowStepType = Schema.Union([
   Schema.Literal("script"),
   Schema.Literal("merge"),
   Schema.Literal("pullRequest"),
+  Schema.Literal("fork"),
 ]);
 export type WorkflowStepType = typeof WorkflowStepType.Type;
 
@@ -513,6 +514,7 @@ export const WorkflowLintCode = Schema.Union([
   Schema.Literal("invalid_handoff_reference"),
   Schema.Literal("invalid_sla"),
   Schema.Literal("invalid_output_contract"),
+  Schema.Literal("invalid_fork"),
 ]);
 export type WorkflowLintCode = typeof WorkflowLintCode.Type;
 
@@ -589,6 +591,7 @@ export const TicketStatus = Schema.Union([
   Schema.Literal("done"),
   Schema.Literal("failed"),
   Schema.Literal("parked"),
+  Schema.Literal("forked"),
 ]);
 export type TicketStatus = typeof TicketStatus.Type;
 
@@ -607,6 +610,7 @@ export const StepRunStatus = Schema.Union([
   Schema.Literal("dispatch_requested"),
   Schema.Literal("running"),
   Schema.Literal("awaiting_user"),
+  Schema.Literal("awaiting_children"),
   Schema.Literal("completed"),
   Schema.Literal("failed"),
   Schema.Literal("blocked"),
@@ -713,6 +717,57 @@ export const WorkflowEvent = Schema.Union([
       // Soft cap on provider tokens this ticket may consume; agent steps
       // block (not fail) once the roll-up reaches it.
       tokenBudget: Schema.optional(NonNegativeInt),
+      // Present on fork-spawned children (SPEC fork-join).
+      forkOrigin: Schema.optional(
+        Schema.Struct({
+          parentTicketId: TicketId,
+          stepRunId: StepRunId,
+          childKey: ForkChildKey,
+          forkDepth: NonNegativeInt,
+          rootTicketId: TicketId,
+        }),
+      ),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketForkSpawned"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      stepRunId: StepRunId,
+      stepKey: StepKey,
+      joinRequire: Schema.Int,
+      onBranchFailure: Schema.Literals(["failFast", "waitImpossible"]),
+      children: Schema.NonEmptyArray(
+        Schema.Struct({
+          childKey: ForkChildKey,
+          ticketId: TicketId,
+          lane: LaneKey,
+          title: Schema.String,
+        }),
+      ),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketForkChildSettled"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      childTicketId: TicketId,
+      childKey: ForkChildKey,
+      outcome: Schema.Literals(["success", "failure", "cancelled"]),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketForkResolved"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      result: Schema.Literals(["success", "failure", "cancelled"]),
+      succeeded: NonNegativeInt,
+      failed: NonNegativeInt,
+      cancelled: NonNegativeInt,
+      detached: Schema.Array(ForkChildKey),
     }),
   }),
   Schema.Struct({

@@ -182,6 +182,11 @@ const statusMetaByStatus: Record<string, TicketStatusMeta | undefined> = {
     textClassName: "text-success-foreground",
     live: true,
   },
+  forked: {
+    label: "forked",
+    tone: "muted",
+    textClassName: "text-muted-foreground",
+  },
   waiting_on_user: {
     label: "waiting on you",
     tone: "warning",

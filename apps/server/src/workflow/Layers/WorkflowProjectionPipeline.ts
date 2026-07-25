@@ -123,6 +123,12 @@ const make = Effect.gen(function* () {
             event.payload.laneKey,
             event.occurredAt,
           );
+          const forkOriginJson =
+            event.payload.forkOrigin === undefined
+              ? null
+              : JSON.stringify(event.payload.forkOrigin);
+          const forkRoot =
+            event.payload.forkOrigin === undefined ? null : event.payload.forkOrigin.rootTicketId;
           yield* sql`
             INSERT INTO projection_ticket (
               ticket_id,
@@ -133,6 +139,8 @@ const make = Effect.gen(function* () {
               status,
               terminal_at,
               token_budget,
+              fork_origin,
+              fork_root_ticket_id,
               created_at,
               updated_at
             )
@@ -145,10 +153,40 @@ const make = Effect.gen(function* () {
               'idle',
               ${terminalAt},
               ${event.payload.tokenBudget ?? null},
+              ${forkOriginJson},
+              ${forkRoot},
               ${event.occurredAt},
               ${event.occurredAt}
             )
             ON CONFLICT(ticket_id) DO NOTHING
+          `;
+          break;
+        }
+        case "TicketForkSpawned": {
+          yield* sql`
+            UPDATE projection_ticket
+            SET status = 'forked',
+                updated_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+          `;
+          yield* sql`
+            UPDATE projection_step_run
+            SET status = 'awaiting_children'
+            WHERE step_run_id = ${event.payload.stepRunId}
+          `;
+          break;
+        }
+        case "TicketForkChildSettled": {
+          // Settlement rows are written by ForkJoinCoordinator; event is audit.
+          break;
+        }
+        case "TicketForkResolved": {
+          yield* sql`
+            UPDATE projection_ticket
+            SET status = 'running',
+                updated_at = ${event.occurredAt}
+            WHERE ticket_id = ${event.ticketId}
+              AND status = 'forked'
           `;
           break;
         }
@@ -181,7 +219,7 @@ const make = Effect.gen(function* () {
                 provider_response_kind = NULL,
                 finished_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId}
-              AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user')
+              AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user', 'awaiting_children')
           `;
           yield* sql`
             UPDATE projection_pipeline_run
@@ -293,7 +331,7 @@ const make = Effect.gen(function* () {
                 provider_response_kind = NULL,
                 finished_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId}
-              AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user')
+              AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user', 'awaiting_children')
           `;
           yield* sql`
             UPDATE projection_pipeline_run
@@ -413,7 +451,7 @@ const make = Effect.gen(function* () {
                   provider_response_kind = NULL,
                   finished_at = ${event.occurredAt}
               WHERE pipeline_run_id = ${event.payload.pipelineRunId}
-                AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user')
+                AND status IN ('pending', 'dispatch_requested', 'running', 'awaiting_user', 'awaiting_children')
             `;
           }
           break;

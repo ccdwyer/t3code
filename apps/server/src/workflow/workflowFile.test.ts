@@ -2131,4 +2131,108 @@ describe("lintWorkflowDefinition handoff references", () => {
       [],
     );
   });
+
+  it("rejects fork steps that are not last or have bad join/children", () => {
+    const errors = lintWorkflowDefinition(
+      base([
+        {
+          key: "a",
+          name: "A",
+          entry: "auto",
+          pipeline: [
+            {
+              key: "fanout",
+              type: "fork",
+              children: [
+                {
+                  key: "c1",
+                  lane: "impl",
+                  titleTemplate: "Child {{child.key}}",
+                },
+              ],
+              on: { success: "done" },
+            },
+            {
+              key: "after",
+              type: "agent",
+              agent: { instance: "claude_main", model: "sonnet" },
+              instruction: "nope",
+            },
+          ],
+          on: { success: "done" },
+        },
+        {
+          key: "impl",
+          name: "Impl",
+          entry: "manual",
+          pipeline: [
+            {
+              key: "do",
+              type: "agent",
+              agent: { instance: "claude_main", model: "sonnet" },
+              instruction: "work",
+            },
+          ],
+          on: { success: "done" },
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ]),
+      ctx,
+    );
+    assert.isTrue(errors.some((e) => e.code === "invalid_fork" && e.message.includes("last step")));
+  });
+
+  it("accepts a valid last-step fork with on.success", () => {
+    const errors = lintWorkflowDefinition(
+      base([
+        {
+          key: "a",
+          name: "A",
+          entry: "auto",
+          pipeline: [
+            {
+              key: "fanout",
+              type: "fork",
+              children: [
+                {
+                  key: "c1",
+                  lane: "impl",
+                  titleTemplate: "Child {{child.key}}",
+                },
+                {
+                  key: "c2",
+                  lane: "impl",
+                  titleTemplate: "Other",
+                  dependsOn: ["c1"],
+                },
+              ],
+              join: { require: 1, onBranchFailure: "failFast" },
+              on: { success: "done", failure: "done" },
+            },
+          ],
+          on: { success: "done" },
+        },
+        {
+          key: "impl",
+          name: "Impl",
+          entry: "manual",
+          pipeline: [
+            {
+              key: "do",
+              type: "agent",
+              agent: { instance: "claude_main", model: "sonnet" },
+              instruction: "work",
+            },
+          ],
+          on: { success: "done" },
+        },
+        { key: "done", name: "Done", entry: "manual", terminal: true },
+      ]),
+      ctx,
+    );
+    assert.deepEqual(
+      errors.filter((e) => e.code === "invalid_fork"),
+      [],
+    );
+  });
 });

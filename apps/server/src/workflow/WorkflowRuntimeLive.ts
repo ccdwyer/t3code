@@ -65,6 +65,7 @@ import { WorkflowOutboundConnectionStoreLive } from "./Layers/WorkflowOutboundCo
 import { makeWorkflowOutboundDispatcherLive } from "./Layers/WorkflowOutboundDispatcher.ts";
 import { WorktreeLeaseServiceLive } from "./Layers/WorktreeLeaseService.ts";
 import { WorktreeCoordinatorLive } from "./Layers/WorktreeCoordinator.ts";
+import { ForkJoinCoordinatorLive } from "./Layers/ForkJoinCoordinator.ts";
 import { WorkflowFoundationLive } from "./WorkflowFoundationLive.ts";
 
 // PR steps run through the GitHub port. GitHubPortLive leaks GitHubCli +
@@ -97,6 +98,7 @@ const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   Layer.provideMerge(SetupRunServiceLive),
   Layer.provideMerge(WorktreeLeaseServiceLive),
   Layer.provideMerge(WorktreeCoordinatorLive),
+  Layer.provideMerge(ForkJoinCoordinatorLive),
   Layer.provideMerge(DurableApprovalResumeLive),
   Layer.provideMerge(WorkflowBoardEventsLive),
   Layer.provideMerge(WorkflowEventCommitterLive),

@@ -70,9 +70,10 @@ import { resolveParkActions } from "../parkActions.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
 import { isParallelismHoldReason } from "../worktreeOverlap.ts";
+import { ForkJoinCoordinator } from "../Services/ForkJoinCoordinator.ts";
 
 type PipelineResult = "success" | "failure" | "blocked";
-type StepResult = "completed" | "failed" | "blocked";
+type StepResult = "completed" | "failed" | "blocked" | "awaiting_children";
 type RouteSource = "step_on" | "lane_transition" | "lane_on";
 type MoveReason = "manual" | "routed" | "initial" | "external" | "sla";
 type EscalateTicketSlaResult = "escalated" | "queued" | "notified" | "stale";
@@ -255,6 +256,10 @@ const pipelineResultForStep = (result: StepResult): PipelineResult => {
   if (result === "completed") {
     return "success";
   }
+  if (result === "awaiting_children") {
+    // Should not be mapped into route decisions — completePipelineFrom returns early.
+    return "blocked";
+  }
   return result === "blocked" ? "blocked" : "failure";
 };
 
@@ -372,6 +377,7 @@ const make = Effect.gen(function* () {
   const read = yield* WorkflowReadModel;
   const registry = yield* BoardRegistry;
   const routingContextBuilder = yield* WorkflowRoutingContextBuilder;
+  const forkJoinOption = yield* Effect.serviceOption(ForkJoinCoordinator);
   const sql = yield* SqlClient.SqlClient;
   const boardSemaphores = yield* SynchronizedRef.make<
     Map<string, { readonly semaphore: Semaphore.Semaphore; readonly permits: number }>
@@ -1016,6 +1022,130 @@ const make = Effect.gen(function* () {
         return { result: "completed", noRetry: false };
       }
 
+      // Fork-join: spawn child tickets, suspend parent (SPEC §2.4).
+      if (step.type === "fork") {
+        if (Option.isNone(forkJoinOption)) {
+          yield* commit({
+            type: "StepFailed",
+            ticketId,
+            payload: stepFailedPayload(
+              stepRunId,
+              "fork join coordinator unavailable",
+              undefined,
+              false,
+              undefined,
+              "infra",
+            ),
+          });
+          return { result: "failed", noRetry: true, detail: "fork join coordinator unavailable" };
+        }
+        const forkCoord = forkJoinOption.value;
+        const parentDetail = yield* read.getTicketDetail(ticketId);
+        const parentTitle = parentDetail?.ticket.title ?? "ticket";
+        const parentDescription = parentDetail?.ticket.description ?? "";
+        const joinRequire = step.join?.require ?? step.children.length;
+        const onBranchFailure = step.join?.onBranchFailure ?? "waitImpossible";
+        const spawned: Array<{
+          childKey: string;
+          ticketId: TicketId;
+          lane: string;
+          title: string;
+        }> = [];
+
+        for (const child of step.children) {
+          const childTicketId = yield* ids.ticketId();
+          const title = child.titleTemplate
+            .replaceAll("{{ticket.title}}", parentTitle)
+            .replaceAll("{{ticket.id}}", ticketId as string)
+            .replaceAll("{{child.key}}", child.key as string)
+            .slice(0, 200);
+          const description = (child.descriptionTemplate ?? "")
+            .replaceAll("{{ticket.title}}", parentTitle)
+            .replaceAll("{{ticket.description}}", parentDescription)
+            .replaceAll("{{ticket.id}}", ticketId as string)
+            .replaceAll("{{child.key}}", child.key as string)
+            .slice(0, 4000);
+          const tokenBudget = normalizeTokenBudget(child.tokenBudget);
+          yield* commit({
+            type: "TicketCreated",
+            ticketId: childTicketId,
+            payload: {
+              boardId,
+              title: title as never,
+              laneKey: child.lane,
+              ...(description.length > 0 ? { description } : {}),
+              ...(tokenBudget === undefined || tokenBudget === null ? {} : { tokenBudget }),
+              forkOrigin: {
+                parentTicketId: ticketId,
+                stepRunId,
+                childKey: child.key,
+                forkDepth: 1,
+                rootTicketId: ticketId,
+              },
+            },
+          } as UnstampedWorkflowEventInput);
+          if (child.dependsOn !== undefined && child.dependsOn.length > 0) {
+            const depTicketIds = child.dependsOn
+              .map((key) => spawned.find((s) => s.childKey === (key as string))?.ticketId)
+              .filter((id): id is TicketId => id !== undefined);
+            if (depTicketIds.length > 0) {
+              yield* commit({
+                type: "TicketDependenciesSet",
+                ticketId: childTicketId,
+                payload: { dependsOn: depTicketIds },
+              });
+            }
+          }
+          yield* moveToLane(childTicketId, boardId, child.lane, "initial");
+          spawned.push({
+            childKey: child.key as string,
+            ticketId: childTicketId,
+            lane: child.lane as string,
+            title,
+          });
+        }
+
+        yield* commit({
+          type: "TicketForkSpawned",
+          ticketId,
+          payload: {
+            pipelineRunId,
+            stepRunId,
+            stepKey: step.key,
+            joinRequire,
+            onBranchFailure,
+            children: spawned.map((s) => ({
+              childKey: s.childKey as never,
+              ticketId: s.ticketId,
+              lane: s.lane as never,
+              title: s.title,
+            })) as never,
+          },
+        } as UnstampedWorkflowEventInput);
+
+        yield* forkCoord.recordSpawn({
+          stepRunId,
+          parentTicketId: ticketId,
+          boardId,
+          stepKey: step.key as string,
+          joinRequire,
+          onBranchFailure,
+          spawnSeq: Date.now(),
+          children: spawned.map((s) => ({
+            childKey: s.childKey,
+            ticketId: s.ticketId,
+            laneKey: s.lane,
+            title: s.title,
+          })),
+        });
+
+        return {
+          result: "awaiting_children" as const,
+          noRetry: true,
+          detail: `fork awaiting ${spawned.length} children (require ${joinRequire})`,
+        };
+      }
+
       const outcome = yield* (
         executor.execute({
           ticketId,
@@ -1309,6 +1439,10 @@ const make = Effect.gen(function* () {
               laneStepKeys,
               attempt,
             );
+          }
+          if (stepOutcome.result === "awaiting_children") {
+            // SPEC §2.4: parent suspends; fiber exits without PipelineCompleted.
+            return;
           }
           result = pipelineResultForStep(stepOutcome.result);
           if (result !== "success") {

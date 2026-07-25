@@ -264,7 +264,7 @@ const GOLDEN_PROJECTION_THREADS_COLUMNS =
 // projection_ticket is owned by 035 but excluded from the workflow_% GOLDEN
 // dump filter (historical). Column-order gate mirrors GOLDEN_PROJECTION_THREADS.
 const GOLDEN_PROJECTION_TICKET_COLUMNS =
-  "ticket_id,board_id,title,description,current_lane_key,status,worktree_ref,baseline_ref,external_ref,priority,created_at,updated_at,current_lane_entry_token,current_lane_entered_at,queued_at,terminal_at,token_budget,attention_kind,attention_reason,parked_substate,parked_label,parked_reason,parked_at,parked_event_id,park_origin,current_step_label,sla_breached_entry_token,sla_breached_at,sla_breached_reason";
+  "ticket_id,board_id,title,description,current_lane_key,status,worktree_ref,baseline_ref,external_ref,priority,created_at,updated_at,current_lane_entry_token,current_lane_entered_at,queued_at,terminal_at,token_budget,attention_kind,attention_reason,parked_substate,parked_label,parked_reason,parked_at,parked_event_id,park_origin,current_step_label,sla_breached_entry_token,sla_breached_at,sla_breached_reason,fork_origin,fork_root_ticket_id,human_touched_at";
 
 layer("035_WorkflowSchema", (it) => {
   it.effect("migration entry exists at id 34", () =>
@@ -279,6 +279,9 @@ layer("035_WorkflowSchema", (it) => {
 
       yield* runMigrations({ toMigrationInclusive: 35 });
 
+      // SqlitePersistenceMemory already applies all migrations via MigrationsLive;
+      // toMigrationInclusive cannot roll back later ids. Exclude post-034 tables
+      // that match the workflow_% filter (e.g. workflow_fork_lineage from 037).
       const rows = yield* sql<MasterRow>`
         SELECT type, name, tbl_name, sql
         FROM sqlite_master
@@ -288,16 +291,33 @@ layer("035_WorkflowSchema", (it) => {
         )
           AND tbl_name != 'workflow_notification_outbox'
           AND tbl_name != 'workflow_agent_session'
+          AND tbl_name NOT LIKE 'workflow_fork%'
           AND sql IS NOT NULL
         ORDER BY tbl_name ASC, type DESC, name ASC
       `;
 
-      const actual = rows.map((row) => ({
-        type: row.type,
-        name: row.name,
-        tbl_name: row.tbl_name,
-        sql: normalize(row.sql),
-      }));
+      // Strip post-034 ALTER columns/indexes that land on projection_ticket when
+      // full MigrationsLive has already advanced past 034 (fork-join 037).
+      const stripPost034 = (sqlText: string) =>
+        normalize(sqlText)
+          .replace(
+            / , fork_origin TEXT NULL, fork_root_ticket_id TEXT NULL, human_touched_at TEXT NULL/,
+            " ",
+          )
+          .replace(
+            /, fork_origin TEXT NULL, fork_root_ticket_id TEXT NULL, human_touched_at TEXT NULL/,
+            "",
+          )
+          .replace(/TEXT\)/, "TEXT )");
+
+      const actual = rows
+        .filter((row) => row.name !== "idx_ticket_fork_root")
+        .map((row) => ({
+          type: row.type,
+          name: row.name,
+          tbl_name: row.tbl_name,
+          sql: stripPost034(row.sql),
+        }));
 
       assert.deepEqual(actual, GOLDEN as Array<MasterRow>);
     }),
@@ -639,12 +659,12 @@ layer("035_WorkflowSchema", (it) => {
     }),
   );
 
-  it.effect("36 is the highest migration entry", () =>
+  it.effect("37 is the highest migration entry", () =>
     Effect.gen(function* () {
       const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 36);
+      assert.strictEqual(highest, 37);
       const top = migrationEntries.find(([id]) => id === highest);
-      assert.strictEqual(top?.[1], "WorktreeParallelism");
+      assert.strictEqual(top?.[1], "ForkJoin");
     }),
   );
 

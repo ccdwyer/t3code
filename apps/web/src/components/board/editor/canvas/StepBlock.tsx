@@ -23,6 +23,7 @@ const stepTypeClasses = {
   approval: "border-success/45 bg-success/8 text-success-foreground",
   merge: "border-primary/45 bg-primary/8 text-foreground",
   pullRequest: "border-foreground/45 bg-foreground/8 text-foreground",
+  fork: "border-accent/45 bg-accent/8 text-foreground",
 } satisfies Record<WorkflowStepEncoded["type"], string>;
 
 export function StepBlock({
@@ -158,6 +159,11 @@ function summarizeStep(step: WorkflowStepEncoded): string {
   }
   if (step.type === "pullRequest") {
     return step.action === "land" ? "Land pull request" : "Open pull request";
+  }
+  if (step.type === "fork") {
+    const count = step.children.length;
+    const require = step.join?.require ?? count;
+    return `Fork ${String(count)} branch${count === 1 ? "" : "es"} (needs ${String(require)})`;
   }
   return step.prompt ?? "Approval required";
 }

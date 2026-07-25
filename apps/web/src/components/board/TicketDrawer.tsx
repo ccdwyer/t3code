@@ -146,6 +146,12 @@ export interface TicketDrawerDetail {
     readonly finishedAt?: string | undefined;
     readonly usage?: { readonly totalTokens?: number | undefined } | undefined;
     readonly providerThreadId?: string | undefined;
+    // Server-derived steer eligibility; `steerBlockedReason` shows the composer
+    // disabled with a reason rather than hiding it.
+    readonly canSteer?: boolean | undefined;
+    readonly steerBlockedReason?: "awaiting_user" | "delivering" | undefined;
+    readonly steerCount?: number | undefined;
+    readonly lastSteeredAt?: string | undefined;
     readonly output?: unknown;
   }>;
   readonly routeHistory?: ReadonlyArray<RouteDecisionView> | undefined;
@@ -158,6 +164,7 @@ export interface TicketDrawerDetail {
     readonly attachments: ReadonlyArray<TicketDrawerAttachment>;
     readonly createdAt: string;
     readonly editedAt?: string | undefined;
+    readonly kind?: "steering" | undefined;
   }>;
   readonly syncedSource?:
     | {

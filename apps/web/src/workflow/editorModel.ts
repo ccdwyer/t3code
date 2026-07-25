@@ -537,6 +537,7 @@ const defaultAgent = (definition: MutableWorkflowDefinition): MutableAgentSelect
 const newStep = (
   definition: MutableWorkflowDefinition,
   type: WorkflowStepType,
+  laneKey?: string,
 ): MutableWorkflowStep => {
   const key = uniqueKey(allStepKeys(definition), type);
   if (type === "agent") {
@@ -553,6 +554,25 @@ const newStep = (
   if (type === "pullRequest") {
     return { key: StepKey.make(key), type, action: "open" };
   }
+  if (type === "fork") {
+    // A fork REQUIRES at least one child, so seed one rather than emitting an
+    // invalid step. The child lane defaults to the first lane that is neither the
+    // fork's own lane nor terminal (lint rejects both); the author retargets it.
+    const candidate =
+      definition.lanes?.find((lane) => lane.key !== laneKey && lane.terminal !== true) ??
+      definition.lanes?.find((lane) => lane.key !== laneKey);
+    return {
+      key: StepKey.make(key),
+      type,
+      children: [
+        {
+          key: "branch-1" as never,
+          lane: (candidate?.key ?? laneKey ?? "") as never,
+          titleTemplate: "{{ticket.title}} — branch 1",
+        },
+      ],
+    } as MutableWorkflowStep;
+  }
   return { key: StepKey.make(key), type };
 };
 
@@ -562,7 +582,7 @@ export const addStep = (
   type: WorkflowStepType,
 ): WorkflowEditorModel =>
   updateLane(model, laneKey, (lane, definition) => {
-    lane.pipeline = [...(lane.pipeline ?? []), newStep(definition, type)];
+    lane.pipeline = [...(lane.pipeline ?? []), newStep(definition, type, laneKey)];
   });
 
 export const removeStep = (

@@ -277,6 +277,21 @@ describe("contextPack", () => {
       assert.include(body, "\\### notes");
     });
 
+    it("escapes a code fence, which would otherwise swallow the later sections", () => {
+      const body = escapeBodyStructure("output:\n```\nnot really code");
+      assert.include(body, "\\```");
+      assert.include(escapeBodyStructure("x\n~~~"), "\\~~~");
+    });
+
+    it("escapes a setext underline, which promotes the line above it to a heading", () => {
+      assert.include(escapeBodyStructure("Handoff context\n==="), "\\===");
+      assert.include(escapeBodyStructure("Handoff context\n---"), "\\---");
+    });
+
+    it("leaves a bullet list alone — a dash with text after it underlines nothing", () => {
+      assert.equal(escapeBodyStructure("- first\n- second"), "- first\n- second");
+    });
+
     it("leaves an ordinary body untouched", () => {
       assert.equal(escapeBodyStructure("just some text\nand more"), "just some text\nand more");
     });

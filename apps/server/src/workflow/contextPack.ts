@@ -135,7 +135,15 @@ export const escapeBodyStructure = (body: string): string =>
     // every consumer that strips or ignores one more invisible character than
     // the list anticipates re-opens the hole, and the list is long enough that
     // omissions are not obvious on review.
-    .map((part) => part.replace(/^([\s\p{Cc}\p{Cf}\p{Mn}]*)(#+)/u, "$1\\$2"))
+    .map((part) =>
+      // `#` is not the only way to forge structure. A code fence would swallow
+      // every following section, hiding the real ones from the agent, and a
+      // line of `=` or `-` promotes the PRECEDING line to a setext heading. A
+      // line consisting only of `=`/`-` carries no content, so escaping it
+      // costs nothing; bullet lists are untouched because they have text after
+      // the dash.
+      part.replace(/^([\s\p{Cc}\p{Cf}\p{Mn}]*)(#+|`{3,}|~{3,}|=+$|-+$)/u, "$1\\$2"),
+    )
     .join("");
 
 export const renderContextPack = (input: {

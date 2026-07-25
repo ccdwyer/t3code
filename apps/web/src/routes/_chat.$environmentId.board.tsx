@@ -39,6 +39,7 @@ import {
   answerTicketStep,
   createTicket,
   deleteTicket,
+  editTicketContextPack,
   editTicket,
   editTicketMessage,
   invokeParkAction,
@@ -484,7 +485,10 @@ function WorkflowBoardRouteView() {
       },
       onTicketUpdate: (ticket) => {
         if (ticket.ticketId === selectedTicketIdRef.current) {
-          setTicketDetailReloadKey((key) => key + 1);
+          // Atom invalidation, not a bare reload-key bump: the bump can be
+          // served from the 30s SWR cache, so a viewer who did not make the
+          // change would keep seeing stale detail until the cache expired.
+          reloadTicketDetailRef.current();
         }
         const previous = ticketStatusRef.current.get(ticket.ticketId);
         ticketStatusRef.current.set(ticket.ticketId, ticketNotifyState(ticket));
@@ -612,6 +616,9 @@ function WorkflowBoardRouteView() {
   const closeTicketDrawer = useCallback(() => {
     setSelectedTicketId(null);
   }, []);
+  // Held in a ref so the board subscription effect can call the latest version
+  // without listing it as a dependency and re-subscribing on every render.
+  const reloadTicketDetailRef = useRef<() => void>(() => {});
   const reloadTicketDetail = useCallback(() => {
     requestFreshTicketDetail(selectedTicketIdRef.current, {
       refreshTicketDetail: (ticketId) =>
@@ -621,6 +628,24 @@ function WorkflowBoardRouteView() {
       bumpReloadKey: () => setTicketDetailReloadKey((key) => key + 1),
     });
   }, [registry, environmentId]);
+  reloadTicketDetailRef.current = reloadTicketDetail;
+
+  const handleEditContextPack = useCallback(
+    async (input: {
+      readonly ticketId: string;
+      readonly forLane: string;
+      readonly sections: ReadonlyArray<{ readonly key: string; readonly body: string }>;
+    }) => {
+      if (!routeApi) {
+        throw environmentApiUnavailable();
+      }
+      const result = await editTicketContextPack(routeApi, input as never);
+      reloadTicketDetail();
+      return result.sections;
+    },
+    [routeApi, reloadTicketDetail],
+  );
+
   const handleDeleteTicket = useCallback(async () => {
     const ticketId = selectedTicketIdRef.current;
     if (!ticketId || !routeApi) {
@@ -1019,6 +1044,7 @@ function WorkflowBoardRouteView() {
             onAnswerStep={handleAnswerStep}
             onPostComment={handlePostComment}
             onEditMessage={handleEditMessage}
+            onEditContextPack={handleEditContextPack}
             onApprove={handleApprove}
             onEditTicket={handleEditTicket}
             onDeleteTicket={handleDeleteTicket}

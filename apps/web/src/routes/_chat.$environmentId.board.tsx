@@ -40,6 +40,7 @@ import {
   createTicket,
   deleteTicket,
   editTicketContextPack,
+  getTicketTimeline,
   editTicket,
   editTicketMessage,
   invokeParkAction,
@@ -630,6 +631,16 @@ function WorkflowBoardRouteView() {
   }, [registry, environmentId]);
   reloadTicketDetailRef.current = reloadTicketDetail;
 
+  const handleLoadTimeline = useCallback(
+    async (ticketId: string) => {
+      if (!routeApi) {
+        throw environmentApiUnavailable();
+      }
+      return await getTicketTimeline(routeApi, ticketId as never);
+    },
+    [routeApi],
+  );
+
   const handleEditContextPack = useCallback(
     async (input: {
       readonly ticketId: string;
@@ -1045,6 +1056,7 @@ function WorkflowBoardRouteView() {
             onPostComment={handlePostComment}
             onEditMessage={handleEditMessage}
             onEditContextPack={handleEditContextPack}
+            onLoadTimeline={handleLoadTimeline}
             onApprove={handleApprove}
             onEditTicket={handleEditTicket}
             onDeleteTicket={handleDeleteTicket}

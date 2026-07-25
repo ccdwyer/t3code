@@ -1,3 +1,4 @@
+import { reduceTicketReplay } from "~/workflow/replayModel";
 import {
   ProjectId,
   StepRunId,
@@ -6,6 +7,8 @@ import {
   TicketId,
   type EnvironmentApi,
   type TerminalHistoryAttachStreamEvent,
+  type WorkflowTimelineBase,
+  type WorkflowTimelineItem,
 } from "@t3tools/contracts";
 import {
   CheckIcon,
@@ -224,6 +227,7 @@ export function TicketDrawer({
   onPostComment,
   onEditMessage,
   onEditContextPack,
+  onLoadTimeline,
   onApprove,
   onEditTicket,
   onDeleteTicket,
@@ -245,6 +249,18 @@ export function TicketDrawer({
    * can differ from what was submitted because the server redacts secrets on
    * save — the form renders what came back and says so.
    */
+  /**
+   * Lazily loads this ticket's event history. Absent means the History section
+   * is not offered at all — the drawer never renders an empty shell for a
+   * capability the host did not wire up.
+   */
+  readonly onLoadTimeline?:
+    | ((ticketId: string) => Promise<{
+        readonly events: ReadonlyArray<WorkflowTimelineItem>;
+        readonly truncated: boolean;
+        readonly base?: WorkflowTimelineBase | undefined;
+      }>)
+    | undefined;
   readonly onEditContextPack?:
     | ((input: {
         readonly ticketId: string;
@@ -749,6 +765,10 @@ export function TicketDrawer({
               pack={detail.contextPack}
               onSave={onEditContextPack}
               ticketId={detail.ticket.ticketId}
+            />
+            <TicketHistorySection
+              ticketId={detail.ticket.ticketId}
+              onLoadTimeline={onLoadTimeline}
             />
             <TicketDiscussionSection
               messages={detail.messages}
@@ -1465,6 +1485,142 @@ function TicketContextPackSection({
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * "History" — scrub this ticket's event stream and see the state it was in at
+ * each point.
+ *
+ * Fetches lazily on first expand: a ticket's timeline can be thousands of
+ * events, and most drawer opens never look at it.
+ */
+function TicketHistorySection({
+  ticketId,
+  onLoadTimeline,
+}: {
+  readonly ticketId: string;
+  readonly onLoadTimeline?:
+    | ((ticketId: string) => Promise<{
+        readonly events: ReadonlyArray<WorkflowTimelineItem>;
+        readonly truncated: boolean;
+        readonly base?: WorkflowTimelineBase | undefined;
+      }>)
+    | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<{
+    readonly events: ReadonlyArray<WorkflowTimelineItem>;
+    readonly truncated: boolean;
+    readonly base?: WorkflowTimelineBase | undefined;
+  } | null>(null);
+  const [selected, setSelected] = useState(0);
+
+  if (onLoadTimeline === undefined) {
+    return null;
+  }
+
+  const expand = () => {
+    setOpen(true);
+    if (timeline !== null || loading) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    void onLoadTimeline(ticketId)
+      .then((result) => {
+        setTimeline(result);
+        // Open at the newest event: "what happened last" is the common question.
+        setSelected(Math.max(0, result.events.length - 1));
+      })
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Could not load history.");
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
+
+  const asOf =
+    timeline === null ? null : reduceTicketReplay(timeline.events, timeline.base, selected);
+
+  return (
+    <section
+      className="rounded-md border border-border/70 bg-card/35 p-3"
+      data-testid="ticket-history"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-medium text-foreground">History</h3>
+        <button
+          type="button"
+          className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+          onClick={() => {
+            if (open) {
+              setOpen(false);
+            } else {
+              expand();
+            }
+          }}
+        >
+          {open ? "Hide" : "Show"}
+        </button>
+      </div>
+
+      {open ? (
+        <div className="mt-2 space-y-2">
+          {loading ? <p className="text-xs text-muted-foreground">Loading history…</p> : null}
+          {error !== null ? (
+            <p className="text-xs text-destructive" role="alert">
+              {error}
+            </p>
+          ) : null}
+          {timeline !== null && timeline.events.length === 0 && !loading ? (
+            <p className="text-xs text-muted-foreground">No history for this ticket.</p>
+          ) : null}
+          {timeline?.truncated === true ? (
+            <p className="text-xs text-warning">
+              Showing the most recent events only; earlier history is summarized.
+            </p>
+          ) : null}
+
+          {timeline !== null && timeline.events.length > 0 ? (
+            <>
+              {asOf !== null ? (
+                <div className="rounded bg-muted/40 p-2 text-xs" data-testid="ticket-history-as-of">
+                  <div className="font-medium text-foreground">As of this event</div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    {`lane ${asOf.laneKey} · ${asOf.status} · ${asOf.title}`}
+                  </div>
+                </div>
+              ) : null}
+              <ol className="max-h-64 space-y-0.5 overflow-auto">
+                {timeline.events.map((entry, index) => (
+                  <li key={entry.event.eventId}>
+                    <button
+                      type="button"
+                      aria-current={index === selected}
+                      className={cn(
+                        "w-full rounded px-1.5 py-1 text-left font-mono text-xs",
+                        index === selected
+                          ? "bg-primary/15 text-foreground"
+                          : "text-muted-foreground hover:bg-muted/40",
+                      )}
+                      onClick={() => {
+                        setSelected(index);
+                      }}
+                    >
+                      {`${entry.event.type} · ${entry.event.occurredAt}`}
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

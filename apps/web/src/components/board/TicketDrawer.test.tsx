@@ -1097,4 +1097,27 @@ describe("TicketDiffContent", () => {
     );
     expect(markup).not.toContain("Handoff context");
   });
+
+  it("offers no History section when the host did not wire a timeline loader", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer detail={ticketDetail} onApprove={async () => undefined} onRunLane={() => {}} />,
+    );
+    // An empty shell for an unwired capability is worse than no section.
+    expect(markup).not.toContain("ticket-history");
+  });
+
+  it("renders a collapsed History section when a loader is provided", () => {
+    const markup = renderToStaticMarkup(
+      <TicketDrawer
+        detail={ticketDetail}
+        onApprove={async () => undefined}
+        onRunLane={() => {}}
+        onLoadTimeline={async () => ({ events: [], truncated: false })}
+      />,
+    );
+    expect(markup).toContain("ticket-history");
+    expect(markup).toContain("History");
+    // Collapsed: nothing is fetched until the user asks for it.
+    expect(markup).not.toContain("Loading history");
+  });
 });

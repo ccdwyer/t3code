@@ -1222,7 +1222,12 @@ mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor success", (it) 
           // The instruction itself carries the sentinel the step run id yields,
           // standing in for a {{prev.output}} expansion that contains it — the
           // case the haystack cannot cover, since it resolves later.
-          instruction: "Prior output said: «cp:uncollide» — continue.",
+          // The real sentinel for this step run id: makeContextPackSentinel
+          // strips non-alphanumerics from the seed and keeps the last 8, so
+          // "step-run-collide" -> "stepruncollide" -> "ncollide". Planting the
+          // exact string is what makes this the AMBIGUOUS path rather than an
+          // ordinary single splice.
+          instruction: "Prior output said: «cp:ncollide» — continue.",
         },
       } as StepExecutionContext;
       yield* seedStepStartedFor(ctx, "event-step-started-pack-ambiguous");
@@ -1230,13 +1235,13 @@ mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor success", (it) 
 
       yield* executor.execute(ctx);
       const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
-      // Whatever happens, the pack must not appear twice, and the instruction's
-      // own text must survive.
-      assert.isAtMost(
+      // The pack goes in exactly once, and the pre-existing lookalike is left
+      // alone rather than being rewritten as collateral.
+      assert.equal(
         dispatched.instruction.split("handoff body that must not be spliced twice").length - 1,
         1,
       );
-      assert.include(dispatched.instruction, "Prior output said:");
+      assert.include(dispatched.instruction, "Prior output said: «cp:ncollide» — continue.");
     }),
   );
 

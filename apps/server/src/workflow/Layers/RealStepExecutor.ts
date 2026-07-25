@@ -918,29 +918,32 @@ const make = Effect.gen(function* () {
       // splicing the pack into a place nobody asked for.
       // Handoff expansions ({{prev.output}} and friends) resolve AFTER the
       // sentinel is chosen, so they are not in its haystack — and neither is the
-      // description when the best-effort detail read failed. If the sentinel now
-      // occurs more than once, there is no way to tell ours from a literal
-      // lookalike, so the pack is dropped rather than spliced into text nobody
-      // meant to be a splice point. Losing an optional enrichment is the
-      // conservative failure; corrupting a prior step's output is not.
+      // description, if the best-effort detail read failed. A second occurrence
+      // is therefore possible and is indistinguishable from ours.
+      //
+      // So exactly ONE occurrence is ever rewritten, never all of them: a
+      // replace-all would rewrite a prior step's output as collateral. In append
+      // mode ours is provably the LAST occurrence, because the append happens
+      // after every expansion; in placeholder mode ours sits where the
+      // instruction put it, so the first is the better guess. The worst case is
+      // one pack in a slightly wrong place plus one stray token — not duplicated
+      // packs and not text silently deleted.
       const sentinelOccurrences = preSplice.split(sentinel).length - 1;
-      const ambiguousSentinel = sentinelOccurrences > 1;
-      if (ambiguousSentinel) {
+      if (sentinelOccurrences > 1) {
         yield* Effect.logWarning(
           `workflow step ${step.key} context-pack sentinel occurs ${String(
             sentinelOccurrences,
-          )} times after templating; dropping the pack rather than splicing ambiguously`,
+          )} times after templating; expanded step output appears to contain it, so only one site is filled`,
         );
       }
-      instruction = preSplice
-        .split(sentinel)
-        .join(ambiguousSentinel ? CONTEXT_PACK_EMPTY : packReplacement);
-      if (
-        packBlock !== "" &&
-        !ambiguousSentinel &&
-        preSplice.includes(sentinel) &&
-        instruction.length > providerBudget
-      ) {
+      const replaceOneSentinel = (text: string, replacement: string): string => {
+        const at = appendsPack ? text.lastIndexOf(sentinel) : text.indexOf(sentinel);
+        return at < 0
+          ? text
+          : `${text.slice(0, at)}${replacement}${text.slice(at + sentinel.length)}`;
+      };
+      instruction = replaceOneSentinel(preSplice, packReplacement);
+      if (packBlock !== "" && preSplice.includes(sentinel) && instruction.length > providerBudget) {
         // The pack is the one block that can be dropped without losing anything
         // a human wrote, so it goes first — then fall through to the existing
         // warn-only path if the prompt is still too long.
@@ -949,7 +952,7 @@ const make = Effect.gen(function* () {
             providerBudget,
           )}); dropping the handoff context pack`,
         );
-        instruction = preSplice.split(sentinel).join(CONTEXT_PACK_EMPTY);
+        instruction = replaceOneSentinel(preSplice, CONTEXT_PACK_EMPTY);
       }
       if (instruction.length > providerBudget) {
         if (contract !== undefined) {

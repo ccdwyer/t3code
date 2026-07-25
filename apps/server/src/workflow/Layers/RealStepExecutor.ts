@@ -738,7 +738,7 @@ const make = Effect.gen(function* () {
       // pack body, so a pack can never make the description spill earlier.
       const sentinel = makeContextPackSentinel(
         `${resolvedInstruction}\n${discussion}\n${packBlock}`,
-        () => Math.floor(Math.random() * 0xffffffff).toString(16),
+        ctx.stepRunId as string,
       );
       const placeholderResult = substituteContextPackPlaceholder(resolvedInstruction, sentinel);
       const hasPackPlaceholder = placeholderResult.matched > 0;

@@ -5,7 +5,6 @@ import type {
   WorkflowContextPackSection,
   WorkflowStep,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -37,21 +36,19 @@ const DIFF_SECTION_TIMEOUT_MS = 3_000;
  * from a superseded pipeline would leave the fiber running against a lane the
  * ticket has already left, and deadlock the admission path behind it.
  */
-const guardSection = <A>(
+const guardSection = <A, E>(
   label: string,
-  effect: Effect.Effect<A, unknown, never>,
-): Effect.Effect<A | null, never, never> =>
-  effect.pipe(
-    Effect.catchCause((cause) => {
-      // hasInterrupts, not the "only" variant: a cause combining an in-flight
-      // defect with the interrupt would fail an all-interrupts check, and the
-      // interrupt would be swallowed along with the defect.
-      if (Cause.hasInterrupts(cause)) {
-        return Effect.failCause(cause) as Effect.Effect<never, never, never>;
-      }
-      return Effect.logWarning(`context pack section ${label} failed`, cause).pipe(Effect.as(null));
-    }),
-  ) as Effect.Effect<A | null, never, never>;
+  effect: Effect.Effect<A, E>,
+): Effect.Effect<A | null> => {
+  const degrade = (cause: unknown) =>
+    Effect.logWarning(`context pack section ${label} failed`, cause).pipe(Effect.as(null));
+  // catch (typed failures, including the section timeout) + catchDefect
+  // (defects). Neither touches interrupts, so an interrupt propagates on its
+  // own — which is required: swallowing the interrupt from a superseded
+  // pipeline would leave this fiber working against a lane the ticket has
+  // already left, with the admission path behind it waiting on nothing.
+  return effect.pipe(Effect.catch(degrade), Effect.catchDefect(degrade));
+};
 
 const make = Effect.gen(function* () {
   const read = yield* WorkflowReadModel;
@@ -149,17 +146,20 @@ const make = Effect.gen(function* () {
 
       return applyTotalCap(sections);
     }).pipe(
-      // Any failure or defect at the compile boundary degrades to "no pack".
-      // Routing must never fail because a pack could not be built.
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterrupts(cause)) {
-          return Effect.failCause(cause) as Effect.Effect<never, never, never>;
-        }
-        return Effect.logWarning("context pack compilation failed", cause).pipe(
+      // Any failure or defect at the compile boundary degrades to "no pack":
+      // routing must never fail because a pack could not be built. Split the
+      // same way as guardSection so an interrupt still travels.
+      Effect.catch((error) =>
+        Effect.logWarning("context pack compilation failed", error).pipe(
           Effect.as([] as ReadonlyArray<WorkflowContextPackSection>),
-        );
-      }),
-    ) as Effect.Effect<ReadonlyArray<WorkflowContextPackSection>, never, never>;
+        ),
+      ),
+      Effect.catchDefect((defect) =>
+        Effect.logWarning("context pack compilation failed", defect).pipe(
+          Effect.as([] as ReadonlyArray<WorkflowContextPackSection>),
+        ),
+      ),
+    );
 
   return { compile } satisfies ContextPackCompilerShape;
 });

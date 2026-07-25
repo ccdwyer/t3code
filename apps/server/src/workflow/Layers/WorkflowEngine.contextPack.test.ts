@@ -1,6 +1,7 @@
 // @effect-diagnostics globalTimers:off
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -23,6 +24,8 @@ import { WorkflowEventCommitterLive } from "./WorkflowEventCommitter.ts";
 import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
+
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 const succeedingExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),
@@ -79,7 +82,7 @@ const seedPack = (
       )
       VALUES (
         ${ticketId}, ${forLane}, 'implement', '2026-07-25T00:00:00.000Z', NULL,
-        ${JSON.stringify(sections)}
+        ${encodeUnknownJsonString(sections)}
       )
       ON CONFLICT (ticket_id, for_lane) DO UPDATE SET
         sections_json = excluded.sections_json, edited_at = NULL

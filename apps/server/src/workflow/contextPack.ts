@@ -256,18 +256,22 @@ export const renderDiffSummary = (input: {
  *    appear inside a pack body, a ticket discussion, or a captured output would
  *    mis-splice, so the suffix varies per render and is collision-checked.
  */
-export const makeContextPackSentinel = (haystack: string, randomHex: () => string): string => {
+export const makeContextPackSentinel = (haystack: string, seed: string): string => {
+  // Derived from the step run id, not randomness: it only has to be unique
+  // within THIS render, and a deterministic sentinel keeps the executor free of
+  // ambient randomness (which this codebase routes through Effect anyway) and
+  // makes the splice reproducible in tests.
+  const base = seed.replace(/[^A-Za-z0-9]/g, "").slice(-8);
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const candidate = `«ctxpack:${randomHex().slice(0, 8)}»`;
+    const candidate = `«cp:${base}${attempt === 0 ? "" : String(attempt)}»`;
     if (candidate.length <= CONTEXT_PACK_PLACEHOLDER.length && !haystack.includes(candidate)) {
       return candidate;
     }
   }
-  // Every candidate collided (or was too long) — fall back to a longer unique
-  // form. Correctness beats length neutrality: a mis-splice would inject pack
-  // text into the wrong position, while a few extra characters only nudges the
-  // spill decision.
-  return `«ctxpack:${randomHex()}:${randomHex()}»`;
+  // Every candidate collided or was too long. Correctness beats length
+  // neutrality: a mis-splice would put pack text in the wrong place, while a few
+  // extra characters only nudge the description spill decision.
+  return `«cp:${base}:${String(haystack.length)}»`;
 };
 
 /** Matches the placeholder anywhere, allowing internal whitespace. */

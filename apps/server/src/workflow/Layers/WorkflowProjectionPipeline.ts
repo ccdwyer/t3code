@@ -23,6 +23,8 @@ const toProjectionError = (cause: unknown) =>
   new WorkflowEventStoreError({ message: "projection failed", cause });
 
 const encodeOutputJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+// Sync variant for the pack folds, which build their SQL inline.
+const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 const encodeTicketAttachmentsJson = Schema.encodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(TicketAttachment)),
 );
@@ -330,7 +332,7 @@ const make = Effect.gen(function* () {
               ${event.payload.fromLane},
               ${event.occurredAt},
               NULL,
-              ${JSON.stringify(event.payload.sections)}
+              ${encodeJsonString(event.payload.sections)}
             )
             ON CONFLICT (ticket_id, for_lane) DO UPDATE SET
               from_lane = excluded.from_lane,
@@ -354,7 +356,7 @@ const make = Effect.gen(function* () {
           // projection on an out-of-band stream. from_lane/compiled_at are preserved.
           yield* sql`
             UPDATE projection_context_pack
-            SET sections_json = ${JSON.stringify(event.payload.sections)},
+            SET sections_json = ${encodeJsonString(event.payload.sections)},
                 edited_at = ${event.occurredAt}
             WHERE ticket_id = ${event.ticketId} AND for_lane = ${event.payload.forLane}
           `;

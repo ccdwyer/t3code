@@ -364,6 +364,11 @@ const make = Effect.gen(function* () {
         FROM workflow_dispatch_outbox
         WHERE steer_delivered_message_id IS NOT NULL
           AND steer_delivered_text IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM projection_ticket AS ticket
+            WHERE ticket.ticket_id = workflow_dispatch_outbox.ticket_id
+          )
       `).pipe(
       Effect.map((rows) =>
         rows.map((row) => ({

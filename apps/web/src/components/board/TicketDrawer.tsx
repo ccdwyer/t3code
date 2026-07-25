@@ -1299,8 +1299,12 @@ function TicketContextPackSection({
     return null;
   }
 
+  const shownSections = persisted ?? pack.sections;
+
   const startEditing = () => {
-    setDrafts(Object.fromEntries(pack.sections.map((section) => [section.key, section.body])));
+    // From what is on screen, which after a save is what the server STORED —
+    // seeding from pack.sections would put the pre-save text back in the boxes.
+    setDrafts(Object.fromEntries(shownSections.map((section) => [section.key, section.body])));
     setRedacted(false);
     setEditing(true);
   };
@@ -1340,8 +1344,6 @@ function TicketContextPackSection({
         setSaving(false);
       });
   };
-
-  const shownSections = persisted ?? pack.sections;
 
   return (
     <section

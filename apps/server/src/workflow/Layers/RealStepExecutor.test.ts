@@ -1138,7 +1138,7 @@ mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor success", (it) 
       assert.include(dispatched.instruction, "## Handoff context from lane");
       assert.include(dispatched.instruction, "the previous lane refactored the parser");
       // The sentinel must never survive into the prompt.
-      assert.notInclude(dispatched.instruction, "«ctxpack:");
+      assert.notInclude(dispatched.instruction, "«cp:");
     }),
   );
 
@@ -1204,7 +1204,39 @@ mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor success", (it) 
       yield* executor.execute(ctx);
       const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
       assert.include(dispatched.instruction, "(no handoff context)");
-      assert.notInclude(dispatched.instruction, "«ctxpack:");
+      assert.notInclude(dispatched.instruction, "«cp:");
+    }),
+  );
+
+  it.effect("drops the pack when the sentinel is ambiguous rather than splicing blindly", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const ctx = {
+        ...context,
+        ticketId: "ticket-pack-ambiguous" as never,
+        stepRunId: "step-run-collide" as never,
+        isFirstAgentStep: true,
+        step: {
+          ...context.step,
+          // The instruction itself carries the sentinel the step run id yields,
+          // standing in for a {{prev.output}} expansion that contains it — the
+          // case the haystack cannot cover, since it resolves later.
+          instruction: "Prior output said: «cp:uncollide» — continue.",
+        },
+      } as StepExecutionContext;
+      yield* seedStepStartedFor(ctx, "event-step-started-pack-ambiguous");
+      yield* seedPackFor(ctx, "handoff body that must not be spliced twice");
+
+      yield* executor.execute(ctx);
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      // Whatever happens, the pack must not appear twice, and the instruction's
+      // own text must survive.
+      assert.isAtMost(
+        dispatched.instruction.split("handoff body that must not be spliced twice").length - 1,
+        1,
+      );
+      assert.include(dispatched.instruction, "Prior output said:");
     }),
   );
 

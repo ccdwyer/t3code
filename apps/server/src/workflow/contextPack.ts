@@ -108,41 +108,39 @@ export const sectionsEqual = (
  * the caller splices it over an opaque sentinel after all templating completes.
  */
 /**
- * Neutralize heading syntax inside a section BODY.
+ * Quote a section BODY so it cannot forge pack structure.
  *
  * Bodies are the least trustworthy text in the pack: `prior_outputs` is verbatim
- * agent output and `failed_attempts` is verbatim error text, so either can carry
- * a line like `### notes` and manufacture a section the compiler never wrote —
- * one the destination agent cannot tell from a real one. Escaping only the
- * section key and the lane name would leave that wide open.
+ * agent output and `failed_attempts` is verbatim error text, so either can try to
+ * manufacture a section the compiler never wrote — one the destination agent
+ * cannot tell from a real one.
  *
- * A line-leading run of `#` is prefixed with a backslash, which still reads
- * plainly but can no longer open a heading.
+ * Earlier versions escaped specific constructs (`#` runs, then fences, then
+ * setext underlines) after skipping specific invisible characters. That approach
+ * kept losing, and predictably: every consumer that ignores one more code point,
+ * or honors one more markdown construct, reopens the hole — fullwidth `#`,
+ * Braille blank, `> ### x`, `<h3>`, `***`, a setext underline with a trailing
+ * space. Each fix bought one input.
  *
- * The split must cover EVERY character a consumer might treat as a line break,
- * not just `\n`: vertical tab and form feed are C0 controls, and U+0085/U+2028/
- * U+2029 are not controls at all, yet each starts a new line for some renderer
- * or tokenizer. Miss one and `text<break>### notes` forges a section while
- * reading as mid-line to this function.
+ * So this does not enumerate anything. Every line is prefixed with a marker,
+ * which means NO line of a body ever begins at column zero. Heading syntax,
+ * fences, setext underlines, thematic breaks, blockquote- or list-nested
+ * headings, and block-level HTML all require line-start position, so all of them
+ * are dead at once — including the ones nobody has thought of yet. It also reads
+ * honestly to the agent: this text is quoted material from another lane.
  */
+const BODY_QUOTE = "| ";
+
 export const escapeBodyStructure = (body: string): string =>
   body
+    // Split on every character some consumer treats as a line break, not just
+    // \n: vertical tab and form feed are C0 controls, and U+0085/U+2028/U+2029
+    // are not controls at all, yet each starts a line somewhere. A missed one
+    // would leave text unquoted mid-part.
     .split(/(\r\n|\r|\n|\u000b|\u000c|\u0085|\u2028|\u2029)/)
-    // Unicode CATEGORIES, not a hand-listed set: any leading run of whitespace,
-    // control (Cc), format (Cf — soft hyphen, ZWSP/ZWJ, the bidi overrides,
-    // U+FEFF) or non-spacing mark (Mn — variation selectors, the grapheme
-    // joiner) is skipped before the `#` test. Enumerating these by hand loses:
-    // every consumer that strips or ignores one more invisible character than
-    // the list anticipates re-opens the hole, and the list is long enough that
-    // omissions are not obvious on review.
-    .map((part) =>
-      // `#` is not the only way to forge structure. A code fence would swallow
-      // every following section, hiding the real ones from the agent, and a
-      // line of `=` or `-` promotes the PRECEDING line to a setext heading. A
-      // line consisting only of `=`/`-` carries no content, so escaping it
-      // costs nothing; bullet lists are untouched because they have text after
-      // the dash.
-      part.replace(/^([\s\p{Cc}\p{Cf}\p{Mn}]*)(#+|`{3,}|~{3,}|=+$|-+$)/u, "$1\\$2"),
+    .map((part, index) =>
+      // Odd indices are the captured separators themselves — leave them.
+      index % 2 === 1 || part === "" ? part : `${BODY_QUOTE}${part}`,
     )
     .join("");
 

@@ -916,16 +916,31 @@ const make = Effect.gen(function* () {
       // sentinel is chosen and are not in its haystack, so an extra occurrence
       // is still conceivable. It is not silently corrected — surfacing it beats
       // splicing the pack into a place nobody asked for.
+      // Handoff expansions ({{prev.output}} and friends) resolve AFTER the
+      // sentinel is chosen, so they are not in its haystack — and neither is the
+      // description when the best-effort detail read failed. If the sentinel now
+      // occurs more than once, there is no way to tell ours from a literal
+      // lookalike, so the pack is dropped rather than spliced into text nobody
+      // meant to be a splice point. Losing an optional enrichment is the
+      // conservative failure; corrupting a prior step's output is not.
       const sentinelOccurrences = preSplice.split(sentinel).length - 1;
-      if (sentinelOccurrences > 1) {
+      const ambiguousSentinel = sentinelOccurrences > 1;
+      if (ambiguousSentinel) {
         yield* Effect.logWarning(
           `workflow step ${step.key} context-pack sentinel occurs ${String(
             sentinelOccurrences,
-          )} times after templating; expanded step output appears to contain it`,
+          )} times after templating; dropping the pack rather than splicing ambiguously`,
         );
       }
-      instruction = preSplice.split(sentinel).join(packReplacement);
-      if (packBlock !== "" && preSplice.includes(sentinel) && instruction.length > providerBudget) {
+      instruction = preSplice
+        .split(sentinel)
+        .join(ambiguousSentinel ? CONTEXT_PACK_EMPTY : packReplacement);
+      if (
+        packBlock !== "" &&
+        !ambiguousSentinel &&
+        preSplice.includes(sentinel) &&
+        instruction.length > providerBudget
+      ) {
         // The pack is the one block that can be dropped without losing anything
         // a human wrote, so it goes first — then fall through to the existing
         // warn-only path if the prompt is still too long.

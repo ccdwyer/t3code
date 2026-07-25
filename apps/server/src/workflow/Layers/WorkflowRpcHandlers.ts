@@ -409,6 +409,9 @@ const toDiagnosis = (
               typeof latestStep.checkpointFormJson === "string" &&
               latestStep.checkpointFormJson.length > 0,
           },
+    // Not resolved here: `dependsOn` is the full edge set, and picking its first
+    // entry could point at an already-finished blocker. The action is simply not
+    // offered rather than offered with a wrong target.
     firstUnresolvedDependency: undefined,
     ...(moveAction === undefined
       ? { moveTarget: undefined }
@@ -787,6 +790,9 @@ const ticketDetail = (
             }),
       })),
       ticket: toBoardTicketView(detail.ticket, definition, {
+        // Only this ticket's own row is available here, so lane occupancy is
+        // under-counted and wip_blocked cannot fire on the detail read. The
+        // board snapshot, which sees every row, is where that diagnosis lands.
         admittedCounts: laneAdmittedCounts([detail.ticket]),
         // The detail read has steps, so the blocked rules can see the failure
         // that caused the stall rather than only the ticket's reason.

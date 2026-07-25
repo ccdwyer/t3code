@@ -1676,6 +1676,8 @@ function CheckpointFormFields({
   readonly onSubmit: (
     decision: string | undefined,
     answers: Record<string, string | ReadonlyArray<string>>,
+    /** Only meaningful for a form with no decision field. */
+    approved?: boolean,
   ) => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, string | ReadonlyArray<string>>>({});
@@ -1774,24 +1776,37 @@ function CheckpointFormFields({
               disabled={disabled}
               title={option.hint ?? ""}
               onClick={() => {
-                onSubmit(option.value, answers);
+                onSubmit(option.value, answers, true);
               }}
             >
               {option.label}
             </Button>
           ))
         ) : (
-          // A form with no decision field still needs a way to submit; the
-          // legacy approve/reject outcomes apply.
+          // A form with no decision field still needs BOTH outcomes: a single
+          // Submit would always send success, leaving a reviewer no way to
+          // reject while filling the form in.
           <>
             <Button
               size="xs"
               disabled={disabled}
               onClick={() => {
-                onSubmit(undefined, answers);
+                onSubmit(undefined, answers, true);
               }}
             >
-              Submit
+              <CheckIcon className="size-3.5" />
+              Approve
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => {
+                onSubmit(undefined, answers, false);
+              }}
+            >
+              <XIcon className="size-3.5" />
+              Reject
             </Button>
           </>
         )}
@@ -2277,15 +2292,24 @@ function TicketStepRow({
         </div>
       ) : null}
       {isAwaitingApprovalRequestStep(step) && step.form !== undefined ? (
-        <CheckpointFormFields
-          form={step.form}
-          disabled={approvalSubmittingStepRunId === step.stepRunId}
-          onSubmit={(decision, answers) => {
-            // `approved` is ignored by the server when a decision is present;
-            // the chosen option's outcome decides the routing.
-            void submitApproval(step.stepRunId, true, { decision, answers });
-          }}
-        />
+        <>
+          <CheckpointFormFields
+            form={step.form}
+            disabled={approvalSubmittingStepRunId === step.stepRunId}
+            onSubmit={(decision, answers, approved) => {
+              // The server ignores `approved` when a decision is present; the
+              // chosen option's outcome decides the routing.
+              void submitApproval(step.stepRunId, approved ?? true, { decision, answers });
+            }}
+          />
+          {approvalError?.stepRunId === step.stepRunId ? (
+            // Required-field and unknown-option rejections come back from the
+            // server; without this the button just re-enables silently.
+            <p className="mt-1 text-xs text-destructive" role="alert">
+              {approvalError.message}
+            </p>
+          ) : null}
+        </>
       ) : null}
       {isAwaitingApprovalRequestStep(step) && step.form === undefined ? (
         <div className="mt-2 flex flex-wrap gap-2">

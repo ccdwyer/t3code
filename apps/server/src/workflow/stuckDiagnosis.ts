@@ -167,9 +167,13 @@ export const diagnoseTicket = (input: DiagnoseTicketInput): WorkflowStuckDiagnos
       };
     }
 
+    // attentionKind alone cannot tell an agent question from a native approval:
+    // the projector stamps BOTH as waiting_for_input, because a native approval
+    // emits no response kind. Without a step row to disambiguate, say the
+    // neutral thing rather than offering an Answer box for an approval.
     const isInput =
-      ticket.attentionKind === "waiting_for_input" ||
-      latestStep?.providerResponseKind === "user-input";
+      latestStep?.providerResponseKind === "user-input" ||
+      (ticket.attentionKind === "waiting_for_input" && latestStep !== undefined);
     return {
       kind: "waiting_input",
       summary: isInput ? "Agent question waiting" : "Waiting for a response",

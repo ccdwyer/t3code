@@ -2,6 +2,7 @@ import type {
   BoardStreamItem,
   WorkflowLaneActionView,
   WorkflowParkSubstate,
+  WorkflowStuckDiagnosis,
   WorkflowTicketAttentionKind,
 } from "@t3tools/contracts";
 
@@ -55,6 +56,7 @@ export interface BoardState {
           }
         | undefined;
       readonly attentionKind?: WorkflowTicketAttentionKind | undefined;
+      readonly diagnosis?: WorkflowStuckDiagnosis | undefined;
       readonly currentStepLabel?: string | undefined;
       // SLA breach for the current lane entry — badge/strip input.
       readonly slaBreachedAt?: string | undefined;
@@ -147,6 +149,7 @@ export const applyBoardStreamItem = (state: BoardState, item: BoardStreamItem): 
           : { totalDurationMs: ticket.totalDurationMs }),
         ...(ticket.pr === undefined ? {} : { pr: ticket.pr }),
         ...(ticket.attentionKind === undefined ? {} : { attentionKind: ticket.attentionKind }),
+        ...(ticket.diagnosis === undefined ? {} : { diagnosis: ticket.diagnosis }),
         ...(ticket.currentStepLabel === undefined
           ? {}
           : { currentStepLabel: ticket.currentStepLabel }),
@@ -197,6 +200,7 @@ export const applyBoardStreamItem = (state: BoardState, item: BoardStreamItem): 
       ...(ticket.totalDurationMs === undefined ? {} : { totalDurationMs: ticket.totalDurationMs }),
       ...(ticket.pr === undefined ? {} : { pr: ticket.pr }),
       ...(ticket.attentionKind === undefined ? {} : { attentionKind: ticket.attentionKind }),
+      ...(ticket.diagnosis === undefined ? {} : { diagnosis: ticket.diagnosis }),
       ...(ticket.currentStepLabel === undefined
         ? {}
         : { currentStepLabel: ticket.currentStepLabel }),

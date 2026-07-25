@@ -1665,10 +1665,10 @@ export const WorkflowStepRunView = Schema.Struct({
   stepRunId: StepRunId,
   stepKey: StepKey,
   stepType: WorkflowStepType,
-  // Checkpoint form fields. NOT POPULATED YET: the projection does not persist
-  // formSnapshot and no view assembler sets these, so they are reserved rather
-  // than available. Clients must not treat their absence as "this wait has no
-  // form" — read the StepAwaitingUser event, which is the authority.
+  // Checkpoint form: `form` is the snapshot taken when the wait opened, and the
+  // other two are what the reviewer answered. Populated by the projection cache,
+  // so absence on an open approval wait means the step genuinely has no form.
+  // The StepAwaitingUser event remains the authority if the two ever disagree.
   form: Schema.optional(CheckpointForm),
   formDecision: Schema.optional(Schema.String),
   formAnswers: Schema.optional(CheckpointAnswers),

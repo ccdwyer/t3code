@@ -131,10 +131,13 @@ export const toTimelineEntry = (event: WorkflowEvent): TimelineEntry => {
       };
     case "StepStarted": {
       const attempt = typeof payload["attempt"] === "number" ? payload["attempt"] : undefined;
+      const stepType = str("stepType");
       return {
         ...base,
         category: "step",
-        actor: "agent",
+        // An approval step is a human gate and a script step is the machine;
+        // calling either "agent" misattributes who is about to act.
+        actor: stepType === "approval" ? "user" : stepType === "script" ? "system" : "agent",
         summary: `Step "${str("stepKey") ?? "?"}" started${
           attempt !== undefined && attempt > 1 ? ` (attempt ${String(attempt)})` : ""
         }`,
@@ -182,9 +185,13 @@ export const toTimelineEntry = (event: WorkflowEvent): TimelineEntry => {
         category: "human",
         actor: "user",
         summary:
-          str("decision") === undefined
-            ? "Human responded"
-            : `Human decided "${str("decision") ?? ""}"`,
+          str("decision") !== undefined
+            ? `Human decided "${str("decision") ?? ""}"`
+            : str("outcome") === "success"
+              ? "Human approved"
+              : str("outcome") === undefined
+                ? "Human responded"
+                : `Human rejected (${str("outcome") ?? ""})`,
         ...(str("stepRunId") === undefined ? {} : { stepRunId: str("stepRunId") }),
       };
     case "StepRefsCaptured":

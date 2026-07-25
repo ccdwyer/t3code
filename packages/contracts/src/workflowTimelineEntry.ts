@@ -40,10 +40,14 @@ const clip = (value: string, max = 160): string => {
 /**
  * Map one journal event to a timeline entry.
  *
- * Total by construction: an event this build does not recognize becomes an
- * `unknown` entry rather than disappearing. A ticket's trace that silently omits
- * events is worse than one showing an unfamiliar row, because the omission is
- * invisible — and a client is routinely older than the server that wrote them.
+ * Every case falls through to an `unknown` entry rather than disappearing, so a
+ * mapper this build has not caught up with still renders a row.
+ *
+ * That is NOT protection against a genuinely new server event: `WorkflowEvent`
+ * is a closed union, so an older client rejects the RPC result at decode time
+ * before this function ever runs. Widening the wire schema is the only thing
+ * that would buy forward compatibility; this fallback only covers variants the
+ * union already has and this mapper has not enumerated.
  */
 export const toTimelineEntry = (event: WorkflowEvent): TimelineEntry => {
   const base = {
@@ -238,13 +242,53 @@ export const toTimelineEntry = (event: WorkflowEvent): TimelineEntry => {
       return { ...base, category: "pipeline", actor: "system", summary: "Forked into children" };
     case "TicketForkResolved":
       return { ...base, category: "pipeline", actor: "system", summary: "Fork resolved" };
+    case "ScriptStepStarted":
+      return { ...base, category: "step", actor: "system", summary: "Script started" };
+    case "ScriptStepExited": {
+      const outcome = str("outcome");
+      const exitCode = typeof payload["exitCode"] === "number" ? payload["exitCode"] : undefined;
+      return {
+        ...base,
+        category: "step",
+        actor: "system",
+        // The outcome is the point of this event: "exited" alone hides a timeout
+        // or a non-zero status, which is exactly what a reader is looking for.
+        summary: `Script ${outcome ?? "exited"}${
+          exitCode === undefined ? "" : ` (exit ${String(exitCode)})`
+        }`,
+        ...(str("stepRunId") === undefined ? {} : { stepRunId: str("stepRunId") }),
+      };
+    }
+    case "StepOutputInvalid":
+      return {
+        ...base,
+        category: "step",
+        actor: "agent",
+        summary: "Step output failed its contract",
+        ...(str("stepRunId") === undefined ? {} : { stepRunId: str("stepRunId") }),
+      };
+    case "TicketDependenciesSet":
+      return { ...base, category: "human", actor: "user", summary: "Dependencies changed" };
+    case "TicketForkChildSettled":
+      return { ...base, category: "pipeline", actor: "system", summary: "Fork child settled" };
+    case "TicketContextPackCompiled":
+      return {
+        ...base,
+        category: "pipeline",
+        actor: "system",
+        summary: "Handoff context compiled",
+      };
+    case "TicketContextPackEdited":
+      return { ...base, category: "human", actor: "user", summary: "Handoff context edited" };
     default:
-      // Deliberately not dropped — see the doc comment.
+      // Unreachable for the current union — TypeScript narrows `event` to never
+      // here, which is the compiler proving the mapper is exhaustive. Kept as a
+      // runtime floor for a payload that decodes but is not one of these.
       return {
         ...base,
         category: "unknown",
         actor: "system",
-        summary: event.type as string,
+        summary: (event as { readonly type: string }).type,
       };
   }
 };

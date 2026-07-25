@@ -1545,7 +1545,10 @@ function TicketHistorySection({
 
   const expand = () => {
     setOpen(true);
-    if (timeline !== null || loading) {
+    // Refetch on every expand. Caching the first read made History a permanent
+    // point-in-time snapshot: a step completing while the drawer stayed mounted
+    // never appeared, and hide/show did not help.
+    if (loading) {
       return;
     }
     setLoading(true);
@@ -1636,7 +1639,9 @@ function TicketHistorySection({
                         const mapped = toTimelineEntry(entry.event);
                         return (
                           <>
-                            <span className="text-muted-foreground">{`${mapped.actor} · `}</span>
+                            <span className="text-muted-foreground">
+                              {`${mapped.occurredAt} · ${mapped.actor} · `}
+                            </span>
                             <span className="text-foreground">{mapped.summary}</span>
                             {mapped.detail === undefined ? null : (
                               <span className="block truncate text-2xs text-muted-foreground">

@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { addColumnIfMissing } from "./addColumnIfMissing.ts";
+
 /**
  * Checkpoint form columns on `projection_step_run`.
  *
@@ -14,9 +16,15 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 const Migration0040 = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_form_json TEXT`;
-  yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_decision TEXT`;
-  yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_answers_json TEXT`;
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_form_json TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_decision TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_answers_json TEXT`,
+  );
 });
 
 export default Migration0040;

@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { addColumnIfMissing } from "./addColumnIfMissing.ts";
+
 /**
  * Consolidated workflow schema.
  *
@@ -24,6 +26,19 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * This branch (ft/hyperion) has only ever run on a single instance that will
  * be wiped, so renumbering (and this in-place fold) is safe — there is no
  * deployed DB to preserve.
+ */
+/**
+ * Run an `ALTER TABLE ... ADD COLUMN` that may already have been applied.
+ *
+ * This migration was renumbered (034 -> 035) when an upstream rebase claimed
+ * 034. A database that recorded the OLD id sees 035 as unapplied and re-runs it
+ * against tables that already exist: every `CREATE TABLE IF NOT EXISTS` no-ops,
+ * and then the first bare ADD COLUMN aborts the whole migration with "duplicate
+ * column name", leaving the server unable to start.
+ *
+ * The header below assumed the only such database would be wiped. Swallowing
+ * exactly that error — and nothing else — makes the migration converge instead,
+ * so an existing instance keeps its boards and tickets.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -204,24 +219,42 @@ export default Effect.gen(function* () {
       confirmed_at TEXT
     )
   `;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN options_json TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN project_id TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN thread_title TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN runtime_mode TEXT`;
+  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN options_json TEXT`);
+  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN project_id TEXT`);
+  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN thread_title TEXT`);
+  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN runtime_mode TEXT`);
   // Live-agent-steering: dispatch-time step metadata + steer reservation cells.
   // ALTER (not CREATE rewrite) matches the options_json / runtime_mode pattern
   // so sqlite_master keeps the historical `, col` whitespace shape.
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN capture_output INTEGER`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN panel_size INTEGER`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_message_id TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_text TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_accepted_at TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_count INTEGER NOT NULL DEFAULT 0`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_tombstone_message_id TEXT`;
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN capture_output INTEGER`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN panel_size INTEGER`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_message_id TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_text TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_accepted_at TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_count INTEGER NOT NULL DEFAULT 0`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_tombstone_message_id TEXT`,
+  );
   // Staged delivery: durable handoff for StepSteered when the in-process ack
   // fiber dies (restart / slow receipt). Cleared after StepSteered commits.
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_message_id TEXT`;
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_text TEXT`;
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_message_id TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_text TEXT`,
+  );
 
   // --- Setup run (037) ---
   yield* sql`
@@ -543,10 +576,10 @@ export default Effect.gen(function* () {
 
   // --- projection_threads.hidden (050). The table is created by a <=032
   // migration, so this only appends the column. ---
-  yield* sql`
+  yield* addColumnIfMissing(sql`
     ALTER TABLE projection_threads
     ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0
-  `;
+  `);
 
   // --- Per-agent session memory (was 034) ---
   // Stores the stable workflow `thread_id` minted for each

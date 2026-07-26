@@ -11,9 +11,10 @@ import { migrationEntries, runMigrations } from "../Migrations.ts";
  *
  * `GOLDEN` below was captured from the real, original 23-step migration chain
  * (033 -> 055) — it is the authoritative reference. projection_threads also
- * includes settled_override/settled_at from upstream's 033_ProjectionThreadsSettled,
+ * includes settled_override/settled_at from upstream's 033_ProjectionThreadsSettled
+ * and title_regeneration_* from upstream's 035_ProjectionThreadTitleRegeneration,
  * which now precedes this migration (2026-07-22 rebase renumber 033→034). The consolidated migration
- * 035_WorkflowSchema (formerly 033/034; renumbered again when upstream took slot 34) must reproduce it EXACTLY. The dump filters to
+ * 036_WorkflowSchema (formerly 033/034/035; renumbered again when upstream took slot 35) must reproduce it EXACTLY. The dump filters to
  * `tbl_name LIKE 'workflow_%' OR tbl_name IN ('projection_threads', 'projection_ticket')`
  * (the objects the workflow feature owns or extends) and normalizes whitespace.
  *
@@ -38,7 +39,7 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     type: "table",
     name: "projection_threads",
     tbl_name: "projection_threads",
-    sql: "CREATE TABLE projection_threads ( thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, branch TEXT, worktree_path TEXT, latest_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT , runtime_mode TEXT NOT NULL DEFAULT 'full-access', interaction_mode TEXT NOT NULL DEFAULT 'default', model_selection_json TEXT, archived_at TEXT, latest_user_message_at TEXT, pending_approval_count INTEGER NOT NULL DEFAULT 0, pending_user_input_count INTEGER NOT NULL DEFAULT 0, has_actionable_proposed_plan INTEGER NOT NULL DEFAULT 0, settled_override TEXT, settled_at TEXT, snoozed_until TEXT, snoozed_at TEXT, hidden INTEGER NOT NULL DEFAULT 0)",
+    sql: "CREATE TABLE projection_threads ( thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, branch TEXT, worktree_path TEXT, latest_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT , runtime_mode TEXT NOT NULL DEFAULT 'full-access', interaction_mode TEXT NOT NULL DEFAULT 'default', model_selection_json TEXT, archived_at TEXT, latest_user_message_at TEXT, pending_approval_count INTEGER NOT NULL DEFAULT 0, pending_user_input_count INTEGER NOT NULL DEFAULT 0, has_actionable_proposed_plan INTEGER NOT NULL DEFAULT 0, settled_override TEXT, settled_at TEXT, snoozed_until TEXT, snoozed_at TEXT, title_regeneration_request_id TEXT, title_regeneration_started_at TEXT, hidden INTEGER NOT NULL DEFAULT 0)",
   },
   {
     type: "index",
@@ -259,17 +260,17 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
 ];
 
 const GOLDEN_PROJECTION_THREADS_COLUMNS =
-  "thread_id,project_id,title,branch,worktree_path,latest_turn_id,created_at,updated_at,deleted_at,runtime_mode,interaction_mode,model_selection_json,archived_at,latest_user_message_at,pending_approval_count,pending_user_input_count,has_actionable_proposed_plan,settled_override,settled_at,snoozed_until,snoozed_at,hidden";
+  "thread_id,project_id,title,branch,worktree_path,latest_turn_id,created_at,updated_at,deleted_at,runtime_mode,interaction_mode,model_selection_json,archived_at,latest_user_message_at,pending_approval_count,pending_user_input_count,has_actionable_proposed_plan,settled_override,settled_at,snoozed_until,snoozed_at,title_regeneration_request_id,title_regeneration_started_at,hidden";
 
-// projection_ticket is owned by 035 but excluded from the workflow_% GOLDEN
+// projection_ticket is owned by 036 but excluded from the workflow_% GOLDEN
 // dump filter (historical). Column-order gate mirrors GOLDEN_PROJECTION_THREADS.
 const GOLDEN_PROJECTION_TICKET_COLUMNS =
   "ticket_id,board_id,title,description,current_lane_key,status,worktree_ref,baseline_ref,external_ref,priority,created_at,updated_at,current_lane_entry_token,current_lane_entered_at,queued_at,terminal_at,token_budget,attention_kind,attention_reason,parked_substate,parked_label,parked_reason,parked_at,parked_event_id,park_origin,current_step_label,sla_breached_entry_token,sla_breached_at,sla_breached_reason,fork_origin,fork_root_ticket_id,human_touched_at";
 
-layer("035_WorkflowSchema", (it) => {
-  it.effect("migration entry exists at id 35", () =>
+layer("036_WorkflowSchema", (it) => {
+  it.effect("migration entry exists at id 36", () =>
     Effect.gen(function* () {
-      assert.isTrue(migrationEntries.some(([id, name]) => id === 35 && name === "WorkflowSchema"));
+      assert.isTrue(migrationEntries.some(([id, name]) => id === 36 && name === "WorkflowSchema"));
     }),
   );
 
@@ -277,7 +278,7 @@ layer("035_WorkflowSchema", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 35 });
+      yield* runMigrations({ toMigrationInclusive: 36 });
 
       // SqlitePersistenceMemory already applies all migrations via MigrationsLive;
       // toMigrationInclusive cannot roll back later ids. Exclude post-034 tables
@@ -659,12 +660,12 @@ layer("035_WorkflowSchema", (it) => {
     }),
   );
 
-  it.effect("40 is the highest migration entry", () =>
+  it.effect("36 is the highest migration entry", () =>
     Effect.gen(function* () {
       const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 40);
+      assert.strictEqual(highest, 36);
       const top = migrationEntries.find(([id]) => id === highest);
-      assert.strictEqual(top?.[1], "CheckpointForm");
+      assert.strictEqual(top?.[1], "WorkflowSchema");
     }),
   );
 

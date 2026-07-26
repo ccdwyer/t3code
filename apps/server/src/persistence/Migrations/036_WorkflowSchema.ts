@@ -30,9 +30,9 @@ import { addColumnIfMissing } from "./addColumnIfMissing.ts";
 /**
  * Run an `ALTER TABLE ... ADD COLUMN` that may already have been applied.
  *
- * This migration was renumbered (034 -> 035) when an upstream rebase claimed
- * 034. A database that recorded the OLD id sees 035 as unapplied and re-runs it
- * against tables that already exist: every `CREATE TABLE IF NOT EXISTS` no-ops,
+ * This migration was renumbered (034 -> 035 -> 36) as upstream claimed
+ * migration ids. A database that recorded an OLD id sees 36 as unapplied and
+ * re-runs it against tables that already exist: every `CREATE TABLE IF NOT EXISTS` no-ops,
  * and then the first bare ADD COLUMN aborts the whole migration with "duplicate
  * column name", leaving the server unable to start.
  *
@@ -40,6 +40,53 @@ import { addColumnIfMissing } from "./addColumnIfMissing.ts";
  * exactly that error — and nothing else — makes the migration converge instead,
  * so an existing instance keeps its boards and tickets.
  */
+/**
+ * Add columns that an existing database can be missing through no fault of its
+ * own. A no-op on any database migrated from scratch.
+ *
+ * Two independent causes, both from this branch's history:
+ *
+ * 1. **An id collision.** The workflow schema migration was renumbered
+ *    034 -> 035 -> 36 as upstream claimed ids for `ProjectionThreadsSnoozed`
+ *    and `ProjectionThreadTitleRegeneration`. A database that recorded an old
+ *    workflow id has that id marked applied, so the migrator skips the upstream
+ *    migration forever and `projection_threads` never gains its snooze columns.
+ *
+ * 2. **In-place edits to an already-applied migration.** The workflow migration
+ *    is edited in place as this branch adds features, on the assumption that local databases get
+ *    wiped. Anything folded in after a database applied it never lands: its
+ *    tables already exist, so the `CREATE TABLE IF NOT EXISTS` statements
+ *    no-op and the new columns are simply absent. That is where the SLA,
+ *    steering and message-kind columns went.
+ *
+ * Every statement is guarded by a PRAGMA check rather than a caught error, so
+ * this states its intent directly and cannot mask an unrelated failure.
+ */
+const columnsToEnsure: ReadonlyArray<{
+  readonly table: string;
+  readonly column: string;
+  readonly ddl: string;
+}> = [
+  // Cause 1 — the skipped upstream migration.
+  { table: "projection_threads", column: "snoozed_until", ddl: "snoozed_until TEXT" },
+  { table: "projection_threads", column: "snoozed_at", ddl: "snoozed_at TEXT" },
+  // Cause 2 — folded into 035 after this branch's database applied it.
+  { table: "projection_ticket", column: "sla_breached_at", ddl: "sla_breached_at TEXT" },
+  { table: "projection_ticket", column: "sla_breached_reason", ddl: "sla_breached_reason TEXT" },
+  {
+    table: "projection_ticket",
+    column: "sla_breached_entry_token",
+    ddl: "sla_breached_entry_token TEXT",
+  },
+  {
+    table: "projection_step_run",
+    column: "steer_count",
+    ddl: "steer_count INTEGER NOT NULL DEFAULT 0",
+  },
+  { table: "projection_step_run", column: "last_steered_at", ddl: "last_steered_at TEXT" },
+  { table: "projection_ticket_message", column: "kind", ddl: "kind TEXT" },
+];
+
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -604,4 +651,187 @@ export default Effect.gen(function* () {
     CREATE INDEX IF NOT EXISTS idx_workflow_agent_session_thread
     ON workflow_agent_session (thread_id)
   `;
+
+  // --- Step output contracts (was 036). ---
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_errors_json TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_phase TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN output_repaired INTEGER NOT NULL DEFAULT 0`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_seq INTEGER NOT NULL DEFAULT 0`,
+  );
+  // --- Worktree parallelism (was 037). ---
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS ticket_changed_paths (
+      ticket_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      PRIMARY KEY (ticket_id, path)
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_ticket_changed_paths_path
+    ON ticket_changed_paths (path, ticket_id)
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS ticket_changed_paths_meta (
+      ticket_id TEXT PRIMARY KEY,
+      source_ref TEXT NOT NULL,
+      file_count INTEGER NOT NULL,
+      truncated INTEGER NOT NULL,
+      refreshed_at TEXT NOT NULL
+    )
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS ticket_parallelism_hold (
+      ticket_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      blocked_by_ticket_id TEXT NOT NULL,
+      lane_key TEXT NOT NULL,
+      lane_entry_token TEXT NOT NULL,
+      pipeline_run_id TEXT NOT NULL,
+      step_run_id TEXT NOT NULL,
+      held_at TEXT NOT NULL,
+      released_at TEXT NULL,
+      resume_pipeline_run_id TEXT NULL
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_ticket_parallelism_hold_blocker
+    ON ticket_parallelism_hold (blocked_by_ticket_id)
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS ticket_overlap_reported (
+      ticket_id TEXT NOT NULL,
+      with_ticket_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      reported_at TEXT NOT NULL,
+      PRIMARY KEY (ticket_id, with_ticket_id)
+    )
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS ticket_worktree_registry (
+      ticket_id TEXT PRIMARY KEY,
+      repo_root TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_post_checkpoint_at TEXT NULL
+    )
+  `;
+  // --- Fork-join ticket graphs (was 038). ---
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS projection_ticket_fork (
+      step_run_id TEXT PRIMARY KEY,
+      parent_ticket_id TEXT NOT NULL,
+      board_id TEXT NOT NULL,
+      step_key TEXT NOT NULL,
+      join_require INTEGER NOT NULL,
+      on_branch_failure TEXT NOT NULL,
+      spawn_seq INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT NULL,
+      resolution TEXT NULL,
+      resolution_succeeded INTEGER NULL,
+      resolution_failed INTEGER NULL,
+      resolution_cancelled INTEGER NULL,
+      route_applied_at TEXT NULL
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_fork_parent
+    ON projection_ticket_fork (parent_ticket_id)
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_fork_unresolved
+    ON projection_ticket_fork (board_id)
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS projection_ticket_fork_child (
+      step_run_id TEXT NOT NULL,
+      child_ticket_id TEXT NOT NULL,
+      child_key TEXT NOT NULL,
+      title_snapshot TEXT NOT NULL,
+      lane_key TEXT NOT NULL,
+      settled_outcome TEXT NULL,
+      settled_at TEXT NULL,
+      detached_at TEXT NULL,
+      deleted_at_seq INTEGER NULL,
+      PRIMARY KEY (step_run_id, child_ticket_id)
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_fork_child_ticket
+    ON projection_ticket_fork_child (child_ticket_id)
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS workflow_fork_lineage (
+      root_ticket_id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL,
+      fork_count INTEGER NOT NULL
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_fork_lineage_board
+    ON workflow_fork_lineage (board_id)
+  `;
+
+  // Optional origin columns on projection_ticket (idempotent).
+  const cols = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_ticket)`;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("fork_origin")) {
+    yield* sql`ALTER TABLE projection_ticket ADD COLUMN fork_origin TEXT NULL`;
+  }
+  if (!names.has("fork_root_ticket_id")) {
+    yield* sql`ALTER TABLE projection_ticket ADD COLUMN fork_root_ticket_id TEXT NULL`;
+  }
+  if (!names.has("human_touched_at")) {
+    yield* sql`ALTER TABLE projection_ticket ADD COLUMN human_touched_at TEXT NULL`;
+  }
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_ticket_fork_root
+    ON projection_ticket (fork_root_ticket_id)
+  `;
+  // --- Agent handoff context packs (was 039). ---
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS projection_context_pack (
+      ticket_id TEXT NOT NULL,
+      for_lane TEXT NOT NULL,
+      from_lane TEXT NOT NULL,
+      compiled_at TEXT NOT NULL,
+      edited_at TEXT NULL,
+      sections_json TEXT NOT NULL,
+      PRIMARY KEY (ticket_id, for_lane)
+    )
+  `;
+  // --- Human checkpoint forms (was 040). ---
+
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_form_json TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_decision TEXT`,
+  );
+  yield* addColumnIfMissing(
+    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_answers_json TEXT`,
+  );
+  // --- Reconcile columns folded in after an earlier apply (was 041). ---
+
+  for (const { table, column, ddl } of columnsToEnsure) {
+    const existing = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info(${table})
+    `;
+    if (existing.length === 0) {
+      // The table itself is absent, which means an earlier migration owns it and
+      // will create it with this column already inline. Nothing to reconcile.
+      continue;
+    }
+    if (existing.some((row) => row.name === column)) {
+      continue;
+    }
+    yield* sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
 });

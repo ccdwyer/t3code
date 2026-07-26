@@ -1,8 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { addColumnIfMissing } from "./addColumnIfMissing.ts";
-
 /**
  * Consolidated workflow schema.
  *
@@ -40,53 +38,6 @@ import { addColumnIfMissing } from "./addColumnIfMissing.ts";
  * exactly that error — and nothing else — makes the migration converge instead,
  * so an existing instance keeps its boards and tickets.
  */
-/**
- * Add columns that an existing database can be missing through no fault of its
- * own. A no-op on any database migrated from scratch.
- *
- * Two independent causes, both from this branch's history:
- *
- * 1. **An id collision.** The workflow schema migration was renumbered
- *    034 -> 035 -> 36 as upstream claimed ids for `ProjectionThreadsSnoozed`
- *    and `ProjectionThreadTitleRegeneration`. A database that recorded an old
- *    workflow id has that id marked applied, so the migrator skips the upstream
- *    migration forever and `projection_threads` never gains its snooze columns.
- *
- * 2. **In-place edits to an already-applied migration.** The workflow migration
- *    is edited in place as this branch adds features, on the assumption that local databases get
- *    wiped. Anything folded in after a database applied it never lands: its
- *    tables already exist, so the `CREATE TABLE IF NOT EXISTS` statements
- *    no-op and the new columns are simply absent. That is where the SLA,
- *    steering and message-kind columns went.
- *
- * Every statement is guarded by a PRAGMA check rather than a caught error, so
- * this states its intent directly and cannot mask an unrelated failure.
- */
-const columnsToEnsure: ReadonlyArray<{
-  readonly table: string;
-  readonly column: string;
-  readonly ddl: string;
-}> = [
-  // Cause 1 — the skipped upstream migration.
-  { table: "projection_threads", column: "snoozed_until", ddl: "snoozed_until TEXT" },
-  { table: "projection_threads", column: "snoozed_at", ddl: "snoozed_at TEXT" },
-  // Cause 2 — folded into 035 after this branch's database applied it.
-  { table: "projection_ticket", column: "sla_breached_at", ddl: "sla_breached_at TEXT" },
-  { table: "projection_ticket", column: "sla_breached_reason", ddl: "sla_breached_reason TEXT" },
-  {
-    table: "projection_ticket",
-    column: "sla_breached_entry_token",
-    ddl: "sla_breached_entry_token TEXT",
-  },
-  {
-    table: "projection_step_run",
-    column: "steer_count",
-    ddl: "steer_count INTEGER NOT NULL DEFAULT 0",
-  },
-  { table: "projection_step_run", column: "last_steered_at", ddl: "last_steered_at TEXT" },
-  { table: "projection_ticket_message", column: "kind", ddl: "kind TEXT" },
-];
-
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -266,42 +217,24 @@ export default Effect.gen(function* () {
       confirmed_at TEXT
     )
   `;
-  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN options_json TEXT`);
-  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN project_id TEXT`);
-  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN thread_title TEXT`);
-  yield* addColumnIfMissing(sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN runtime_mode TEXT`);
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN options_json TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN project_id TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN thread_title TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN runtime_mode TEXT`;
   // Live-agent-steering: dispatch-time step metadata + steer reservation cells.
   // ALTER (not CREATE rewrite) matches the options_json / runtime_mode pattern
   // so sqlite_master keeps the historical `, col` whitespace shape.
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN capture_output INTEGER`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN panel_size INTEGER`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_message_id TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_text TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_accepted_at TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_count INTEGER NOT NULL DEFAULT 0`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_tombstone_message_id TEXT`,
-  );
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN capture_output INTEGER`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN panel_size INTEGER`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_message_id TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_pending_text TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_accepted_at TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_count INTEGER NOT NULL DEFAULT 0`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_tombstone_message_id TEXT`;
   // Staged delivery: durable handoff for StepSteered when the in-process ack
   // fiber dies (restart / slow receipt). Cleared after StepSteered commits.
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_message_id TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_text TEXT`,
-  );
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_message_id TEXT`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN steer_delivered_text TEXT`;
 
   // --- Setup run (037) ---
   yield* sql`
@@ -623,10 +556,10 @@ export default Effect.gen(function* () {
 
   // --- projection_threads.hidden (050). The table is created by a <=032
   // migration, so this only appends the column. ---
-  yield* addColumnIfMissing(sql`
+  yield* sql`
     ALTER TABLE projection_threads
     ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0
-  `);
+  `;
 
   // --- Per-agent session memory (was 034) ---
   // Stores the stable workflow `thread_id` minted for each
@@ -653,18 +586,10 @@ export default Effect.gen(function* () {
   `;
 
   // --- Step output contracts (was 036). ---
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_errors_json TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_phase TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE projection_step_run ADD COLUMN output_repaired INTEGER NOT NULL DEFAULT 0`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_seq INTEGER NOT NULL DEFAULT 0`,
-  );
+  yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_errors_json TEXT`;
+  yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_phase TEXT`;
+  yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_repaired INTEGER NOT NULL DEFAULT 0`;
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_seq INTEGER NOT NULL DEFAULT 0`;
   // --- Worktree parallelism (was 037). ---
   yield* sql`
     CREATE TABLE IF NOT EXISTS ticket_changed_paths (
@@ -809,29 +734,7 @@ export default Effect.gen(function* () {
   `;
   // --- Human checkpoint forms (was 040). ---
 
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_form_json TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_decision TEXT`,
-  );
-  yield* addColumnIfMissing(
-    sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_answers_json TEXT`,
-  );
-  // --- Reconcile columns folded in after an earlier apply (was 041). ---
-
-  for (const { table, column, ddl } of columnsToEnsure) {
-    const existing = yield* sql<{ readonly name: string }>`
-      SELECT name FROM pragma_table_info(${table})
-    `;
-    if (existing.length === 0) {
-      // The table itself is absent, which means an earlier migration owns it and
-      // will create it with this column already inline. Nothing to reconcile.
-      continue;
-    }
-    if (existing.some((row) => row.name === column)) {
-      continue;
-    }
-    yield* sql.unsafe(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
-  }
+  yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_form_json TEXT`;
+  yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_decision TEXT`;
+  yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_answers_json TEXT`;
 });

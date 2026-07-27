@@ -825,6 +825,7 @@ export function TicketDrawer({
                   <TicketStepRow
                     key={step.stepRunId}
                     step={presentTicketStep(detail, index)}
+                    ticketParked={detail.ticket.status === "parked"}
                     api={api}
                     projectId={projectId}
                     ticketId={detail.ticket.ticketId}
@@ -2346,6 +2347,7 @@ function presentTicketStep(detail: TicketDrawerDetail, index: number): StepRowSt
  *  column. The `liClassName` lets each context supply its own padding. */
 function TicketStepRow({
   step,
+  ticketParked = false,
   api,
   projectId,
   ticketId,
@@ -2358,6 +2360,16 @@ function TicketStepRow({
   liClassName,
 }: {
   readonly step: StepRowStep;
+  /**
+   * The ticket is parked, so no wait on it can be answered.
+   *
+   * A park and an open wait genuinely coexist — the projection keeps the step
+   * `awaiting_user` on a parked row — and the server refuses to resolve one.
+   * Mounting the form anyway would put the board's park digits and the form's
+   * digit listener on the same keypress, and offer a Continue button that is
+   * rejected.
+   */
+  readonly ticketParked?: boolean | undefined;
   readonly api?: EnvironmentApi | undefined;
   readonly projectId?: ProjectId | undefined;
   readonly ticketId?: string | undefined;
@@ -2446,7 +2458,7 @@ function TicketStepRow({
           />
         </div>
       ) : null}
-      {isAwaitingApprovalRequestStep(step) && step.form !== undefined ? (
+      {!ticketParked && isAwaitingApprovalRequestStep(step) && step.form !== undefined ? (
         <>
           <CheckpointFormFields
             form={step.form}
@@ -2466,7 +2478,7 @@ function TicketStepRow({
           ) : null}
         </>
       ) : null}
-      {isAwaitingApprovalRequestStep(step) && step.form === undefined ? (
+      {!ticketParked && isAwaitingApprovalRequestStep(step) && step.form === undefined ? (
         <div className="mt-2 flex flex-wrap gap-2">
           <Button
             size="xs"
@@ -2881,6 +2893,7 @@ export function TicketFullscreen({
                   <TicketStepRow
                     key={step.stepRunId}
                     step={presentTicketStep(detail, index)}
+                    ticketParked={detail.ticket.status === "parked"}
                     api={api}
                     projectId={projectId}
                     ticketId={detail.ticket.ticketId}

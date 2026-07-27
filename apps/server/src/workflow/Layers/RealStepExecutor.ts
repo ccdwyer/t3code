@@ -1261,11 +1261,17 @@ const make = Effect.gen(function* () {
             } satisfies StepOutcome;
           }
 
-          const repairedOutput = yield* capturedOutputs.read({
-            stepRunId: ctx.stepRunId,
-            threadId: threadId as never,
-            turnId: repairResult.turnId,
-          });
+          // Stripped here too, not just on the initial turn: a repair that
+          // echoes the reserved key would otherwise be rejected by an
+          // `allowUnknown: false` contract, or — worse, on a permissive one —
+          // persist the raw question block as the step's output.
+          const repairedOutput = stripQuestionsKey(
+            yield* capturedOutputs.read({
+              stepRunId: ctx.stepRunId,
+              threadId: threadId as never,
+              turnId: repairResult.turnId,
+            }),
+          );
           const repairDiagnostic: OutputDiagnostic =
             repairedOutput === undefined
               ? { failure: "no_block" }

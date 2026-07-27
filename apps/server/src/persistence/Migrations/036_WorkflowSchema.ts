@@ -590,14 +590,6 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_phase TEXT`;
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_repaired INTEGER NOT NULL DEFAULT 0`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_seq INTEGER NOT NULL DEFAULT 0`;
-  // What KIND of dispatch a row is, when it is not the initial turn.
-  //
-  // `dispatch_seq` used to carry this implicitly (0 = initial, 1 = repair), but
-  // question continuations also need to sit above earlier rows in the
-  // `dispatch_seq DESC` reads that pick "the latest turn" — which means a repair
-  // AFTER a continuation can no longer be pinned to 1. Kind is now explicit and
-  // the seq is free to be monotonic. NULL = initial turn (or a legacy row).
-  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_kind TEXT`;
   // --- Worktree parallelism (was 037). ---
   yield* sql`
     CREATE TABLE IF NOT EXISTS ticket_changed_paths (

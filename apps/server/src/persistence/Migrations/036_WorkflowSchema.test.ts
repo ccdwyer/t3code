@@ -20,6 +20,12 @@ import { migrationEntries, runMigrations } from "../Migrations.ts";
  *
  * If this test fails, the collapsed schema diverged from the chain — fix the
  * migration, do not weaken the assertion.
+ *
+ * ONE column post-dates the chain: `workflow_dispatch_outbox.dispatch_kind`,
+ * added by 036_DispatchKind for agent-question continuations and registered as
+ * id 37 in this rebased loader. It is listed in GOLDEN because this dump runs
+ * every migration, not because it came from the 033->055 chain. Anything else
+ * appearing here is a real divergence.
  */
 
 const layer = it.layer(Layer.mergeAll(SqlitePersistenceMemory));
@@ -147,7 +153,7 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     type: "table",
     name: "workflow_dispatch_outbox",
     tbl_name: "workflow_dispatch_outbox",
-    sql: "CREATE TABLE workflow_dispatch_outbox ( dispatch_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, step_run_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT, provider_instance TEXT NOT NULL, model TEXT NOT NULL, instruction TEXT NOT NULL, worktree_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, confirmed_at TEXT , options_json TEXT, project_id TEXT, thread_title TEXT, runtime_mode TEXT, capture_output INTEGER, panel_size INTEGER, steer_pending_message_id TEXT, steer_pending_text TEXT, steer_accepted_at TEXT, steer_count INTEGER NOT NULL DEFAULT 0, steer_tombstone_message_id TEXT, steer_delivered_message_id TEXT, steer_delivered_text TEXT, dispatch_seq INTEGER NOT NULL DEFAULT 0)",
+    sql: "CREATE TABLE workflow_dispatch_outbox ( dispatch_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, step_run_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT, provider_instance TEXT NOT NULL, model TEXT NOT NULL, instruction TEXT NOT NULL, worktree_path TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, confirmed_at TEXT , options_json TEXT, project_id TEXT, thread_title TEXT, runtime_mode TEXT, capture_output INTEGER, panel_size INTEGER, steer_pending_message_id TEXT, steer_pending_text TEXT, steer_accepted_at TEXT, steer_count INTEGER NOT NULL DEFAULT 0, steer_tombstone_message_id TEXT, steer_delivered_message_id TEXT, steer_delivered_text TEXT, dispatch_seq INTEGER NOT NULL DEFAULT 0, dispatch_kind TEXT )",
   },
   {
     type: "index",
@@ -660,12 +666,22 @@ layer("036_WorkflowSchema", (it) => {
     }),
   );
 
-  it.effect("36 is the highest migration entry", () =>
+  /**
+   * Guards the collapse: 036 must remain the branch's single consolidated
+   * workflow migration, and anything after it must be genuinely NEW schema
+   * rather than an edit smuggled into 036.
+   *
+   * 036 itself can never be edited again — a database that already applied it
+   * would never receive the change, and every dispatch INSERT would fail on the
+   * missing column. So new work adds a migration; DispatchKind at id 37 is the first.
+   */
+  it.effect("036 stays the consolidated workflow migration", () =>
     Effect.gen(function* () {
+      const consolidated = migrationEntries.find(([id]) => id === 36);
+      assert.strictEqual(consolidated?.[1], "WorkflowSchema");
       const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 36);
-      const top = migrationEntries.find(([id]) => id === highest);
-      assert.strictEqual(top?.[1], "WorkflowSchema");
+      assert.strictEqual(highest, 37);
+      assert.strictEqual(migrationEntries.find(([id]) => id === highest)?.[1], "DispatchKind");
     }),
   );
 

@@ -5451,12 +5451,13 @@ const make = Effect.gen(function* () {
         let latestWait: Extract<PersistedWorkflowEvent, { type: "StepAwaitingUser" }> | null = null;
         let answered: CheckpointResolution | null = null;
         for (const event of events) {
-          if (
-            event.type === "StepAwaitingUser" &&
-            event.payload.stepRunId === stepRunId &&
-            event.payload.questionPhase === true
-          ) {
-            latestWait = event;
+          // Reset on ANY wait for this step, not just question waits. A
+          // continuation can hit a native provider prompt, and its resolve is a
+          // StepUserResolved too — attributing that to the question would read a
+          // provider answer (which carries no decision) as a cancellation and
+          // fail a step the operator never cancelled.
+          if (event.type === "StepAwaitingUser" && event.payload.stepRunId === stepRunId) {
+            latestWait = event.payload.questionPhase === true ? event : null;
             answered = null;
           }
           if (event.type === "StepUserResolved" && event.payload.stepRunId === stepRunId) {

@@ -1846,7 +1846,9 @@ function CheckpointFormFields({
     return form.fields.every((field) => {
       if (field.kind === "decision") return true;
       if (!("required" in field) || field.required !== true) return true;
-      const value = submitted[field.key];
+      // Own properties only: a field key like `toString` or `valueOf` would
+      // otherwise resolve an inherited function and read as answered.
+      const value = Object.hasOwn(submitted, field.key) ? submitted[field.key] : undefined;
       return Array.isArray(value)
         ? value.length > 0
         : typeof value === "string" && value.length > 0;

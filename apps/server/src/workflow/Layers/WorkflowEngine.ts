@@ -1533,7 +1533,7 @@ const make = Effect.gen(function* () {
                       kind: "unmappable",
                       message: "could not read the step's events",
                     } as QuestionRaiseDecision)
-                  : yield* recoverQuestionRaise(stepRunId, stepEvents, undefined).pipe(
+                  : yield* recoverQuestionRaise(stepRunId, stepEvents).pipe(
                       Effect.orElseSucceed(
                         () =>
                           ({
@@ -4876,7 +4876,6 @@ const make = Effect.gen(function* () {
   const recoverQuestionRaise = (
     stepRunId: StepRunId,
     events: ReadonlyArray<PersistedWorkflowEvent>,
-    captureTurn: CaptureTurn | undefined,
   ): Effect.Effect<QuestionRaiseDecision, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const { capturedOutputs, providerDispatches } = yield* getOptionalServices;
@@ -4908,7 +4907,13 @@ const make = Effect.gen(function* () {
       if (alreadyRaised) {
         return { kind: "leave" };
       }
-      const turn = captureTurn ?? { threadId: dispatchRow.threadId, turnId: dispatchRow.turnId };
+      // The capture and the identity MUST come from the same row. Parsing a
+      // supplied captureTurn while stamping the latest dispatch's id pairs one
+      // turn's question with another turn's identity, so the idempotency check
+      // can re-raise an old question or skip the real latest one.
+      // `getDispatchForStep` already orders by dispatch_seq DESC, so this row is
+      // the latest by the same rule every other latest-dispatch read uses.
+      const turn = { threadId: dispatchRow.threadId, turnId: dispatchRow.turnId };
       // A read FAILURE is not "no question". Swallowing it here would let a
       // transient lookup error read as semantic absence, after which the
       // permissive capture path completes the step and the question is gone.
@@ -5037,7 +5042,7 @@ const make = Effect.gen(function* () {
         recoveredStep?.type === "agent" &&
         recoveredStep.allowQuestions === true
       ) {
-        const outcome = yield* recoverQuestionRaise(stepRunId, events, captureTurn);
+        const outcome = yield* recoverQuestionRaise(stepRunId, events);
         if (outcome.kind === "leave") {
           // Either the wait is already open, or it was answered and the §4.5
           // sweep owns the continuation. Either way this must NOT terminal.

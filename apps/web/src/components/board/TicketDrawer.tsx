@@ -1671,6 +1671,14 @@ function TicketHistorySection({
  * against the snapshot, and only for a success outcome; this form mirrors that
  * rather than blocking a rejection on an unfilled field.
  */
+/**
+ * Sentinel for the "Something else…" entry on an `allowOther` select.
+ *
+ * Deliberately not a plausible option value: it never leaves the component —
+ * `submittedAnswers` swaps it for the typed text before submitting.
+ */
+const OTHER_VALUE = "__other__";
+
 function CheckpointFormFields({
   form,
   disabled,
@@ -1686,10 +1694,39 @@ function CheckpointFormFields({
   ) => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, string | ReadonlyArray<string>>>({});
+  // Free text typed against an `allowOther` select, kept apart from `answers`
+  // so switching back to a listed option does not silently resubmit it.
+  const [otherText, setOtherText] = useState<Record<string, string>>({});
   const decisionField = form.fields.find((field) => field.kind === "decision");
 
   const setAnswer = (key: string, value: string | ReadonlyArray<string>) => {
     setAnswers((prior) => ({ ...prior, [key]: value }));
+  };
+
+  const setOther = (key: string, value: string) => {
+    setOtherText((prior) => ({ ...prior, [key]: value }));
+  };
+
+  /**
+   * What actually goes to the server.
+   *
+   * An `allowOther` select whose selection is the sentinel submits the typed
+   * text instead — the sentinel is a UI affordance and must never be persisted
+   * as an answer.
+   */
+  const submittedAnswers = (): Record<string, string | ReadonlyArray<string>> => {
+    const result: Record<string, string | ReadonlyArray<string>> = { ...answers };
+    for (const field of form.fields) {
+      if (field.kind !== "select" || field.allowOther !== true) continue;
+      if (result[field.key] !== OTHER_VALUE) continue;
+      const typed = (otherText[field.key] ?? "").trim();
+      if (typed.length > 0) {
+        result[field.key] = typed;
+      } else {
+        delete result[field.key];
+      }
+    }
+    return result;
   };
 
   return (
@@ -1737,7 +1774,24 @@ function CheckpointFormFields({
                     {option.label}
                   </option>
                 ))}
+                {field.allowOther === true ? (
+                  <option value={OTHER_VALUE}>Something else…</option>
+                ) : null}
               </select>
+              {field.allowOther === true && answers[field.key] === OTHER_VALUE ? (
+                // "None of these" — the answer sent is whatever is typed here,
+                // not the sentinel, which exists only to reveal the input.
+                <input
+                  type="text"
+                  autoFocus
+                  className="mt-1 w-full rounded border border-border/70 bg-background p-1.5 text-xs"
+                  placeholder="Your answer"
+                  onChange={(event) => {
+                    setOther(field.key, event.target.value);
+                  }}
+                  value={otherText[field.key] ?? ""}
+                />
+              ) : null}
             </label>
           );
         }
@@ -1781,7 +1835,7 @@ function CheckpointFormFields({
               disabled={disabled}
               title={option.hint ?? ""}
               onClick={() => {
-                onSubmit(option.value, answers, true);
+                onSubmit(option.value, submittedAnswers(), true);
               }}
             >
               {option.label}
@@ -1796,7 +1850,7 @@ function CheckpointFormFields({
               size="xs"
               disabled={disabled}
               onClick={() => {
-                onSubmit(undefined, answers, true);
+                onSubmit(undefined, submittedAnswers(), true);
               }}
             >
               <CheckIcon className="size-3.5" />
@@ -1807,7 +1861,7 @@ function CheckpointFormFields({
               variant="outline"
               disabled={disabled}
               onClick={() => {
-                onSubmit(undefined, answers, false);
+                onSubmit(undefined, submittedAnswers(), false);
               }}
             >
               <XIcon className="size-3.5" />
@@ -2896,12 +2950,24 @@ function isAwaitingUserInputStep(step: TicketDrawerDetail["steps"][number]): boo
   return step.status === "awaiting_user" && step.providerResponseKind === "user-input";
 }
 
+/**
+ * A wait the operator answers with the checkpoint form (or Approve/Reject).
+ *
+ * Three shapes reach here, and the third is easy to miss: a provider permission
+ * prompt, a board-authored approval step, and an AGENT step that paused to ask
+ * a question. The last one is an agent step whose wait carries a form and no
+ * provider kind — it deliberately sets none, which is what lets the ordinary
+ * resolve path accept it. Without this arm the ticket would say "needs you"
+ * while the drawer offered nothing to answer with.
+ */
 function isAwaitingApprovalRequestStep(step: TicketDrawerDetail["steps"][number]): boolean {
+  const noProviderKind =
+    step.providerResponseKind === null || step.providerResponseKind === undefined;
   return (
     step.status === "awaiting_user" &&
     (step.providerResponseKind === "request" ||
-      (step.stepType === "approval" &&
-        (step.providerResponseKind === null || step.providerResponseKind === undefined)))
+      (step.stepType === "approval" && noProviderKind) ||
+      (step.stepType === "agent" && noProviderKind && step.form !== undefined))
   );
 }
 

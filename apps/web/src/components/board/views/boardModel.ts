@@ -164,7 +164,15 @@ export const optionsFor = (
   ticket: BoardViewTicket | undefined,
   onParkAction: ((ticketId: string, index: number, parkedEventId: string) => void) | undefined,
 ): ReadonlyArray<TicketOption> => {
-  if (ticket?.parked === undefined || onParkAction === undefined) return [];
+  // Park actions only bind while the ticket is ACTUALLY parked.
+  //
+  // A park and an open agent-question wait can coexist — the projection handles
+  // a StepAwaitingUser landing on a parked row explicitly — so "has parked
+  // details" is not enough on its own. Requiring the live status keeps the
+  // digits owned by exactly one of the two: parked tickets get park actions,
+  // and everything else leaves the digits free for a question form.
+  if (ticket?.status !== "parked") return [];
+  if (ticket.parked === undefined || onParkAction === undefined) return [];
   const parked = ticket.parked;
   return (parked.actions ?? []).map((action, index) => ({
     label: action.label,

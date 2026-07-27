@@ -167,6 +167,17 @@ export const useBoardKeys = (handlers: {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const current = ref.current;
+      // Board shortcuts are bare keys, so a modified chord belongs to the
+      // browser or the OS: without this, Cmd-S would hit the freeform shortcut
+      // instead of saving, and Cmd/Alt-1 would fire a numbered action.
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      // A held key must not repeat an action. Auto-repeat on a digit would
+      // toggle a multi-select answer on and off many times per second.
+      if (event.repeat) {
+        return;
+      }
       if (isTyping(event.target)) {
         if (event.key === "Escape" && event.target instanceof HTMLElement) event.target.blur();
         return;

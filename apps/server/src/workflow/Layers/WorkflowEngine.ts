@@ -910,9 +910,25 @@ const make = Effect.gen(function* () {
    * NOT be unregistered (a superseding park could not reach it), so it registers
    * under the ticket's current lane-entry token and clears on exit.
    */
-  const forkTicketWork = (ticketId: TicketId, work: Effect.Effect<void, WorkflowEventStoreError>) =>
+  const forkTicketWork = (
+    ticketId: TicketId,
+    work: Effect.Effect<void, WorkflowEventStoreError>,
+    /**
+     * The lane entry this work belongs to, when it is resuming historical work.
+     *
+     * Without it a stale continuation registers under whatever token the ticket
+     * holds NOW: a legitimate new pipeline then sees the slot occupied and
+     * skips, the stale fork notices the mismatch and exits, and the ticket is
+     * left with no pipeline at all. Compared inside the synchronized
+     * registration so the check and the insert cannot interleave.
+     */
+    expectedToken?: LaneEntryToken | undefined,
+  ) =>
     Effect.gen(function* () {
       const laneEntryToken = yield* currentToken(ticketId);
+      if (expectedToken !== undefined && laneEntryToken !== expectedToken) {
+        return false;
+      }
       if (laneEntryToken === null) {
         // No live lane entry: the ticket moved or was parked out from under this
         // wait, so there is nothing to resume into.
@@ -923,6 +939,11 @@ const make = Effect.gen(function* () {
       yield* SynchronizedRef.updateEffect(runningPipelines, (current) =>
         Effect.gen(function* () {
           const key = ticketId as string;
+          // Re-read inside the transaction: a move between the check above and
+          // here would otherwise slip through.
+          if (expectedToken !== undefined && (yield* currentToken(ticketId)) !== expectedToken) {
+            return current;
+          }
           if (current.get(key)) {
             // Something else already owns this ticket's fiber slot; do not
             // displace it — the newer owner is the live pipeline.
@@ -5699,6 +5720,7 @@ const make = Effect.gen(function* () {
         const started = yield* forkTicketWork(
           recovered.stepStarted.ticketId,
           resumeRecoveredQuestion(pending, resolution, recovered),
+          recovered.pipelineStarted.payload.laneEntryToken,
         );
         if (!started) {
           // The answer is already durable, so it must not be left with no owner:

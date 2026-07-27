@@ -5889,7 +5889,7 @@ const make = Effect.gen(function* () {
         // restart while the live path routed it down on.blocked — the same
         // decision producing two different destinations depending on whether a
         // fiber happened to survive.
-        yield* completeRecoveredStepUnlocked(
+        yield* completeRecoveredStep(
           pending.payload.stepRunId,
           { _tag: "blocked", reason: resolution.decision ?? "checkpoint blocked" },
           undefined,
@@ -5898,7 +5898,7 @@ const make = Effect.gen(function* () {
         return;
       }
       if (resolution.outcome !== "success") {
-        yield* completeRecoveredStepUnlocked(
+        yield* completeRecoveredStep(
           pending.payload.stepRunId,
           {
             _tag: "failed",
@@ -5917,7 +5917,7 @@ const make = Effect.gen(function* () {
               pending.payload.stepRunId,
               pending.payload.providerThreadId,
             );
-      yield* completeRecoveredStepUnlocked(pending.payload.stepRunId, terminalResult, undefined);
+      yield* completeRecoveredStep(pending.payload.stepRunId, terminalResult, undefined);
     });
 
   const cancelStep: WorkflowEngineShape["cancelStep"] = (stepRunId) =>

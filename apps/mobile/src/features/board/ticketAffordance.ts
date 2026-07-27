@@ -49,6 +49,20 @@ export type TicketAffordance =
       readonly reason: string | null;
       readonly laneActions: readonly WorkflowLaneActionView[];
     }
+  /**
+   * An agent paused to ask the operator something.
+   *
+   * Read-only on mobile: the question is answered with its checkpoint FORM,
+   * which mobile does not render. Falling through to a generic comment view
+   * left a "needs you" ticket with no indication of what was asked or where to
+   * answer it, so this carries the question and says to use the board.
+   */
+  | {
+      readonly kind: "agent-question";
+      readonly stepRunId: StepRunId;
+      readonly question: string | null;
+      readonly laneActions: readonly WorkflowLaneActionView[];
+    }
   | {
       readonly kind: "comment";
       readonly laneActions: readonly WorkflowLaneActionView[];
@@ -96,6 +110,15 @@ export function selectTicketAffordance(detail: WorkflowTicketDetailView): Ticket
     awaitingStep?.stepType === "agent" &&
     providerResponseKind === null &&
     awaitingStep.form !== undefined;
+
+  if (isAgentQuestion && awaitingStep) {
+    return {
+      kind: "agent-question",
+      stepRunId: awaitingStep.stepRunId,
+      question: awaitingStep.waitingReason ?? ticket.attentionReason ?? null,
+      laneActions,
+    };
+  }
 
   const wantsInput =
     !isAgentQuestion &&

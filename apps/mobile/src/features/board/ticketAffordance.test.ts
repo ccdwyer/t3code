@@ -14,6 +14,8 @@ import {
   type WorkflowTicketAttentionKind,
 } from "@t3tools/contracts";
 
+import { CheckpointFieldKey } from "@t3tools/contracts";
+
 import { isTicketSourceOwned, selectTicketAffordance } from "./ticketAffordance";
 
 const TICKET_ID = TicketId.make("ticket-1");
@@ -88,6 +90,35 @@ describe("selectTicketAffordance", () => {
     if (result.kind !== "answer") throw new Error("expected answer");
     expect(result.stepRunId).toBe(StepRunId.make("step-input"));
     expect(result.question).toBe("Which database should I target?");
+    expect(result.laneActions).toEqual(LANE_ACTIONS);
+  });
+
+  it("shows an agent's own question read-only instead of a dead Answer control", () => {
+    // An agent question projects waiting_for_input like a provider prompt, but
+    // it is answered with a checkpoint FORM through the approval path — the
+    // freeform answer RPC rejects it. Offering "Answer" here would be a button
+    // that can only fail, so mobile carries the question and points at the board.
+    const detail = makeDetail({
+      ticket: { attentionKind: "waiting_for_input", attentionReason: "fallback reason" },
+      steps: [
+        makeAwaitingStep({
+          stepRunId: StepRunId.make("step-question"),
+          waitingReason: "Agent asked: Which database?",
+          form: {
+            fields: [
+              { kind: "text", key: CheckpointFieldKey.make("db"), label: "Which database?" },
+            ],
+          },
+        }),
+      ],
+    });
+
+    const result = selectTicketAffordance(detail);
+
+    expect(result.kind).toBe("agent-question");
+    if (result.kind !== "agent-question") throw new Error("expected agent-question");
+    expect(result.stepRunId).toBe(StepRunId.make("step-question"));
+    expect(result.question).toBe("Agent asked: Which database?");
     expect(result.laneActions).toEqual(LANE_ACTIONS);
   });
 

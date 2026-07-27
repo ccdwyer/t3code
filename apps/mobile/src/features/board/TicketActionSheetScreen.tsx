@@ -383,6 +383,18 @@ export function TicketActionSheetScreen(props: TicketActionSheetScreenProps) {
           </View>
         ) : null}
 
+        {affordance.kind === "agent-question" ? (
+          <View className="gap-3 rounded-[22px] border border-border bg-card p-4">
+            <Text className="font-t3-bold text-base text-foreground">The agent asked you</Text>
+            <Text className="font-sans text-sm text-foreground-muted">
+              {affordance.question ?? "This step is waiting on an answer."}
+            </Text>
+            <Text className="font-sans text-sm text-foreground-muted">
+              Answer it on the board — the options are part of a form this screen doesn't show.
+            </Text>
+          </View>
+        ) : null}
+
         {affordance.kind === "blocked" ? (
           <View className="gap-3 rounded-[22px] border border-border bg-card p-4">
             <Text className="font-t3-bold text-base text-foreground">Blocked</Text>

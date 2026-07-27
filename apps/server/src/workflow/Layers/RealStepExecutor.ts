@@ -1076,7 +1076,18 @@ const make = Effect.gen(function* () {
               : yield* dispatch
                   .getDispatchRequestForStep(ctx.stepRunId)
                   .pipe(Effect.orElseSucceed(() => null));
-          const dispatchSeq = dispatchKind === undefined ? 0 : (assembly?.nextDispatchSeq ?? 1);
+          // Never fall back to 1. A follow-up that lands BELOW an existing row
+          // (a repair after a continuation, say) is read as older than the very
+          // output it supersedes, and the step can then sit `running` across
+          // every restart. A failed read fails the turn instead.
+          if (dispatchKind !== undefined && assembly === null) {
+            return yield* Effect.fail(
+              new WorkflowEventStoreError({
+                message: "could not read the step's dispatch sequence",
+              }),
+            );
+          }
+          const dispatchSeq = dispatchKind === undefined ? 0 : (assembly?.nextDispatchSeq ?? 0);
           const started = yield* dispatch.ensureStarted({
             dispatchId: turnIds.dispatchId as never,
             ticketId: ctx.ticketId,

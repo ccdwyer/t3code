@@ -1744,8 +1744,13 @@ function CheckpointFormFields({
 
       if (event.key === "Enter") {
         // Works from the freeform box too — otherwise the one field you have to
-        // type in is the one you cannot leave with the keyboard.
-        if (typing && !(target instanceof HTMLInputElement)) return;
+        // type in is the one you cannot leave with the keyboard. A text question
+        // renders a textarea, so both count; Shift+Enter still inserts a
+        // newline there.
+        const inFreeform =
+          target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+        if (typing && !inFreeform) return;
+        if (target instanceof HTMLTextAreaElement && event.shiftKey) return;
         event.preventDefault();
         const isLast = activeIndex >= questionFields.length - 1;
         if (!isLast) {

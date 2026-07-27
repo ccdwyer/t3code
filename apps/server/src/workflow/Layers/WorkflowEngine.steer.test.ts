@@ -60,6 +60,7 @@ const makeOutboxLayer = (target: SteerTarget | null) =>
               ? null
               : { threadId: target.threadId, turnId: target.turnId },
           ),
+        getDispatchRequestForStep: () => Effect.succeed(null),
         getSteerTarget: () =>
           Effect.succeed(target === null ? null : { ...target, steerPendingMessageId: pending }),
         markSteerPending: (dispatchId, messageId, text) =>

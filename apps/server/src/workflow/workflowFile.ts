@@ -39,6 +39,7 @@ export type LintCode =
   | "invalid_retention"
   | "invalid_retry"
   | "invalid_panel"
+  | "invalid_allow_questions"
   | "unknown_template_placeholder"
   | "invalid_step"
   | "invalid_source"
@@ -404,6 +405,29 @@ export const lintWorkflowDefinition = (
               message: `Step "${stepKey}" panel+outputContract must declare exactly one required enum field "verdict"`,
             });
           }
+        }
+      }
+
+      if (step.type === "agent" && step.allowQuestions === true) {
+        if (step.captureOutput !== true) {
+          errors.push({
+            code: "invalid_allow_questions",
+            laneKey,
+            stepKey,
+            // Capture parsing is what reads the `__questions` block, so without
+            // captureOutput the flag is silently inert rather than wrong.
+            message: `Step "${stepKey}" allowQuestions requires captureOutput`,
+          });
+        }
+        if (step.panel !== undefined && step.panel >= 2) {
+          errors.push({
+            code: "invalid_allow_questions",
+            laneKey,
+            stepKey,
+            // N independent panel turns cannot each raise a separate blocking
+            // question — there is one step run and one wait to park on.
+            message: `Step "${stepKey}" allowQuestions is incompatible with panel`,
+          });
         }
       }
 

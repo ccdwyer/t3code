@@ -24,6 +24,7 @@ import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import {
   ProviderDispatchOutbox,
   ProviderTurnPort,
+  type DispatchAssembly,
   type DispatchRequest,
   type ProviderDispatchTerminalResult,
   type ProviderDispatchOutboxShape,
@@ -103,6 +104,20 @@ interface DispatchForStepRow {
   readonly turnId: string | null;
 }
 
+interface DispatchAssemblyRow {
+  readonly ticketId: string;
+  readonly threadId: string;
+  readonly providerInstance: string;
+  readonly model: string;
+  readonly worktreePath: string;
+  readonly optionsJson: string | null;
+  readonly projectId: string | null;
+  readonly threadTitle: string | null;
+  readonly runtimeMode: string | null;
+  readonly captureOutput: number | null;
+  readonly maxSeq: number | null;
+}
+
 interface SteerTargetRow {
   readonly dispatchId: string;
   readonly threadId: string;
@@ -177,6 +192,7 @@ const make = Effect.gen(function* () {
           capture_output,
           panel_size,
           dispatch_seq,
+          dispatch_kind,
           status,
           created_at
         )
@@ -196,6 +212,7 @@ const make = Effect.gen(function* () {
           ${req.captureOutput === undefined ? null : req.captureOutput ? 1 : 0},
           ${req.panelSize ?? null},
           ${req.dispatchSeq ?? 0},
+          ${req.dispatchKind ?? null},
           'pending',
           ${createdAt}
         )
@@ -243,6 +260,69 @@ const make = Effect.gen(function* () {
         };
       }),
     );
+
+  const getDispatchRequestForStep: ProviderDispatchOutboxShape["getDispatchRequestForStep"] = (
+    stepRunId,
+  ) =>
+    Effect.gen(function* () {
+      // Read assembly from the FIRST dispatch (seq 0) — the original execution —
+      // but take the next seq from the whole step run, so a continuation lands
+      // above any repair or earlier continuation in every `dispatch_seq DESC`
+      // read.
+      const rows = yield* wrapSql(sql<DispatchAssemblyRow>`
+        SELECT
+          ticket_id AS "ticketId",
+          thread_id AS "threadId",
+          provider_instance AS "providerInstance",
+          model AS "model",
+          worktree_path AS "worktreePath",
+          options_json AS "optionsJson",
+          project_id AS "projectId",
+          thread_title AS "threadTitle",
+          runtime_mode AS "runtimeMode",
+          capture_output AS "captureOutput",
+          (
+            SELECT MAX(dispatch_seq)
+            FROM workflow_dispatch_outbox AS peer
+            WHERE peer.step_run_id = ${stepRunId}
+          ) AS "maxSeq"
+        FROM workflow_dispatch_outbox
+        WHERE step_run_id = ${stepRunId}
+        ORDER BY dispatch_seq ASC, created_at ASC, dispatch_id ASC
+        LIMIT 1
+      `);
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+      // Same tolerant decode as recovery: an unparseable legacy options blob
+      // degrades to "no options" rather than stranding an answered question.
+      const options =
+        row.optionsJson === null || row.optionsJson.length === 0
+          ? undefined
+          : yield* decodeDispatchOptionsJson(row.optionsJson).pipe(
+              Effect.orElseSucceed(() => undefined),
+            );
+      const runtimeMode =
+        row.runtimeMode === "approval-required" ||
+        row.runtimeMode === "auto-accept-edits" ||
+        row.runtimeMode === "full-access"
+          ? row.runtimeMode
+          : undefined;
+      return {
+        ticketId: row.ticketId as never,
+        threadId: row.threadId as never,
+        providerInstance: row.providerInstance,
+        model: row.model,
+        worktreePath: row.worktreePath,
+        ...(options === undefined ? {} : { options }),
+        ...(row.projectId === null ? {} : { projectId: row.projectId }),
+        ...(row.threadTitle === null ? {} : { threadTitle: row.threadTitle }),
+        ...(runtimeMode === undefined ? {} : { runtimeMode }),
+        ...(row.captureOutput === null ? {} : { captureOutput: row.captureOutput === 1 }),
+        nextDispatchSeq: (row.maxSeq ?? 0) + 1,
+      } satisfies DispatchAssembly;
+    });
 
   const getSteerTarget: ProviderDispatchOutboxShape["getSteerTarget"] = (stepRunId) =>
     wrapSql(sql<SteerTargetRow>`
@@ -653,6 +733,7 @@ const make = Effect.gen(function* () {
     confirmStep,
     ensureStarted,
     getDispatchForStep,
+    getDispatchRequestForStep,
     getSteerTarget,
     markSteerPending,
     clearSteerPending,

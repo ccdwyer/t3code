@@ -27,6 +27,7 @@ const layer = it.layer(
             threadId: "thread-captured-output" as never,
             turnId: "turn-captured-output" as never,
           }),
+        getDispatchRequestForStep: () => Effect.succeed(null),
         awaitTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
         awaitStepTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
         getSteerTarget: () => Effect.succeed(null),

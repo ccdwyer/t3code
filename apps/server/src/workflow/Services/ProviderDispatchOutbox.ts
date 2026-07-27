@@ -35,8 +35,32 @@ export interface DispatchRequest {
   /** Dispatch-time step metadata for steer validation (TOCTOU-safe). */
   readonly captureOutput?: boolean;
   readonly panelSize?: number;
-  /** 0 = initial (and panel members); 1 = output-contract repair. */
+  /**
+   * Monotonic within a step run: 0 = initial (and panel members), then
+   * `max(seq) + 1` for every follow-up turn.
+   *
+   * It orders rows for the "latest turn" reads and NOTHING else — what a row IS
+   * lives in `dispatchKind`, because a repair can now follow a question
+   * continuation and so cannot be pinned to a fixed seq.
+   */
   readonly dispatchSeq?: number;
+  /** Absent = the initial turn. Follow-up turns say which kind they are. */
+  readonly dispatchKind?: "repair" | "question-continuation";
+}
+
+/** Everything needed to build a follow-up DispatchRequest for an existing step. */
+export interface DispatchAssembly {
+  readonly ticketId: TicketId;
+  readonly threadId: ThreadId;
+  readonly providerInstance: string;
+  readonly model: string;
+  readonly worktreePath: string;
+  readonly options?: ProviderOptionSelections | undefined;
+  readonly projectId?: string | undefined;
+  readonly threadTitle?: string | undefined;
+  readonly runtimeMode?: "approval-required" | "auto-accept-edits" | "full-access" | undefined;
+  readonly captureOutput?: boolean | undefined;
+  readonly nextDispatchSeq: number;
 }
 
 export interface ProviderTurnPortShape {
@@ -107,6 +131,19 @@ export interface ProviderDispatchOutboxShape {
     { readonly threadId: ThreadId; readonly turnId: TurnId } | null,
     WorkflowEventStoreError
   >;
+  /**
+   * The seq-0 dispatch for a step, as the fields needed to build another one.
+   *
+   * A question continuation runs a fresh turn for a step whose original
+   * execution context is gone — possibly on a different process after a
+   * restart — so the assembly fields (worktree, options, runtime mode) have to
+   * come from the persisted row rather than from an executor closure.
+   * `nextDispatchSeq` is `max(seq) + 1` so a continuation never collides with a
+   * repair or an earlier continuation.
+   */
+  readonly getDispatchRequestForStep: (
+    stepRunId: StepRunId,
+  ) => Effect.Effect<DispatchAssembly | null, WorkflowEventStoreError>;
   /** Latest started dispatch for a step, including steer reservation cells. */
   readonly getSteerTarget: (
     stepRunId: StepRunId,

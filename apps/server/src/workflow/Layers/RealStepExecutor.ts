@@ -986,9 +986,20 @@ const make = Effect.gen(function* () {
         turnIds: { readonly dispatchId: string; readonly threadId: string },
         turnInstruction: string,
         titleSuffix: string,
-        dispatchSeq = 0,
+        dispatchKind?: "repair" | "question-continuation",
       ) =>
         Effect.gen(function* () {
+          // Follow-up turns take `max(seq) + 1` rather than a fixed number: a
+          // repair can follow a question continuation, and a fixed seq would put
+          // it BELOW the continuation in every "latest turn" read, completing the
+          // step from stale output.
+          const assembly =
+            dispatchKind === undefined
+              ? null
+              : yield* dispatch
+                  .getDispatchRequestForStep(ctx.stepRunId)
+                  .pipe(Effect.orElseSucceed(() => null));
+          const dispatchSeq = dispatchKind === undefined ? 0 : (assembly?.nextDispatchSeq ?? 1);
           const started = yield* dispatch.ensureStarted({
             dispatchId: turnIds.dispatchId as never,
             ticketId: ctx.ticketId,
@@ -1005,6 +1016,7 @@ const make = Effect.gen(function* () {
             captureOutput: step.captureOutput === true,
             panelSize: step.panel ?? 1,
             dispatchSeq,
+            ...(dispatchKind === undefined ? {} : { dispatchKind }),
           });
           const terminal = yield* dispatch.awaitTerminal(
             turnIds.dispatchId as never,
@@ -1019,7 +1031,7 @@ const make = Effect.gen(function* () {
       const panelSize = step.panel ?? 0;
       if (panelSize >= 2 && step.captureOutput === true) {
         return yield* runReviewPanel(ctx, step, panelSize, (ids, suffix) =>
-          runTurn(ids, instruction, suffix, 0),
+          runTurn(ids, instruction, suffix),
         );
       }
 
@@ -1027,7 +1039,6 @@ const make = Effect.gen(function* () {
         { dispatchId: dispatchId as string, threadId: threadId as string },
         instruction,
         "",
-        0,
       );
 
       if (result.terminal.ok) {
@@ -1106,7 +1117,7 @@ const make = Effect.gen(function* () {
             },
             repairPrompt,
             " (output repair)",
-            1,
+            "repair",
           );
           if ("awaitingUser" in repairResult.terminal) {
             yield* cleanupStepSession(repairResult.threadId, repairResult.turnId);

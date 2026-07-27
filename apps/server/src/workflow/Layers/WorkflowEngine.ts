@@ -1442,6 +1442,33 @@ const make = Effect.gen(function* () {
         };
       }
 
+      if (outcome._tag === "awaiting_questions") {
+        // NOT YET IMPLEMENTED — see specs/agent-questions/SPEC.md §3 and §4.2.
+        //
+        // The real branch commits StepAwaitingUser{questionPhase,
+        // raisedFromDispatchId}, parks on approvals.await like every other human
+        // wait, and on resolution runs executor.continueWithAnswers, looping
+        // while it keeps asking. Until that exists, fail closed: falling through
+        // to the completed path would commit StepCompleted with the raw
+        // `__questions` block as the step's output — the exact silent
+        // answer-loss this design exists to prevent. Nothing sets allowQuestions
+        // yet, so this is unreachable in practice.
+        const error = "agent questions are not enabled in this build";
+        yield* commit({
+          type: "StepFailed",
+          ticketId,
+          payload: stepFailedPayload(stepRunId, error, undefined, false, undefined, "infra"),
+        });
+        return {
+          result: "failed",
+          noRetry: true,
+          detail: error,
+          failureClass: "infra",
+          retryable: false,
+          stepRunId,
+        };
+      }
+
       if (outcome._tag === "awaiting_children") {
         // Fork suspension is decided by the engine before dispatch (see the fork
         // branch above) and RealStepExecutor guards fork steps, so an executor must

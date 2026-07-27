@@ -1289,9 +1289,15 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Output-contract repair turns (dispatch_seq = 1) must never re-dispatch after
-   * restart (SPEC: no repair on crash-recovery path). Confirm interrupted repair
-   * rows and fail the step closed with a non-retryable infra class.
+   * Output-contract repair turns must never re-dispatch after restart (SPEC: no
+   * repair on crash-recovery path). Confirm interrupted repair rows and fail the
+   * step closed with a non-retryable infra class.
+   *
+   * Identified by `dispatch_kind`, not by `dispatch_seq = 1`: repairs are now
+   * monotonic so they can follow a question continuation, so the seq no longer
+   * says what a row IS. Rows written before `dispatch_kind` existed still match
+   * the old shape (seq 1, kind NULL) and are settled by the legacy arm — without
+   * it, an in-flight repair from before the upgrade would silently re-dispatch.
    */
   const settleInterruptedRepairs = Effect.gen(function* () {
     const confirmedAt = yield* nowIso;
@@ -1301,8 +1307,11 @@ const make = Effect.gen(function* () {
     }>`
       SELECT step_run_id AS "stepRunId", dispatch_id AS "dispatchId"
       FROM workflow_dispatch_outbox
-      WHERE dispatch_seq = 1
-        AND status != 'confirmed'
+      WHERE status != 'confirmed'
+        AND (
+          dispatch_kind = 'repair'
+          OR (dispatch_kind IS NULL AND dispatch_seq = 1)
+        )
     `);
     for (const row of rows) {
       yield* wrapSql(sql`

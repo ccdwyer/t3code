@@ -124,7 +124,10 @@ export const validateCheckpointSubmission = (
       if (typeof raw !== "string") {
         return { ok: false, message: `answer for "${field.key}" must be a single option` };
       }
-      if (!field.options.some((option) => option.value === raw)) {
+      // `allowOther` is the ONLY way a non-option value is accepted. Without it
+      // a select is closed, which is what makes an agent-raised question able to
+      // offer choices and still take "none of these" only when it said it would.
+      if (field.allowOther !== true && !field.options.some((option) => option.value === raw)) {
         return { ok: false, message: `"${raw}" is not an option for "${field.label}"` };
       }
       answers[field.key] = raw;

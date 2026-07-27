@@ -280,6 +280,16 @@ export const AgentStep = Schema.Struct({
   panel: Schema.optional(Schema.Int),
   // Declared shape for captureOutput JSON. Requires captureOutput.
   outputContract: Schema.optional(StepOutputContract),
+  /**
+   * Let this agent pause and ask the operator a question mid-step.
+   *
+   * The agent emits a reserved `__questions` block in its captured output; the
+   * server turns it into a CheckpointForm and parks the step until it is
+   * answered, then runs a continuation turn carrying the answers. Requires
+   * captureOutput (capture parsing is what reads the block) and is incompatible
+   * with panel — lint enforces both.
+   */
+  allowQuestions: Schema.optional(Schema.Boolean),
   retry: Schema.optional(StepRetryPolicy),
   on: Schema.optional(StepRouting),
 });
@@ -327,6 +337,15 @@ export const CheckpointFormField = Schema.Union([
     label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
     options: Schema.NonEmptyArray(CheckpointOption),
     required: Schema.optional(Schema.Boolean),
+    /**
+     * Accept an answer that is not one of `options`.
+     *
+     * Without this a select can only ever return a listed value, so an agent
+     * question offering choices could not also accept "none of these". The
+     * snapshot validator is the only place that enforces it — see
+     * validateCheckpointSubmission.
+     */
+    allowOther: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     kind: Schema.Literal("text"),
@@ -625,6 +644,7 @@ export const WorkflowLintCode = Schema.Union([
   Schema.Literal("invalid_handoff_reference"),
   Schema.Literal("invalid_sla"),
   Schema.Literal("invalid_output_contract"),
+  Schema.Literal("invalid_allow_questions"),
   Schema.Literal("invalid_fork"),
 ]);
 export type WorkflowLintCode = typeof WorkflowLintCode.Type;
@@ -1092,6 +1112,25 @@ export const WorkflowEvent = Schema.Union([
        * on TicketParked.
        */
       formSnapshot: Schema.optional(CheckpointForm),
+      /**
+       * This wait was raised by an agent asking a question (allowQuestions),
+       * not by a provider prompt or a board-authored approval.
+       *
+       * It is the discriminator that tells the resolution paths "resume this by
+       * running a NEW turn carrying the answers", rather than by resuming a live
+       * provider request.
+       */
+      questionPhase: Schema.optional(Schema.Boolean),
+      /**
+       * The dispatch whose captured output raised this wait.
+       *
+       * Recovery needs to answer "has this turn already been turned into a
+       * wait?" exactly rather than by timestamp heuristics — without a stored
+       * key, a crash between the outbox confirm and this event would either
+       * double-raise or complete the step with the raw `__questions` payload as
+       * its output.
+       */
+      raisedFromDispatchId: Schema.optional(Schema.String),
     }),
   }),
   Schema.Struct({
@@ -1364,6 +1403,14 @@ export const StepOutcome = Schema.Union([
     providerRequestId: Schema.optional(ApprovalRequestId),
     providerResponseKind: Schema.optional(Schema.Literals(["request", "user-input"])),
     providerQuestionId: Schema.optional(Schema.String),
+  }),
+  Schema.TaggedStruct("awaiting_questions", {
+    // Agent asked the operator something mid-step (allowQuestions). Carries the
+    // form built from its `__questions` block, plus the dispatch that produced
+    // it so recovery can tell "already turned into a wait" from "new turn".
+    waitingReason: Schema.String,
+    form: CheckpointForm,
+    raisedFromDispatchId: Schema.String,
   }),
   Schema.TaggedStruct("awaiting_children", {
     // Fork step suspended until join condition is met.

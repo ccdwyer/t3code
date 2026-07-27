@@ -231,7 +231,12 @@ it.effect("routes provider-question approval resolution to the provider response
           publishTicketView: () => Effect.void,
         }),
       ),
-      Layer.provideMerge(Layer.succeed(StepExecutor, { execute: () => Effect.die("unused") })),
+      Layer.provideMerge(
+        Layer.succeed(StepExecutor, {
+          execute: () => Effect.die("unused"),
+          continueWithAnswers: () => Effect.die("unused"),
+        }),
+      ),
       Layer.provideMerge(PredicateEvaluatorLive),
       Layer.provideMerge(WorkflowRoutingContextBuilderLive),
       Layer.provideMerge(
@@ -365,7 +370,12 @@ it.effect("rejects resolveApproval for provider user-input waits without respond
           publishTicketView: () => Effect.void,
         }),
       ),
-      Layer.provideMerge(Layer.succeed(StepExecutor, { execute: () => Effect.die("unused") })),
+      Layer.provideMerge(
+        Layer.succeed(StepExecutor, {
+          execute: () => Effect.die("unused"),
+          continueWithAnswers: () => Effect.die("unused"),
+        }),
+      ),
       Layer.provideMerge(PredicateEvaluatorLive),
       Layer.provideMerge(WorkflowRoutingContextBuilderLive),
       Layer.provideMerge(

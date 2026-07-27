@@ -247,6 +247,7 @@ const recoveryWipExecutor = Layer.succeed(StepExecutor, {
       recoveryStepExecutions += 1;
       return { _tag: "failed" as const, error: "recovered pipeline holds its slot" };
     }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const recoveryBoardRegistry = Layer.succeed(BoardRegistry, {
@@ -496,7 +497,10 @@ it.effect("recovers provider user-input waits with a fresh request before accept
         unregister: () => Effect.void,
         cancel: () => Effect.void,
       }),
-      Layer.succeed(StepExecutor, { execute: () => Effect.die("unused") }),
+      Layer.succeed(StepExecutor, {
+        execute: () => Effect.die("unused"),
+        continueWithAnswers: () => Effect.die("unused"),
+      }),
       Layer.succeed(WorkflowFileLoader, {
         lintDefinition: () => Effect.succeed([]),
         loadAndRegister: (input) => Effect.succeed(input.boardId),

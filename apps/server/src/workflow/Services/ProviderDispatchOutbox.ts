@@ -61,6 +61,14 @@ export interface DispatchAssembly {
   readonly runtimeMode?: "approval-required" | "auto-accept-edits" | "full-access" | undefined;
   readonly captureOutput?: boolean | undefined;
   readonly nextDispatchSeq: number;
+  /**
+   * How many question continuations this step run has already had.
+   *
+   * The continuation budget is counted from persisted dispatch rows rather than
+   * from anything in the agent's output, so an agent cannot talk its way past
+   * the cap by re-asking.
+   */
+  readonly questionContinuations: number;
 }
 
 export interface ProviderTurnPortShape {

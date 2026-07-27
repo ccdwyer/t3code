@@ -1,5 +1,7 @@
 import type {
   BoardId,
+  CheckpointAnswers,
+  CheckpointForm,
   LaneEntryToken,
   LaneKey,
   PipelineRunId,
@@ -33,6 +35,23 @@ export interface StepExecutionContext {
 
 export interface StepExecutorShape {
   readonly execute: (ctx: StepExecutionContext) => Effect.Effect<StepOutcome>;
+  /**
+   * Resume a step that parked on an agent-raised question, by running a fresh
+   * turn carrying the operator's answers.
+   *
+   * Lives on the executor because the continuation must obey the SAME capture,
+   * output-contract and repair rules as the original turn, and those rules
+   * exist only here — a caller that re-implemented them would drift.
+   *
+   * The returned outcome is an ordinary one: it may complete, fail, ask AGAIN
+   * (bounded by the continuation budget), or park on a native provider prompt
+   * the continuation turn happened to hit.
+   */
+  readonly continueWithAnswers: (input: {
+    readonly ctx: StepExecutionContext;
+    readonly form: CheckpointForm;
+    readonly answers: CheckpointAnswers;
+  }) => Effect.Effect<StepOutcome>;
 }
 
 export class StepExecutor extends Context.Service<StepExecutor, StepExecutorShape>()(

@@ -43,6 +43,7 @@ const makeScriptedExecutor = (
         calls.count += 1;
         return outcomeForCall(calls.count);
       }),
+    continueWithAnswers: () => Effect.die("no question continuations in this test"),
   } satisfies StepExecutorShape);
   return { calls, layer };
 };
@@ -459,6 +460,7 @@ const gatedRetryExecutorLayer = Layer.effect(
           yield* Deferred.await(gate);
           return { _tag: "failed", error: "boom" } satisfies StepOutcome;
         }),
+      continueWithAnswers: () => Effect.die("no question continuations in this test"),
       releaseGate: () => Deferred.succeed(gate, undefined),
       calls,
     };

@@ -47,6 +47,7 @@ const makeScriptedExecutor = (
         calls.count += 1;
         return outcomeForCall(calls.count);
       }),
+    continueWithAnswers: () => Effect.die("no question continuations in this test"),
   } satisfies StepExecutorShape);
   return { calls, layer };
 };
@@ -588,6 +589,7 @@ const gatedExecutorLayer = Layer.effect(
         Deferred.await(gate).pipe(
           Effect.map((): StepOutcome => ({ _tag: "failed", error: "late" })),
         ),
+      continueWithAnswers: () => Effect.die("no question continuations in this test"),
       releaseGate: () => Deferred.succeed(gate, undefined),
     };
     return shape;
@@ -919,6 +921,7 @@ const gatedCompletingExecutorLayer = Layer.effect(
     const shape: GatedExecutor = {
       execute: () =>
         Deferred.await(gate).pipe(Effect.map((): StepOutcome => ({ _tag: "completed" }))),
+      continueWithAnswers: () => Effect.die("no question continuations in this test"),
       releaseGate: () => Deferred.succeed(gate, undefined),
     };
     return shape;

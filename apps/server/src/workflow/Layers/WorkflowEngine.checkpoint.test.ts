@@ -24,6 +24,7 @@ import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuild
 
 const unusedExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.die("no agent steps in these boards"),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const layer = it.layer(

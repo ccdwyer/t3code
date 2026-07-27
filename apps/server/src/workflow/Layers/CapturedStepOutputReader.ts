@@ -7,6 +7,7 @@ import { ProjectionThreadMessageRepository } from "../../persistence/Services/Pr
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   CapturedStepOutputReader,
+  type CapturedStepOutputReadInput,
   type CapturedStepOutputReaderShape,
 } from "../Services/CapturedStepOutputReader.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
@@ -42,6 +43,27 @@ const toReaderError = (message: string) => (cause: unknown) =>
 const make = Effect.gen(function* () {
   const projectionTurns = yield* ProjectionTurnRepository;
   const threadMessages = yield* ProjectionThreadMessageRepository;
+
+  /** The turn's final assistant message text, or undefined. */
+  const finalMessageText = (input: CapturedStepOutputReadInput) =>
+    Effect.gen(function* () {
+      const turn = yield* projectionTurns
+        .getByTurnId({ threadId: input.threadId, turnId: input.turnId })
+        .pipe(Effect.mapError(toReaderError("structured output turn lookup failed")));
+      if (Option.isNone(turn) || turn.value.assistantMessageId === null) {
+        return undefined;
+      }
+      const message = yield* threadMessages
+        .getByMessageId({ messageId: turn.value.assistantMessageId })
+        .pipe(Effect.mapError(toReaderError("structured output message lookup failed")));
+      return Option.isNone(message) ? undefined : message.value.text;
+    });
+
+  const readFinalMessage: CapturedStepOutputReaderShape["readFinalMessage"] = (input) =>
+    Effect.gen(function* () {
+      const text = yield* finalMessageText(input);
+      return text === undefined ? undefined : yield* parseCapturedOutput(text);
+    });
 
   const read: CapturedStepOutputReaderShape["read"] = (input) =>
     Effect.gen(function* () {
@@ -88,7 +110,7 @@ const make = Effect.gen(function* () {
       return undefined;
     });
 
-  return { read } satisfies CapturedStepOutputReaderShape;
+  return { read, readFinalMessage } satisfies CapturedStepOutputReaderShape;
 });
 
 export const CapturedStepOutputReaderLive = Layer.effect(CapturedStepOutputReader, make);

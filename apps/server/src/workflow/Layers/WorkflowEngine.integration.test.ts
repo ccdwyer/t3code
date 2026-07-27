@@ -318,6 +318,7 @@ const providerContinuationLayer = it.layer(
     Layer.provideMerge(
       Layer.succeed(CapturedStepOutputReader, {
         read: () => Effect.succeed({ verdict: "block" }),
+        readFinalMessage: () => Effect.succeed({ verdict: "block" }),
       }),
     ),
     Layer.provideMerge(ProjectionTurnRepositoryLive),
@@ -342,6 +343,8 @@ const recoveredCaptureReadErrorLayer = it.layer(
     Layer.provideMerge(
       Layer.succeed(CapturedStepOutputReader, {
         read: () =>
+          Effect.fail(new WorkflowEventStoreError({ message: "simulated repository failure" })),
+        readFinalMessage: () =>
           Effect.fail(new WorkflowEventStoreError({ message: "simulated repository failure" })),
       }),
     ),
@@ -975,6 +978,7 @@ blockedLayer("WorkflowEngine integration blocked path", (it) => {
 const explodingExecutor = Layer.succeed(StepExecutor, {
   execute: () =>
     Effect.fail(new WorkflowEventStoreError({ message: "executor exploded" })) as never,
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const explodingLayer = it.layer(baseLayer(explodingExecutor));
@@ -1009,6 +1013,7 @@ const capturingLaneContextExecutor = Layer.succeed(StepExecutor, {
       capturedLaneStepKeys = ctx.laneStepKeys as ReadonlyArray<string>;
       return { _tag: "completed" as const };
     }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const capturingLaneContextLayer = it.layer(baseLayer(capturingLaneContextExecutor));
@@ -1910,6 +1915,7 @@ const blockingSuccessExecutor = Layer.effect(
         }).pipe(
           Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined).pipe(Effect.ignore)),
         ),
+      continueWithAnswers: () => Effect.die("no question continuations in this test"),
     } satisfies StepExecutorShape);
   }),
 );
@@ -2026,6 +2032,7 @@ const routedAutoBlockingExecutor = Layer.effect(
           Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined).pipe(Effect.ignore)),
         );
       },
+      continueWithAnswers: () => Effect.die("no question continuations in this test"),
     } satisfies StepExecutorShape);
   }),
 );

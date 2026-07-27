@@ -32,6 +32,7 @@ import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuild
 // running pipeline we can prove the external supersession path interrupts.
 const blockingExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.never,
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const layer = it.layer(

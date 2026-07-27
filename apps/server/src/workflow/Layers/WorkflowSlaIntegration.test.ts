@@ -29,6 +29,7 @@ import { WorkflowSlaSweeper } from "../Services/WorkflowSlaSweeper.ts";
 
 const idleExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const fixedNow = Date.parse("2026-07-24T12:00:00.000Z");

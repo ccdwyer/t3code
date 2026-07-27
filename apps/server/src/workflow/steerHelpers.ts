@@ -10,6 +10,25 @@ export const CAPTURE_OUTPUT_INSTRUCTION =
 export const appendCaptureOutputInstruction = (instruction: string) =>
   `${instruction.trimEnd()}\n\n${CAPTURE_OUTPUT_INSTRUCTION}`;
 
+/**
+ * Told to an agent step with `allowQuestions`.
+ *
+ * Without this the feature is inert: capture parsing can only ever fire on a
+ * block the agent was never asked to produce. Kept terse on purpose — it is
+ * charged against the same per-render reserve as the capture suffix, and every
+ * character here is one the handoff pack and discussion transcript do not get.
+ */
+export const AGENT_QUESTIONS_INSTRUCTION =
+  'If you need a decision from the operator before you can finish, put a "__questions" key ' +
+  "in that json block instead of your result: an array of " +
+  "{key, label, options?, multi?} — key matches [A-Za-z0-9_-]{1,40} and is unique, label is " +
+  "the question, options is a list of choices (omit it for a free-text answer), multi:true " +
+  "allows several. Asking ENDS your turn; you will be given the answers and resume, so ask " +
+  "only when you genuinely cannot proceed.";
+
+export const appendAgentQuestionsInstruction = (instruction: string) =>
+  `${instruction.trimEnd()}\n\n${AGENT_QUESTIONS_INSTRUCTION}`;
+
 export const STEER_FRAMING_PREFIX =
   "Mid-run guidance from the operator — incorporate it and continue the current task: ";
 

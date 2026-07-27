@@ -1,8 +1,11 @@
 import {
   ProviderInstanceId,
   TrimmedNonEmptyString,
+  type CheckpointAnswers,
+  type CheckpointForm,
   type ProjectId,
   type StepOutcome,
+  type StepRunId,
   type TurnId,
   type WorkflowStepUsage,
 } from "@t3tools/contracts";
@@ -35,6 +38,11 @@ import { TicketMergeService } from "../Services/TicketMergeService.ts";
 import { TicketPullRequestService } from "../Services/TicketPullRequestService.ts";
 import { WorkflowAgentSessionStore } from "../Services/WorkflowAgentSessionStore.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
+import {
+  AGENT_QUESTIONS_KEY,
+  mapAgentQuestions,
+  questionsWaitingReason,
+} from "../agentQuestions.ts";
 import { WorkflowEventCommitter } from "../Services/WorkflowEventCommitter.ts";
 import { WorkflowIds } from "../Services/WorkflowIds.ts";
 import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
@@ -72,7 +80,10 @@ import {
 } from "../instructionTemplate.ts";
 import { ticketBaseRef } from "../ticketRefs.ts";
 import { agentKey as deriveAgentKey } from "../agentSessionKey.ts";
-import { appendCaptureOutputInstruction } from "../steerHelpers.ts";
+import {
+  appendAgentQuestionsInstruction,
+  appendCaptureOutputInstruction,
+} from "../steerHelpers.ts";
 import {
   renderContractInstruction,
   renderRepairPrompt,
@@ -126,6 +137,36 @@ const make = Effect.gen(function* () {
   const pullRequests = yield* TicketPullRequestService;
   const ticketCheckpoints = yield* TicketCheckpointService;
   const committer = yield* WorkflowEventCommitter;
+
+  /**
+   * How many rounds of questions one step run may ask before it fails.
+   *
+   * Bounded so an agent that keeps asking cannot park a ticket on a human
+   * forever; counted from persisted dispatch rows, not from its own output.
+   */
+  const MAX_QUESTION_ROUNDS = 5;
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  /**
+   * Remove the reserved questions key before the output is validated or stored.
+   *
+   * Without this an `allowUnknown: false` contract would reject a turn for
+   * carrying the very block the feature asked it to emit, and the raw questions
+   * could end up as a step's recorded output.
+   */
+  const stripQuestionsKey = (output: unknown): unknown => {
+    if (!isRecord(output) || !(AGENT_QUESTIONS_KEY in output)) return output;
+    const { [AGENT_QUESTIONS_KEY]: _questions, ...rest } = output;
+    return rest;
+  };
+
+  const countQuestionRaises = (stepRunId: StepRunId) =>
+    dispatch.getDispatchRequestForStep(stepRunId).pipe(
+      Effect.map((assembly) => assembly?.questionContinuations ?? 0),
+      Effect.orElseSucceed(() => 0),
+    );
   const agentSessions = yield* WorkflowAgentSessionStore;
   const handoffReader = yield* StepOutputHandoffReader;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -646,6 +687,15 @@ const make = Effect.gen(function* () {
     ctx: Parameters<StepExecutorShape["execute"]>[0],
     worktree: WorktreeHandle,
     step: Extract<Parameters<StepExecutorShape["execute"]>[0]["step"], { readonly type: "agent" }>,
+    /**
+     * Set when this is a continuation of a step that parked on a question.
+     *
+     * It replaces only the instruction and the dispatch kind — everything after
+     * the turn (capture, question detection, output contract, repair) is the
+     * SAME code the original turn ran, which is the point: a continuation that
+     * re-implemented those rules would drift from them.
+     */
+    resume?: { readonly instruction: string },
   ) =>
     Effect.gen(function* () {
       // Budget gate: once the ticket's usage roll-up reaches its budget, no
@@ -804,6 +854,7 @@ const make = Effect.gen(function* () {
         providerBudget,
         appendedDiscussionBlock.length,
         step.captureOutput === true,
+        step.allowQuestions === true,
       );
 
       // Substitute the short ticket fields, decide whether the {{ticket.description}}
@@ -919,6 +970,12 @@ const make = Effect.gen(function* () {
           : instructionWithPack;
       if (contract !== undefined) {
         instruction = `${instruction}\n\n${renderContractInstruction(contract)}`;
+      }
+      // Lint guarantees allowQuestions implies captureOutput, so this always
+      // lands after the capture suffix that introduced the json block it
+      // describes.
+      if (step.allowQuestions === true) {
+        instruction = appendAgentQuestionsInstruction(instruction);
       }
       // Everything above is done templating, so the pack text can go in now —
       // it is never itself scanned for placeholders.
@@ -1037,18 +1094,65 @@ const make = Effect.gen(function* () {
 
       const result = yield* runTurn(
         { dispatchId: dispatchId as string, threadId: threadId as string },
-        instruction,
-        "",
+        resume === undefined ? instruction : resume.instruction,
+        resume === undefined ? "" : " (answers)",
+        resume === undefined ? undefined : "question-continuation",
       );
 
       if (result.terminal.ok) {
         const usage = yield* readStepUsage(threadId as string);
         if (step.captureOutput === true) {
-          const output = yield* capturedOutputs.read({
+          const rawOutput = yield* capturedOutputs.read({
             stepRunId: ctx.stepRunId,
             threadId: threadId as never,
             turnId: result.turnId,
           });
+
+          if (step.allowQuestions === true) {
+            // STRICT read: only the turn's final assistant message. `read` above
+            // falls back to earlier messages, which is right for a result and
+            // wrong for a question — an earlier progress note or a quoted
+            // payload must never park a ticket on a human.
+            const strict = yield* capturedOutputs.readFinalMessage({
+              stepRunId: ctx.stepRunId,
+              threadId: threadId as never,
+              turnId: result.turnId,
+            });
+            const rawQuestions = isRecord(strict) ? strict[AGENT_QUESTIONS_KEY] : undefined;
+            if (rawQuestions !== undefined) {
+              const raised = yield* countQuestionRaises(ctx.stepRunId);
+              if (raised >= MAX_QUESTION_ROUNDS) {
+                return {
+                  _tag: "failed",
+                  error: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                  ...(usage === undefined ? {} : { usage }),
+                } satisfies StepOutcome;
+              }
+              const mapped = mapAgentQuestions(rawQuestions);
+              if (!mapped.ok) {
+                return {
+                  _tag: "failed",
+                  error: `invalid ${AGENT_QUESTIONS_KEY}: ${mapped.message}`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                  ...(usage === undefined ? {} : { usage }),
+                } satisfies StepOutcome;
+              }
+              return {
+                _tag: "awaiting_questions",
+                waitingReason: questionsWaitingReason(mapped.form),
+                form: mapped.form,
+                raisedFromDispatchId: dispatchId as string,
+              } satisfies StepOutcome;
+            }
+          }
+
+          // The reserved key is stripped before contract validation so an
+          // `allowUnknown: false` contract cannot reject it and it never
+          // reaches the repair path or a step's recorded output.
+          const output = stripQuestionsKey(rawOutput);
           const diagnostic: OutputDiagnostic =
             output === undefined
               ? { failure: "no_block" }
@@ -1326,7 +1430,68 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  return { execute } satisfies StepExecutorShape;
+  /**
+   * Restate the questions and the operator's answers for the continuation turn.
+   *
+   * Always restated rather than relying on provider session memory: the
+   * continuation may run on a different process after a restart, and on a
+   * provider with no resumable session there is nothing to remember.
+   */
+  const renderAnswersPrompt = (form: CheckpointForm, answers: CheckpointAnswers): string => {
+    const lines: Array<string> = [
+      "You paused to ask the operator some questions. They answered:",
+      "",
+    ];
+    for (const field of form.fields) {
+      if (field.kind === "decision") continue;
+      const answer = answers[field.key];
+      const rendered =
+        answer === undefined
+          ? "(no answer)"
+          : Array.isArray(answer)
+            ? answer.join(", ")
+            : String(answer);
+      lines.push(`- ${field.label}: ${rendered}`);
+    }
+    lines.push("", "Continue the task using those answers.");
+    return lines.join("\n");
+  };
+
+  const continueWithAnswers: StepExecutorShape["continueWithAnswers"] = ({ ctx, form, answers }) =>
+    Effect.gen(function* () {
+      const step = ctx.step;
+      if (step.type !== "agent") {
+        // Only an agent step can park on a question, so reaching here means the
+        // wait and the board definition disagree. Fail closed rather than
+        // running something else's step as an agent turn.
+        return {
+          _tag: "failed",
+          error: "question continuation reached a non-agent step",
+          retryable: false,
+          failureClass: "infra",
+        } satisfies StepOutcome;
+      }
+      // Through prepareWorktreeStep so the worktree LEASE is re-acquired: the
+      // original execute's lease is long gone by the time a human answers.
+      return yield* prepareWorktreeStep(
+        ctx,
+        (worktree) =>
+          executeAgentStep(ctx, worktree, step, {
+            instruction: renderAnswersPrompt(form, answers),
+          }),
+        { gateSetupOnTrust: true },
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.succeed<StepOutcome>({
+          _tag: "failed",
+          error: `executor error: ${executorErrorDetail(error)}`,
+          failureClass: "infra",
+        }),
+      ),
+    );
+
+  return { execute, continueWithAnswers } satisfies StepExecutorShape;
 });
 
 export const RealStepExecutorLive = Layer.effect(StepExecutor, make);

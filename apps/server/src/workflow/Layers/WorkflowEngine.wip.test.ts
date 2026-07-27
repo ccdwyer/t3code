@@ -28,6 +28,7 @@ import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuild
 
 const failedExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "failed" as const, error: "hold slot" }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 let selfRouteExecutionCount = 0;
@@ -40,6 +41,7 @@ const selfRouteExecutor = Layer.succeed(StepExecutor, {
       }
       return { _tag: "blocked" as const, reason: "stop after retry" };
     }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const workflowLayer = (executor: Layer.Layer<StepExecutor>) =>

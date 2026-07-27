@@ -43,6 +43,7 @@ import { WorkflowSourceCommitterLive } from "./WorkflowSourceCommitter.ts";
 // running pipeline (lets us prove the post-tx pipeline-start path runs).
 const blockingExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.never,
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const layer = it.layer(

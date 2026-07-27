@@ -33,6 +33,7 @@ import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuild
 // a placeholder so the engine layer resolves a StepExecutor.
 const blockingExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.never,
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 // Records every stopSession call so the tests can prove best-effort provider

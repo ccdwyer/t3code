@@ -408,6 +408,12 @@ const mk = (
               : Effect.sync(() =>
                   options.capturedOutputForRead?.({ threadId: input.threadId as string }),
                 ),
+          readFinalMessage: (input) =>
+            options.capturedOutputForRead === undefined
+              ? Effect.void
+              : Effect.sync(() =>
+                  options.capturedOutputForRead?.({ threadId: input.threadId as string }),
+                ),
         }),
       ),
       Layer.provideMerge(StubTicketMergeServiceLayer),
@@ -523,6 +529,11 @@ const captureLayer = (capturedOutput: unknown | undefined) =>
       Layer.provideMerge(
         Layer.succeed(CapturedStepOutputReader, {
           read: (input) =>
+            Effect.sync(() => {
+              capturedReadInputs.push(input);
+              return capturedOutput;
+            }),
+          readFinalMessage: (input) =>
             Effect.sync(() => {
               capturedReadInputs.push(input);
               return capturedOutput;
@@ -2185,6 +2196,7 @@ const preCheckpointFailureLayer = it.layer(
     Layer.provideMerge(
       Layer.succeed(CapturedStepOutputReader, {
         read: () => Effect.void,
+        readFinalMessage: () => Effect.void,
       }),
     ),
     Layer.provideMerge(
@@ -2332,6 +2344,7 @@ const terminalTimeoutLayer = it.layer(
     Layer.provideMerge(
       Layer.succeed(CapturedStepOutputReader, {
         read: () => Effect.void,
+        readFinalMessage: () => Effect.void,
       }),
     ),
     Layer.provideMerge(
@@ -2536,6 +2549,7 @@ const continueSessionLayer = (terminal: ProviderDispatchTerminalResult) =>
       Layer.provideMerge(
         Layer.succeed(CapturedStepOutputReader, {
           read: () => Effect.void,
+          readFinalMessage: () => Effect.void,
         }),
       ),
       Layer.provideMerge(StubTicketMergeServiceLayer),

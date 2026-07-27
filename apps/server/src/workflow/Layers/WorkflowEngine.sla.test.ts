@@ -23,6 +23,7 @@ import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuild
 
 const idleExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const workflowLayer = WorkflowEngineLayer.pipe(

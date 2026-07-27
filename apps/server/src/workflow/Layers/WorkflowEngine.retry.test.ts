@@ -49,6 +49,7 @@ const makeScriptedExecutor = (outcomeForCall: (call: number) => StepOutcome): Sc
         });
         return outcomeForCall(calls.length);
       }),
+    continueWithAnswers: () => Effect.die("no question continuations in this test"),
   } satisfies StepExecutorShape);
   return { calls, layer };
 };

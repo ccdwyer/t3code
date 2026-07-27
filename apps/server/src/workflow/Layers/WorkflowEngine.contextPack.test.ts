@@ -29,6 +29,7 @@ const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonS
 
 const succeedingExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const layer = it.layer(

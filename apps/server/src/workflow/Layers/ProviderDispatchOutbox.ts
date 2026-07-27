@@ -116,6 +116,7 @@ interface DispatchAssemblyRow {
   readonly runtimeMode: string | null;
   readonly captureOutput: number | null;
   readonly maxSeq: number | null;
+  readonly questionContinuations: number;
 }
 
 interface SteerTargetRow {
@@ -285,7 +286,13 @@ const make = Effect.gen(function* () {
             SELECT MAX(dispatch_seq)
             FROM workflow_dispatch_outbox AS peer
             WHERE peer.step_run_id = ${stepRunId}
-          ) AS "maxSeq"
+          ) AS "maxSeq",
+          (
+            SELECT COUNT(*)
+            FROM workflow_dispatch_outbox AS peer
+            WHERE peer.step_run_id = ${stepRunId}
+              AND peer.dispatch_kind = 'question-continuation'
+          ) AS "questionContinuations"
         FROM workflow_dispatch_outbox
         WHERE step_run_id = ${stepRunId}
         ORDER BY dispatch_seq ASC, created_at ASC, dispatch_id ASC
@@ -321,6 +328,7 @@ const make = Effect.gen(function* () {
         ...(runtimeMode === undefined ? {} : { runtimeMode }),
         ...(row.captureOutput === null ? {} : { captureOutput: row.captureOutput === 1 }),
         nextDispatchSeq: (row.maxSeq ?? 0) + 1,
+        questionContinuations: row.questionContinuations,
       } satisfies DispatchAssembly;
     });
 

@@ -130,6 +130,7 @@ const makeLayer = (options: {
     Layer.provide(
       Layer.succeed(CapturedStepOutputReader, {
         read: () => Effect.succeed(options.capturedOutput),
+        readFinalMessage: () => Effect.succeed(options.capturedOutput),
       }),
     ),
     Layer.provide(

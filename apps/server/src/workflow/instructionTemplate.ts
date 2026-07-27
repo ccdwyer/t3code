@@ -109,6 +109,10 @@ const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 // the executor may append (only for capture steps), so an inlined body never
 // blows the provider input cap. This is a per-render reserve, not a per-output cap.
 const CAPTURE_OUTPUT_SUFFIX_RESERVE = 512;
+// The questions suffix is appended on top of the capture suffix for
+// `allowQuestions` steps, so it needs its own reserve — charging it to the
+// capture reserve would silently truncate the handoff pack instead.
+const AGENT_QUESTIONS_SUFFIX_RESERVE = 512;
 
 /**
  * The active provider's per-turn input budget: the adapter's declared
@@ -128,12 +132,14 @@ export const instructionBodyBudget = (
   providerBudget: number,
   appendedDiscussionBlockLength: number,
   capturesOutput: boolean,
+  allowsQuestions = false,
 ): number =>
   Math.max(
     0,
     providerBudget -
       appendedDiscussionBlockLength -
-      (capturesOutput ? CAPTURE_OUTPUT_SUFFIX_RESERVE : 0),
+      (capturesOutput ? CAPTURE_OUTPUT_SUFFIX_RESERVE : 0) -
+      (allowsQuestions ? AGENT_QUESTIONS_SUFFIX_RESERVE : 0),
   );
 
 // `{{prev.output}}` or `{{step.<key>.output}}`. The step key allows the full

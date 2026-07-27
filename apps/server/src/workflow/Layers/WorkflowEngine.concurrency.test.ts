@@ -65,6 +65,7 @@ const countingExecutor = Layer.succeed(StepExecutor, {
       activeExecutions -= 1;
       return { _tag: "completed" as const };
     }),
+  continueWithAnswers: () => Effect.die("no question continuations in this test"),
 } satisfies StepExecutorShape);
 
 const layer = it.layer(

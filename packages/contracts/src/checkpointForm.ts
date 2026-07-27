@@ -161,9 +161,13 @@ export const validateCheckpointSubmission = (
       if (raw.length > CHECKPOINT_ANSWER_MAX_TEXT) {
         return { ok: false, message: `answer for "${field.label}" is too long` };
       }
-      // The sentinel is a UI affordance, never an answer. A direct client could
-      // otherwise persist it and the agent would be restated a marker.
-      if (raw === CHECKPOINT_OTHER_SENTINEL) {
+      // The sentinel is a UI affordance ONLY on an allowOther select, where it
+      // means "Something else…" and a direct client could otherwise persist the
+      // marker itself as the answer. On a CLOSED select it carries no such
+      // meaning: it is just a declared option value, and a board author who
+      // used it must still be able to submit it. Rejecting it everywhere broke
+      // exactly those existing forms.
+      if (field.allowOther === true && raw === CHECKPOINT_OTHER_SENTINEL) {
         return { ok: false, message: `"${field.label}" needs an actual answer` };
       }
       answers[field.key] = raw;

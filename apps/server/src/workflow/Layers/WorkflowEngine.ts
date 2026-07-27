@@ -5642,38 +5642,24 @@ const make = Effect.gen(function* () {
         if (!recovered) {
           continue;
         }
-        // Forked, so boot is not held behind a full provider turn per stuck
-        // question — sequentially, that could stall server readiness for the
-        // length of a terminal wait, several times over.
+        // INLINE, deliberately.
         //
-        // Forking used to be unsafe because the continuation's outbox row is
-        // inserted well after the fork starts, and `recoverPending` would adopt
-        // it while still `pending` — two turns on one step. That race is now
-        // closed at the source: `recoverPending` skips question-continuation
-        // rows outright (they have an owner), and the owed-continuation count
-        // considers only CONFIRMED ones, so a row abandoned by a dying process
-        // still reads as owed and is re-run rather than adopted.
-        const started = yield* forkTicketWork(
-          latestWait.ticketId,
-          resumeRecoveredQuestion(
-            { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
-            answered,
-            recovered,
-          ),
-          recovered.pipelineStarted.payload.laneEntryToken,
-        ).pipe(Effect.orElseSucceed(() => false));
-        if (!started) {
-          // The fork was declined — the ticket moved, or something already owns
-          // its pipeline slot (after a real crash nothing does, so this is the
-          // uncommon path). The answer is durable and must not be left unowned,
-          // so run it here. Inline only in this branch, which is why it cannot
-          // stall an ordinary boot.
-          yield* resumeRecoveredQuestion(
-            { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
-            answered,
-            recovered,
-          ).pipe(Effect.ignoreCause({ log: true }));
-        }
+        // The spec's rule is that the claim and the outbox insert happen
+        // synchronously and only the terminal await forks. Implementing that
+        // needs `continueWithAnswers` split so it can signal once the dispatch
+        // row is durable; until it is, forking the WHOLE continuation is unsafe
+        // — the row lands after `recover()` has moved on, and the later sweeps
+        // race the owner for it. Two attempts at fork-plus-ownership-exclusions
+        // each produced a new race, so this takes the slower, correct option.
+        //
+        // The cost is real: boot waits for these turns, sequentially. It is a
+        // visible, recoverable delay, unlike a duplicated agent turn on a shared
+        // worktree or a destroyed answer. Splitting the executor is the fix.
+        yield* resumeRecoveredQuestion(
+          { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
+          answered,
+          recovered,
+        ).pipe(Effect.ignoreCause({ log: true }));
       }
     });
 

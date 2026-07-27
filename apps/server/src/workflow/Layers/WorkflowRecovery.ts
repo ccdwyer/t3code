@@ -1088,6 +1088,11 @@ const make = Effect.gen(function* () {
         status
       FROM workflow_dispatch_outbox
       WHERE status = 'started'
+          -- Question continuations have an owner (resumeAnsweredQuestions holds
+          -- a claim and awaits them). Adopting one here would double-drive the
+          -- turn, and two started rows on a non-panel step get force-settled as
+          -- an interrupted review panel — destroying the answer outright.
+          AND (dispatch_kind IS NULL OR dispatch_kind != 'question-continuation')
     `);
 
     // Review-panel steps fan out several dispatches under one stepRunId.
@@ -1353,8 +1358,9 @@ const make = Effect.gen(function* () {
       // would complete the step from the QUESTION turn's capture and strand the
       // answers. This runs first and inserts its continuation row synchronously,
       // so the later sweeps see a non-confirmed row and leave the step alone.
-      // The continuation itself is forked; recoverPending skips
-      // question-continuation rows, so it cannot adopt one mid-flight.
+      // Runs the continuations INLINE: forking would let the later sweeps race
+      // the owner for a row that lands after this returns. Boot waits; see the
+      // note in resumeAnsweredQuestions.
       yield* engine.resumeAnsweredQuestions().pipe(Effect.ignoreCause({ log: true }));
       // Must run before recoverPending: tombstoneStaleDispatches also
       // confirms rows, and those superseded steps are not this sweep's

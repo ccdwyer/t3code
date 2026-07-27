@@ -55,6 +55,10 @@ const asStringArray = (value: unknown): ReadonlyArray<string> | null =>
  * approving. That asymmetry is deliberate — the alternative traps a reviewer who
  * is trying to say "no".
  */
+/** Mirrors CheckpointAnswerValue in workflow.ts — the event schema's envelope. */
+const CHECKPOINT_ANSWER_MAX_TEXT = 2000;
+const CHECKPOINT_ANSWER_MAX_ITEMS = 15;
+
 export const validateCheckpointSubmission = (
   form: CheckpointForm | undefined,
   submission: CheckpointSubmission,
@@ -107,7 +111,12 @@ export const validateCheckpointSubmission = (
         }
         continue;
       }
-      const max = field.maxLength ?? 2000;
+      // Clamped to the envelope: a form declaring a larger maxLength would
+      // otherwise admit an answer the event schema cannot re-read.
+      const max = Math.min(
+        field.maxLength ?? CHECKPOINT_ANSWER_MAX_TEXT,
+        CHECKPOINT_ANSWER_MAX_TEXT,
+      );
       if (text.length > max) {
         return {
           ok: false,
@@ -134,6 +143,13 @@ export const validateCheckpointSubmission = (
       if (field.allowOther !== true && !field.options.some((option) => option.value === raw)) {
         return { ok: false, message: `"${raw}" is not an option for "${field.label}"` };
       }
+      // An `allowOther` value is free text and must still fit what
+      // CheckpointAnswerValue can hold. Accepting a longer one writes a
+      // StepUserResolved the event schema cannot decode on replay — durably
+      // poisoning the ticket's stream, from an input an agent can provoke.
+      if (raw.length > CHECKPOINT_ANSWER_MAX_TEXT) {
+        return { ok: false, message: `answer for "${field.label}" is too long` };
+      }
       answers[field.key] = raw;
       continue;
     }
@@ -142,6 +158,9 @@ export const validateCheckpointSubmission = (
     const checked = raw === undefined ? [] : asStringArray(raw);
     if (checked === null) {
       return { ok: false, message: `answer for "${field.key}" must be a list of checked items` };
+    }
+    if (checked.length > CHECKPOINT_ANSWER_MAX_ITEMS) {
+      return { ok: false, message: `too many items checked for "${field.label}"` };
     }
     const unknown = checked.find((value) => !field.items.some((item) => item.value === value));
     if (unknown !== undefined) {

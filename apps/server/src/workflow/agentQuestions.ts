@@ -24,6 +24,10 @@ export const MAX_AGENT_QUESTIONS = 10;
 /** The decision field appended to every raised form. */
 export const QUESTION_DECISION_KEY = "__continue";
 
+/** Its two option values. Continue is the ONLY value that resumes the agent. */
+export const QUESTION_CONTINUE_VALUE = "continue";
+export const QUESTION_CANCEL_VALUE = "cancel";
+
 /**
  * Bounds mirrored from the CheckpointForm schema (workflow.ts).
  *
@@ -168,8 +172,8 @@ export const mapAgentQuestions = (raw: unknown): AgentQuestionsResult => {
     key: QUESTION_DECISION_KEY as CheckpointFieldKey,
     label: "Answer",
     options: [
-      { value: "continue", label: "Continue", outcome: "success" },
-      { value: "cancel", label: "Cancel", outcome: "failure" },
+      { value: QUESTION_CONTINUE_VALUE, label: "Continue", outcome: "success" },
+      { value: QUESTION_CANCEL_VALUE, label: "Cancel", outcome: "failure" },
     ],
   });
 

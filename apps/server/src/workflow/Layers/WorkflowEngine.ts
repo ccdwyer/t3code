@@ -84,6 +84,7 @@ import {
 } from "../Services/WorkflowRoutingContextBuilder.ts";
 import {
   AGENT_QUESTIONS_KEY,
+  QUESTION_CONTINUE_VALUE,
   mapAgentQuestions,
   questionsWaitingReason,
 } from "../agentQuestions.ts";
@@ -1012,6 +1013,21 @@ const make = Effect.gen(function* () {
       } satisfies RecoveredStepResult;
     });
 
+  /**
+   * Remove the reserved questions key from a recovered capture.
+   *
+   * The live executor strips it before an output is ever stored; recovery reads
+   * the same turn back and must strip it too, or a step recovered around a
+   * question turn keeps the raw block as its `output_json` and feeds it to
+   * `{{prev.output}}`.
+   */
+  const stripQuestionsFromOutput = (output: unknown): unknown => {
+    if (typeof output !== "object" || output === null || Array.isArray(output)) return output;
+    if (!(AGENT_QUESTIONS_KEY in output)) return output;
+    const { [AGENT_QUESTIONS_KEY]: _questions, ...rest } = output as Record<string, unknown>;
+    return rest;
+  };
+
   const completedResultForStep = (
     stepRunId: StepRunId,
     step: WorkflowStep | undefined,
@@ -1020,7 +1036,10 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<RecoveredStepResult, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       if (output !== undefined) {
-        return { _tag: "completed", output } satisfies RecoveredStepResult;
+        return {
+          _tag: "completed",
+          output: stripQuestionsFromOutput(output),
+        } satisfies RecoveredStepResult;
       }
       if (step?.type !== "agent" || step.captureOutput !== true) {
         return { _tag: "completed" } satisfies RecoveredStepResult;
@@ -1058,7 +1077,10 @@ const make = Effect.gen(function* () {
               failureClass: "agent_error",
             } satisfies RecoveredStepResult;
           }
-          return { _tag: "completed", output: captured } satisfies RecoveredStepResult;
+          return {
+            _tag: "completed",
+            output: stripQuestionsFromOutput(captured),
+          } satisfies RecoveredStepResult;
         }),
         Effect.orElseSucceed(
           () =>
@@ -4704,6 +4726,19 @@ const make = Effect.gen(function* () {
       return next;
     });
 
+  type QuestionRaiseDecision =
+    | {
+        readonly kind: "raise";
+        readonly form: CheckpointForm;
+        readonly waitingReason: string;
+        readonly raisedFromDispatchId: string;
+      }
+    /** The agent tried to ask, but the block cannot become an answerable form. */
+    | { readonly kind: "unmappable"; readonly message: string }
+    /** This turn already produced a wait; do not terminal the step. */
+    | { readonly kind: "leave" }
+    | { readonly kind: "none" };
+
   /**
    * Decide what a recovered, capture-complete agent turn means for questions.
    *
@@ -4721,26 +4756,17 @@ const make = Effect.gen(function* () {
     stepRunId: StepRunId,
     events: ReadonlyArray<PersistedWorkflowEvent>,
     captureTurn: CaptureTurn | undefined,
-  ): Effect.Effect<
-    | {
-        readonly form: CheckpointForm;
-        readonly waitingReason: string;
-        readonly raisedFromDispatchId: string;
-      }
-    | "leave"
-    | null,
-    WorkflowEventStoreError
-  > =>
+  ): Effect.Effect<QuestionRaiseDecision, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const { capturedOutputs, providerDispatches } = yield* getOptionalServices;
       if (Option.isNone(capturedOutputs) || Option.isNone(providerDispatches)) {
-        return null;
+        return { kind: "none" };
       }
       const dispatch = yield* providerDispatches.value
         .getDispatchForStep(stepRunId)
         .pipe(Effect.orElseSucceed(() => null));
       if (dispatch === null || dispatch.turnId === null) {
-        return null;
+        return { kind: "none" };
       }
       const alreadyRaised = events.some(
         (event) =>
@@ -4750,7 +4776,7 @@ const make = Effect.gen(function* () {
           event.payload.raisedFromDispatchId === dispatch.dispatchId,
       );
       if (alreadyRaised) {
-        return "leave";
+        return { kind: "leave" };
       }
       const turn = captureTurn ?? { threadId: dispatch.threadId, turnId: dispatch.turnId };
       const strict = yield* capturedOutputs.value
@@ -4761,15 +4787,18 @@ const make = Effect.gen(function* () {
           ? (strict as Record<string, unknown>)[AGENT_QUESTIONS_KEY]
           : undefined;
       if (raw === undefined) {
-        return null;
+        return { kind: "none" };
       }
       const mapped = mapAgentQuestions(raw);
       if (!mapped.ok) {
-        // A malformed block is not a question; let the step complete/fail on the
-        // ordinary path rather than parking a ticket on something unanswerable.
-        return null;
+        // The agent DID try to ask; we just cannot build an answerable form.
+        // Returning null here would fall through to capture-completion, which
+        // finishes the step with the raw question payload as its output — the
+        // exact answer-loss this branch exists to prevent. Fail instead.
+        return { kind: "unmappable", message: mapped.message };
       }
       return {
+        kind: "raise",
         form: mapped.form,
         waitingReason: questionsWaitingReason(mapped.form),
         raisedFromDispatchId: dispatch.dispatchId,
@@ -4847,13 +4876,29 @@ const make = Effect.gen(function* () {
         recoveredStep.allowQuestions === true
       ) {
         const outcome = yield* recoverQuestionRaise(stepRunId, events, captureTurn);
-        if (outcome === "leave") {
+        if (outcome.kind === "leave") {
           // Either the wait is already open, or it was answered and the §4.5
           // sweep owns the continuation. Either way this must NOT terminal.
           yield* releaseRecoveredStepClaim(stepRunId);
           return;
         }
-        if (outcome !== null) {
+        if (outcome.kind === "unmappable") {
+          yield* releaseRecoveredStepClaim(stepRunId);
+          yield* commit({
+            type: "StepFailed",
+            ticketId: recovered.stepStarted.ticketId,
+            payload: stepFailedPayload(
+              stepRunId,
+              `invalid ${AGENT_QUESTIONS_KEY}: ${outcome.message}`,
+              undefined,
+              false,
+              undefined,
+              "agent_error",
+            ),
+          });
+          return;
+        }
+        if (outcome.kind === "raise") {
           yield* commitMany(
             yield* awaitingUserEvents(recovered.stepStarted.ticketId, {
               type: "StepAwaitingUser",
@@ -5344,6 +5389,27 @@ const make = Effect.gen(function* () {
           }
         }
         if (latestWait === null || answered === null) {
+          continue;
+        }
+        // A cancel that crashed before its StepFailed landed must NOT resume.
+        // The live path commits StepUserResolved (deliberately without an
+        // outcome — the terminal normally comes from the continuation) and only
+        // then StepFailed, so a crash in between leaves a resolve that looks
+        // like any other. Fail CLOSED on anything that is not an explicit
+        // continue: running a turn the operator declined is worse than failing
+        // a step they already cancelled.
+        if (answered.decision !== QUESTION_CONTINUE_VALUE) {
+          yield* completeRecoveredStepUnlocked(
+            stepRunId,
+            {
+              _tag: "failed",
+              error: "cancelled at question",
+              retryable: false,
+              failureClass: "human_rejection",
+            },
+            undefined,
+            { allowRetry: false },
+          ).pipe(Effect.ignoreCause({ log: true }));
           continue;
         }
         // "Nothing dispatched since" is per-ROUND: anchored on the seq of the

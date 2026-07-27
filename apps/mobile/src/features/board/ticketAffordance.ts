@@ -83,9 +83,24 @@ export function selectTicketAffordance(detail: WorkflowTicketDetailView): Ticket
   const attentionKind = ticket.attentionKind;
   const providerResponseKind = awaitingStep?.providerResponseKind ?? null;
 
+  /**
+   * An agent that paused to ask the operator a question.
+   *
+   * It projects `waiting_for_input` like a provider prompt, but it is answered
+   * with the checkpoint FORM through the approval path — the freeform answer RPC
+   * hard-rejects anything that is not a provider `user-input` wait. Offering
+   * "Answer" here would be a button that can only fail, so mobile shows the
+   * question and sends the user to the board (SPEC §5).
+   */
+  const isAgentQuestion =
+    awaitingStep?.stepType === "agent" &&
+    providerResponseKind === null &&
+    awaitingStep.form !== undefined;
+
   const wantsInput =
-    attentionKind === "waiting_for_input" ||
-    (attentionKind === undefined && providerResponseKind === "user-input");
+    !isAgentQuestion &&
+    (attentionKind === "waiting_for_input" ||
+      (attentionKind === undefined && providerResponseKind === "user-input"));
   const wantsApproval =
     attentionKind === "waiting_for_approval" ||
     (attentionKind === undefined &&

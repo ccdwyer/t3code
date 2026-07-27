@@ -171,9 +171,20 @@ export const diagnoseTicket = (input: DiagnoseTicketInput): WorkflowStuckDiagnos
     // the projector stamps BOTH as waiting_for_input, because a native approval
     // emits no response kind. Without a step row to disambiguate, say the
     // neutral thing rather than offering an Answer box for an approval.
+    // An agent that paused to ask its own question also projects
+    // waiting_for_input, but it is answered with the FORM through the approval
+    // path — the freeform answer RPC hard-rejects anything that is not a
+    // provider `user-input` wait. Offering an Answer box for it would be an
+    // action that can only fail, so it takes the neutral summary and the plain
+    // open action.
+    const isAgentQuestion =
+      latestStep?.stepType === "agent" &&
+      latestStep.hasCheckpointForm === true &&
+      (latestStep.providerResponseKind === null || latestStep.providerResponseKind === undefined);
     const isInput =
-      latestStep?.providerResponseKind === "user-input" ||
-      (ticket.attentionKind === "waiting_for_input" && latestStep !== undefined);
+      !isAgentQuestion &&
+      (latestStep?.providerResponseKind === "user-input" ||
+        (ticket.attentionKind === "waiting_for_input" && latestStep !== undefined));
     return {
       kind: "waiting_input",
       summary: isInput ? "Agent question waiting" : "Waiting for a response",

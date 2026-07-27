@@ -1,13 +1,9 @@
-import {
-  closestCorners,
-  DndContext,
-  type DragEndEvent,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 
-import { LaneColumn, type LaneColumnView } from "./LaneColumn";
+import { cn } from "~/lib/utils";
+import type { LaneColumnView } from "./LaneColumn";
+import { ConsoleBoardView } from "./views/ConsoleBoardView";
+import { SpineBoardView } from "./views/SpineBoardView";
 
 export interface BoardViewTicket {
   readonly ticketId: string;
@@ -57,6 +53,32 @@ export interface BoardViewState {
   readonly ticketById: Record<string, BoardViewTicket>;
 }
 
+/** Which redesigned board surface is showing. */
+export type BoardViewMode = "spine" | "console";
+
+const MODE_KEY = "t3.board.viewMode";
+
+const MODES: ReadonlyArray<{
+  readonly mode: BoardViewMode;
+  readonly label: string;
+  readonly hint: string;
+}> = [
+  { mode: "spine", label: "Spine", hint: "Lanes as foldable columns" },
+  { mode: "console", label: "Console", hint: "One ranked triage queue" },
+];
+
+const readMode = (): BoardViewMode => {
+  if (typeof window === "undefined") return "spine";
+  return window.localStorage.getItem(MODE_KEY) === "console" ? "console" : "spine";
+};
+
+/**
+ * Drop-target resolution for the previous drag-and-drop board.
+ *
+ * Kept because it is pure, tested, and the obvious place to put this logic if
+ * dragging returns; neither redesigned view uses it today — both move tickets
+ * through the lane actions the server declares rather than by dragging.
+ */
 export function resolveBoardDropLaneKey(
   state: BoardViewState,
   ticketId: string,
@@ -78,23 +100,31 @@ export function resolveBoardDropLaneKey(
   return targetLaneKey;
 }
 
-const ticketsForIds = (
-  state: BoardViewState,
-  ticketIds: ReadonlyArray<string>,
-): ReadonlyArray<BoardViewTicket> =>
-  ticketIds
-    .map((ticketId) => state.ticketById[ticketId])
-    .filter((ticket): ticket is BoardViewTicket => ticket !== undefined);
-
+/**
+ * The board surface, in one of two redesigned views.
+ *
+ * Both are driven from the same `BoardViewState` and expose the same actions,
+ * so switching between them never changes what is possible — only how the work
+ * is laid out. The choice persists per browser, because it is a working
+ * preference rather than board state.
+ */
 export function BoardView({
   state,
-  onMove,
   onOpen,
   onParkAction,
   pendingParkActionTicketIds,
+  mode,
+  onModeChange,
+  renderTicketDetail,
+  onCloseDetail,
 }: {
   readonly state: BoardViewState;
-  readonly onMove: (ticketId: string, toLane: string) => void;
+  /**
+   * Retained so the route keeps one board contract. Neither redesigned view
+   * drags today — tickets move through the lane actions the server declares —
+   * so it is deliberately not destructured.
+   */
+  readonly onMove?: ((ticketId: string, toLane: string) => void) | undefined;
   readonly onOpen: (id: string) => void;
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
@@ -102,37 +132,78 @@ export function BoardView({
   // Tickets with a park action in flight (from any surface); threaded to each
   // card so the whole ticket's recovery controls share one disable.
   readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
+  /** Controlled mode; omit to let the board manage and persist its own. */
+  readonly mode?: BoardViewMode | undefined;
+  readonly onModeChange?: ((mode: BoardViewMode) => void) | undefined;
+  /**
+   * The full ticket detail, rendered INSIDE whichever surface the active view
+   * opens. Both views host it rather than linking out to a separate panel, so
+   * there is one detail implementation and one place it can appear.
+   */
+  readonly renderTicketDetail?: ((ticketId: string) => ReactNode) | undefined;
+  /** Called when the hosted detail is dismissed, so the host can deselect. */
+  readonly onCloseDetail?: (() => void) | undefined;
 }) {
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 8 },
-    }),
-  );
-  const handleDragEnd = (event: DragEndEvent) => {
-    const ticketId = String(event.active.id);
-    const overId = event.over ? String(event.over.id) : null;
-    const toLane = resolveBoardDropLaneKey(state, ticketId, overId);
+  const [internalMode, setInternalMode] = useState<BoardViewMode>(readMode);
+  const active = mode ?? internalMode;
 
-    if (toLane) {
-      onMove(ticketId, toLane);
-    }
-  };
+  const setMode = useCallback(
+    (next: BoardViewMode) => {
+      setInternalMode(next);
+      onModeChange?.(next);
+    },
+    [onModeChange],
+  );
+
+  useEffect(() => {
+    if (mode !== undefined || typeof window === "undefined") return;
+    window.localStorage.setItem(MODE_KEY, internalMode);
+  }, [internalMode, mode]);
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
-      <div className="flex h-full min-h-0 gap-4 overflow-x-auto overflow-y-hidden px-4 py-3">
-        {state.lanes.map((lane) => (
-          <LaneColumn
-            key={lane.key}
-            lane={lane}
-            onOpen={onOpen}
-            onParkAction={onParkAction}
-            pendingParkActionTicketIds={pendingParkActionTicketIds}
-            admittedTickets={ticketsForIds(state, lane.admittedTicketIds)}
-            queuedTickets={ticketsForIds(state, lane.queuedTicketIds)}
-          />
-        ))}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-1 px-4 pt-2">
+        <div className="flex overflow-hidden rounded-md border border-border/70">
+          {MODES.map((entry) => (
+            <button
+              key={entry.mode}
+              type="button"
+              title={entry.hint}
+              aria-pressed={active === entry.mode}
+              onClick={() => {
+                setMode(entry.mode);
+              }}
+              className={cn(
+                "px-2 py-0.5 text-2xs transition-colors",
+                active === entry.mode
+                  ? "bg-accent font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-muted/50",
+              )}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
       </div>
-    </DndContext>
+
+      {active === "spine" ? (
+        <SpineBoardView
+          state={state}
+          onOpen={onOpen}
+          renderTicketDetail={renderTicketDetail}
+          onCloseDetail={onCloseDetail}
+          onParkAction={onParkAction}
+          pendingParkActionTicketIds={pendingParkActionTicketIds}
+        />
+      ) : (
+        <ConsoleBoardView
+          state={state}
+          onOpen={onOpen}
+          renderTicketDetail={renderTicketDetail}
+          onParkAction={onParkAction}
+          pendingParkActionTicketIds={pendingParkActionTicketIds}
+        />
+      )}
+    </div>
   );
 }

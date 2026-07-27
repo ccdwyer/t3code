@@ -138,6 +138,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --animate-status-pulse: status-pulse 2s infinite;
   --animate-status-ping: status-ping 2s infinite;
   --animate-sidebar-working-text: sidebar-working-text 3.4s infinite;
+  --animate-spine-working: spine-working 1.6s infinite linear;
+  --animate-spine-breathe: spine-breathe 2s ease-in-out infinite;
   --font-sans:
     "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
     sans-serif;
@@ -217,6 +219,32 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     100% {
       opacity: 0;
       scale: 2;
+    }
+  }
+  /* A segment sweeping across a hairline track: the spine board's "working"
+     cue. Transform-only, so it runs on the compositor rather than costing a
+     layout per frame, and it stays honest — the server sends no per-step
+     progress, so the bar reports activity, never a percentage. */
+  @keyframes spine-working {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(250%);
+    }
+  }
+  /* The collapsed spine's alarm dots: a slow opacity breath, staggered per dot
+     so a stuck lane reads as alive in peripheral vision without ever pulling
+     the eye the way a blink would. */
+  @keyframes spine-breathe {
+    0%,
+    100% {
+      opacity: 0.35;
+      animation-timing-function: steps(8);
+    }
+    50% {
+      opacity: 1;
+      animation-timing-function: steps(8);
     }
   }
   @keyframes sidebar-working-text {

@@ -27,7 +27,6 @@ import { WorkflowEditor } from "../components/board/editor/WorkflowEditor";
 import { WorkflowEditorFullscreen } from "../components/board/editor/WorkflowEditorFullscreen";
 import { NeedsYouStrip } from "../components/board/NeedsYouStrip";
 import { TicketDrawer } from "../components/board/TicketDrawer";
-import { RightPanelSheet } from "../components/RightPanelSheet";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
@@ -951,6 +950,66 @@ function WorkflowBoardRouteView() {
     setEditorOpen(false);
   }, []);
 
+  /**
+   * The full ticket detail, handed to the board so it can host it inside
+   * whichever surface it opens. There is one drawer implementation; the board
+   * decides where it appears.
+   */
+  const renderTicketDetail = useCallback(
+    (ticketId: string) => {
+      if (ticketDetail === null || ticketDetail.ticket.ticketId !== ticketId) {
+        return (
+          <div className="flex h-full items-center justify-center px-4 text-sm text-muted-foreground">
+            {ticketDetailError ?? "Loading ticket..."}
+          </div>
+        );
+      }
+      return (
+        <TicketDrawer
+          api={routeApi}
+          detail={ticketDetail}
+          lanes={state.lanes}
+          onAnswerStep={handleAnswerStep}
+          onPostComment={handlePostComment}
+          onEditMessage={handleEditMessage}
+          onEditContextPack={handleEditContextPack}
+          onLoadTimeline={handleLoadTimeline}
+          onApprove={handleApprove}
+          onEditTicket={handleEditTicket}
+          onDeleteTicket={handleDeleteTicket}
+          onMove={handleDrawerMove}
+          onRunLane={handleRunLane}
+          onSteered={reloadTicketDetail}
+          onParkAction={handleParkAction}
+          parkActionPending={pendingParkActionTicketIds.has(ticketDetail.ticket.ticketId)}
+          projectId={state.projectId ? ProjectId.make(state.projectId) : undefined}
+          cwd={ticketCwd}
+        />
+      );
+    },
+    [
+      handleAnswerStep,
+      handleApprove,
+      handleDeleteTicket,
+      handleDrawerMove,
+      handleEditContextPack,
+      handleEditMessage,
+      handleEditTicket,
+      handleLoadTimeline,
+      handleParkAction,
+      handlePostComment,
+      handleRunLane,
+      pendingParkActionTicketIds,
+      reloadTicketDetail,
+      routeApi,
+      state.lanes,
+      state.projectId,
+      ticketCwd,
+      ticketDetail,
+      ticketDetailError,
+    ],
+  );
+
   return (
     <>
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
@@ -1011,6 +1070,8 @@ function WorkflowBoardRouteView() {
               />
               <BoardView
                 state={visibleState}
+                renderTicketDetail={renderTicketDetail}
+                onCloseDetail={closeTicketDrawer}
                 onMove={handleMove}
                 onOpen={handleOpenTicket}
                 onParkAction={handleParkAction}
@@ -1053,34 +1114,6 @@ function WorkflowBoardRouteView() {
           </div>
         )}
       </WorkflowEditorFullscreen>
-      <RightPanelSheet open={selectedTicketId !== null} onClose={closeTicketDrawer}>
-        {ticketDetail ? (
-          <TicketDrawer
-            api={routeApi}
-            detail={ticketDetail}
-            lanes={state.lanes}
-            onAnswerStep={handleAnswerStep}
-            onPostComment={handlePostComment}
-            onEditMessage={handleEditMessage}
-            onEditContextPack={handleEditContextPack}
-            onLoadTimeline={handleLoadTimeline}
-            onApprove={handleApprove}
-            onEditTicket={handleEditTicket}
-            onDeleteTicket={handleDeleteTicket}
-            onMove={handleDrawerMove}
-            onRunLane={handleRunLane}
-            onSteered={reloadTicketDetail}
-            onParkAction={handleParkAction}
-            parkActionPending={pendingParkActionTicketIds.has(ticketDetail.ticket.ticketId)}
-            projectId={state.projectId ? ProjectId.make(state.projectId) : undefined}
-            cwd={ticketCwd}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center px-4 text-sm text-muted-foreground">
-            {ticketDetailError ?? "Loading ticket..."}
-          </div>
-        )}
-      </RightPanelSheet>
     </>
   );
 }

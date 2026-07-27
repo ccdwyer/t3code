@@ -87,6 +87,25 @@ describe("mapAgentQuestions", () => {
     assert.include(rejection([{ key: "prototype", label: "Sneaky" }]), "may not use");
   });
 
+  it("rejects any inherited Object.prototype name as a key", () => {
+    // Not just __proto__: validation reads submitted[key], so an inherited
+    // function makes an UNANSWERED field look answered — and Cancel, which is
+    // meant to allow incomplete answers, then fails.
+    assert.include(rejection([{ key: "toString", label: "x" }]), "may not use");
+    assert.include(rejection([{ key: "valueOf", label: "x" }]), "may not use");
+    assert.include(rejection([{ key: "hasOwnProperty", label: "x" }]), "may not use");
+  });
+
+  it("rejects a malformed or unusable multi flag", () => {
+    // `"true"` silently became a single-select, so the operator could not give
+    // the several answers the agent asked for.
+    assert.include(
+      rejection([{ key: "k", label: "x", options: ["a"], multi: "true" }]),
+      "multi must be true or false",
+    );
+    assert.include(rejection([{ key: "k", label: "x", multi: true }]), "lists no options");
+  });
+
   it("rejects the reserved decision key", () => {
     assert.include(rejection([{ key: QUESTION_DECISION_KEY, label: "Sneaky" }]), "reserved");
   });

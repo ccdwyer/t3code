@@ -25,8 +25,18 @@ export const MAX_AGENT_QUESTIONS = 10;
 /** The decision field appended to every raised form. */
 export const QUESTION_DECISION_KEY = "__continue";
 
-/** Keys that are not safe as plain-object properties. */
-const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+/**
+ * Keys that resolve to something inherited rather than an answer.
+ *
+ * Every name on `Object.prototype`, not a hand-picked few: `toString` and
+ * `valueOf` are just as dangerous as `__proto__` here, because validation reads
+ * the inherited function and an unanswered field looks answered — which makes
+ * Cancel, whose whole point is to allow incomplete answers, fail.
+ */
+const PROTOTYPE_KEYS = new Set<string>([
+  ...Object.getOwnPropertyNames(Object.prototype),
+  "prototype",
+]);
 
 /** Its two option values. Continue is the ONLY value that resumes the agent. */
 export const QUESTION_CONTINUE_VALUE = "continue";
@@ -153,6 +163,17 @@ export const mapAgentQuestions = (raw: unknown): AgentQuestionsResult => {
     if (label.length > MAX_LABEL) return reject(`${where} label is too long`);
 
     const brandedKey = key as CheckpointFieldKey;
+
+    // `multi` is only ever absent or a boolean. Left unchecked, `"true"`
+    // silently produced a single-select and the operator could not give the
+    // several answers the agent asked for — a malformed block quietly changing
+    // the question's TYPE, which is exactly what this mapper exists to refuse.
+    if (entry.multi !== undefined && typeof entry.multi !== "boolean") {
+      return reject(`${where} multi must be true or false`);
+    }
+    if (entry.multi === true && entry.options === undefined) {
+      return reject(`${where} asks for several answers but lists no options`);
+    }
 
     if (entry.options === undefined) {
       // No options declared = freeform.

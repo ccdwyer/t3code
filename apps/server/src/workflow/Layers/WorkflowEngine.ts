@@ -4902,6 +4902,10 @@ const make = Effect.gen(function* () {
 
       const recoveredStep = steps[currentStepIndex];
 
+      // Set when the recovered capture held a question block that cannot become
+      // an answerable form; handled as an ordinary failure by the tail below.
+      let questionFailure: string | null = null;
+
       // SPEC §4.4 — the confirm-before-await crash window.
       //
       // The outbox confirms a successful turn BEFORE the executor returns and
@@ -4923,20 +4927,13 @@ const make = Effect.gen(function* () {
           return;
         }
         if (outcome.kind === "unmappable") {
-          yield* releaseRecoveredStepClaim(stepRunId);
-          yield* commit({
-            type: "StepFailed",
-            ticketId: recovered.stepStarted.ticketId,
-            payload: stepFailedPayload(
-              stepRunId,
-              `invalid ${AGENT_QUESTIONS_KEY}: ${outcome.message}`,
-              undefined,
-              false,
-              undefined,
-              "agent_error",
-            ),
-          });
-          return;
+          // Fall through as an ordinary FAILED result rather than committing
+          // StepFailed here and returning: the tail below is what runs the retry
+          // decision and `completePipelineFrom`, so returning early would leave
+          // a failed step in a pipeline that never routes on.failure — a ticket
+          // stuck until the next restart. The live path fails through the normal
+          // arm too, so both agree on what an unmappable block does.
+          questionFailure = `invalid ${AGENT_QUESTIONS_KEY}: ${outcome.message}`;
         }
         if (outcome.kind === "raise") {
           yield* commitMany(
@@ -4961,10 +4958,17 @@ const make = Effect.gen(function* () {
         }
       }
 
-      let terminalResult =
-        result._tag === "completed"
-          ? yield* completedResultForStep(stepRunId, recoveredStep, result.output, captureTurn)
-          : result;
+      let terminalResult: RecoveredStepResult =
+        questionFailure !== null
+          ? {
+              _tag: "failed",
+              error: questionFailure,
+              retryable: false,
+              failureClass: "agent_error",
+            }
+          : result._tag === "completed"
+            ? yield* completedResultForStep(stepRunId, recoveredStep, result.output, captureTurn)
+            : result;
       if (
         terminalResult._tag !== "blocked" &&
         terminalResult.usage === undefined &&
@@ -5513,10 +5517,18 @@ const make = Effect.gen(function* () {
         if (!recovered) {
           continue;
         }
-        yield* resumeRecoveredQuestion(
-          { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
-          answered,
-          recovered,
+        // Forked, not awaited. Boot recovery is sequential, so awaiting a full
+        // agent turn here would stall startup behind every stuck question —
+        // minutes each, multiplied by however many are waiting. Starting a
+        // second continuation is prevented by the claim inside
+        // resumeRecoveredQuestion, not by staying inline.
+        yield* forkTicketWork(
+          latestWait.ticketId,
+          resumeRecoveredQuestion(
+            { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
+            answered,
+            recovered,
+          ),
         ).pipe(Effect.ignoreCause({ log: true }));
       }
     });

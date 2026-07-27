@@ -1694,6 +1694,15 @@ function CheckpointFormFields({
   ) => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, string | ReadonlyArray<string>>>({});
+  /**
+   * Which question the number keys act on.
+   *
+   * The keyboard contract is "answer with the number keys", and a form can ask
+   * several things, so the digits need an unambiguous subject. It is the first
+   * unanswered question, and `enter` moves it along.
+   */
+  const [activeIndex, setActiveIndex] = useState(0);
+  const freeformRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   // Free text typed against an `allowOther` select, kept apart from `answers`
   // so switching back to a listed option does not silently resubmit it.
   const [otherText, setOtherText] = useState<Record<string, string>>({});
@@ -1706,6 +1715,76 @@ function CheckpointFormFields({
   const setOther = (key: string, value: string) => {
     setOtherText((prior) => ({ ...prior, [key]: value }));
   };
+
+  /** The questions the digits can act on — the decision field is not one. */
+  const questionFields = form.fields.filter((field) => field.kind !== "decision");
+  const activeField = questionFields[Math.min(activeIndex, questionFields.length - 1)];
+
+  /**
+   * Answer the active question from the keyboard.
+   *
+   * `1`-`9` pick the nth choice (toggling, for a checklist), `s` jumps to the
+   * freeform box, and `enter` moves to the next question. Bound on the window
+   * rather than the fields so it works without tabbing into the form first —
+   * which is the point of "all able to be done from your keyboard".
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (disabled || activeField === undefined) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      const target = event.target;
+      const typing =
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable === true);
+
+      if (event.key === "Enter" && !typing) {
+        event.preventDefault();
+        setActiveIndex((index) => Math.min(index + 1, questionFields.length - 1));
+        return;
+      }
+      // `s` for "steer" — jump to the freeform box. Never while typing, or it
+      // would be impossible to type the letter s.
+      if ((event.key === "s" || event.key === "S") && !typing) {
+        event.preventDefault();
+        if (activeField.kind === "select" && activeField.allowOther === true) {
+          setAnswer(activeField.key, OTHER_VALUE);
+        }
+        window.setTimeout(() => freeformRef.current?.focus(), 0);
+        return;
+      }
+      if (typing) return;
+
+      const digit = Number.parseInt(event.key, 10);
+      if (Number.isNaN(digit) || digit < 1) return;
+      if (activeField.kind === "select") {
+        const option = activeField.options[digit - 1];
+        if (option === undefined) return;
+        event.preventDefault();
+        setAnswer(activeField.key, option.value);
+        return;
+      }
+      if (activeField.kind === "checklist") {
+        const item = activeField.items[digit - 1];
+        if (item === undefined) return;
+        event.preventDefault();
+        const current = Array.isArray(answers[activeField.key])
+          ? (answers[activeField.key] as ReadonlyArray<string>)
+          : [];
+        setAnswer(
+          activeField.key,
+          current.includes(item.value)
+            ? current.filter((value) => value !== item.value)
+            : [...current, item.value],
+        );
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [activeField, answers, disabled, questionFields.length]);
 
   /**
    * What actually goes to the server.
@@ -1743,6 +1822,9 @@ function CheckpointFormFields({
                 {field.required === true ? " *" : ""}
               </span>
               <textarea
+                ref={(node) => {
+                  if (activeField?.key === field.key) freeformRef.current = node;
+                }}
                 className="mt-0.5 w-full rounded border border-border/70 bg-background p-2 text-xs"
                 rows={2}
                 placeholder={field.placeholder ?? ""}
@@ -1755,11 +1837,18 @@ function CheckpointFormFields({
           );
         }
         if (field.kind === "select") {
+          const active = activeField?.key === field.key;
           return (
-            <label key={field.key} className="block">
+            <label key={field.key} className="block" data-active={active}>
               <span className="text-xs text-muted-foreground">
                 {field.label}
                 {field.required === true ? " *" : ""}
+                {active ? (
+                  <span className="ml-1 text-2xs text-muted-foreground/70">
+                    press 1–{Math.min(9, field.options.length)}
+                    {field.allowOther === true ? ", or s to type" : ""}
+                  </span>
+                ) : null}
               </span>
               <select
                 className="mt-0.5 w-full rounded border border-border/70 bg-background p-1.5 text-xs"
@@ -1783,7 +1872,9 @@ function CheckpointFormFields({
                 // not the sentinel, which exists only to reveal the input.
                 <input
                   type="text"
-                  autoFocus
+                  ref={(node) => {
+                    if (activeField?.key === field.key) freeformRef.current = node;
+                  }}
                   className="mt-1 w-full rounded border border-border/70 bg-background p-1.5 text-xs"
                   placeholder="Your answer"
                   onChange={(event) => {
@@ -1803,6 +1894,11 @@ function CheckpointFormFields({
             <legend className="text-xs text-muted-foreground">
               {field.label}
               {field.requireAll === true ? " (all)" : field.required === true ? " *" : ""}
+              {activeField?.key === field.key ? (
+                <span className="ml-1 text-2xs text-muted-foreground/70">
+                  press 1–{Math.min(9, field.items.length)} to toggle
+                </span>
+              ) : null}
             </legend>
             {field.items.map((item) => (
               <label key={item.value} className="flex items-center gap-1.5 text-xs">

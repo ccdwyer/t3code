@@ -89,6 +89,7 @@ import {
   questionsWaitingReason,
 } from "../agentQuestions.ts";
 import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
+import { validateStepOutput } from "../stepOutputContract.ts";
 import { resolveParkActions } from "../parkActions.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
@@ -915,9 +916,10 @@ const make = Effect.gen(function* () {
       if (laneEntryToken === null) {
         // No live lane entry: the ticket moved or was parked out from under this
         // wait, so there is nothing to resume into.
-        return;
+        return false;
       }
       const token = laneEntryToken as LaneEntryToken;
+      let started = false;
       yield* SynchronizedRef.updateEffect(runningPipelines, (current) =>
         Effect.gen(function* () {
           const key = ticketId as string;
@@ -926,6 +928,7 @@ const make = Effect.gen(function* () {
             // displace it — the newer owner is the live pipeline.
             return current;
           }
+          started = true;
           const fiber = yield* work.pipe(
             Effect.ignoreCause({ log: true }),
             Effect.ensuring(clearRunningPipeline(ticketId, token)),
@@ -937,6 +940,7 @@ const make = Effect.gen(function* () {
         }),
       );
       yield* Effect.yieldNow;
+      return started;
     });
 
   const interruptRunningPipeline = (ticketId: TicketId) =>
@@ -1077,10 +1081,27 @@ const make = Effect.gen(function* () {
               failureClass: "agent_error",
             } satisfies RecoveredStepResult;
           }
-          return {
-            _tag: "completed",
-            output: stripQuestionsFromOutput(captured),
-          } satisfies RecoveredStepResult;
+          const cleaned = stripQuestionsFromOutput(captured);
+          // A contracted step must not terminal-complete on unvalidated output
+          // just because it finished through recovery. The live path validates
+          // (and gets one repair); recovery has no repair budget, so a violation
+          // fails closed rather than silently completing.
+          const contract = step.type === "agent" ? step.outputContract : undefined;
+          if (contract !== undefined) {
+            const errors = validateStepOutput(contract, {
+              output: cleaned as object,
+              rawBlock: JSON.stringify(cleaned),
+            });
+            if (errors.length > 0) {
+              return {
+                _tag: "failed",
+                error: `output contract violation on recovery: ${errors.join("; ")}`,
+                retryable: false,
+                failureClass: "agent_error",
+              } satisfies RecoveredStepResult;
+            }
+          }
+          return { _tag: "completed", output: cleaned } satisfies RecoveredStepResult;
         }),
         Effect.orElseSucceed(
           () =>
@@ -4726,6 +4747,9 @@ const make = Effect.gen(function* () {
       return next;
     });
 
+  /** Mirrors the executor's cap; both paths must refuse the same round. */
+  const MAX_QUESTION_ROUNDS = 5;
+
   type QuestionRaiseDecision =
     | {
         readonly kind: "raise";
@@ -4788,6 +4812,22 @@ const make = Effect.gen(function* () {
           : undefined;
       if (raw === undefined) {
         return { kind: "none" };
+      }
+      // The same round budget the live path enforces. The live check happens
+      // AFTER the outbox confirms the turn, so a crash in between would let a
+      // 6th round be raised here that the live path would have refused.
+      // Counted from the wait events, which is what the spec makes canonical.
+      const roundsSoFar = events.filter(
+        (event) =>
+          event.type === "StepAwaitingUser" &&
+          event.payload.stepRunId === stepRunId &&
+          event.payload.questionPhase === true,
+      ).length;
+      if (roundsSoFar >= MAX_QUESTION_ROUNDS) {
+        return {
+          kind: "unmappable",
+          message: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,
+        };
       }
       const mapped = mapAgentQuestions(raw);
       if (!mapped.ok) {
@@ -5531,10 +5571,27 @@ const make = Effect.gen(function* () {
         // Forked so a multi-minute agent turn does not block the answering
         // user's RPC, and registered against the ticket so park/move can still
         // interrupt it.
-        yield* forkTicketWork(
+        const started = yield* forkTicketWork(
           recovered.stepStarted.ticketId,
           resumeRecoveredQuestion(pending, resolution, recovered),
         );
+        if (!started) {
+          // The answer is already durable, so it must not be left with no owner:
+          // the ticket lost its lane entry, or another fiber holds the slot.
+          // Fail the step rather than leaving it `running` forever with an
+          // answer nobody will ever deliver.
+          yield* completeRecoveredStepUnlocked(
+            pending.payload.stepRunId,
+            {
+              _tag: "failed",
+              error: "question answered but the step could not be resumed",
+              retryable: false,
+              failureClass: "infra",
+            },
+            undefined,
+            { allowRetry: false },
+          ).pipe(Effect.ignoreCause({ log: true }));
+        }
         return;
       }
 

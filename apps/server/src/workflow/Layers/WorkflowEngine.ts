@@ -1508,6 +1508,34 @@ const make = Effect.gen(function* () {
                 };
                 continue;
               }
+              if (raise.kind === "unmappable") {
+                // The agent DID try to ask and the block cannot become an
+                // answerable form. Completing here would report success with the
+                // question stripped out — usually an empty object — and no
+                // explanation. Fail, exactly as the live and recovery paths do.
+                const error = `invalid ${AGENT_QUESTIONS_KEY}: ${raise.message}`;
+                yield* commit({
+                  type: "StepFailed",
+                  ticketId,
+                  payload: stepFailedPayload(
+                    stepRunId,
+                    error,
+                    terminalResult.usage,
+                    false,
+                    undefined,
+                    "agent_error",
+                  ),
+                });
+                return {
+                  result: "failed",
+                  noRetry: true,
+                  detail: error,
+                  failureClass: "agent_error",
+                  retryable: false,
+                  stepRunId,
+                  stepKey: step.key,
+                };
+              }
             }
             yield* commit({
               type: "StepCompleted",

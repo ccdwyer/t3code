@@ -5642,7 +5642,18 @@ const make = Effect.gen(function* () {
         if (!recovered) {
           continue;
         }
-        // INLINE, deliberately.
+        // INLINE, and that is what makes the ordinary sweeps safe.
+        //
+        // This runs to completion before `recoverPending` and
+        // `monitorStartedDispatches`, so there is no window in which they could
+        // adopt a continuation row that still has a live owner. An earlier
+        // forked version needed those sweeps to SKIP question continuations to
+        // avoid exactly that — and the skip then stranded the opposite case: a
+        // continuation that parked on a native provider prompt has no owner
+        // after a restart and needs the ordinary recovery to re-drive it.
+        // Running inline removes the need for both exclusions.
+        //
+        // The original reason for inlining stands too:
         //
         // The spec's rule is that the claim and the outbox insert happen
         // synchronously and only the terminal await forks. Implementing that

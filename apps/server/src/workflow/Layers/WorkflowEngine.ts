@@ -893,6 +893,45 @@ const make = Effect.gen(function* () {
       return next;
     });
 
+  /**
+   * Run ticket work on a forked fiber that park/move can still interrupt.
+   *
+   * `runningPipelines` is the only interrupt registry, and recovery's other
+   * paths run inline and unregistered. A question continuation must NOT run
+   * inline (it is a full agent turn on the answering user's RPC fiber) and must
+   * NOT be unregistered (a superseding park could not reach it), so it registers
+   * under the ticket's current lane-entry token and clears on exit.
+   */
+  const forkTicketWork = (ticketId: TicketId, work: Effect.Effect<void, WorkflowEventStoreError>) =>
+    Effect.gen(function* () {
+      const laneEntryToken = yield* currentToken(ticketId);
+      if (laneEntryToken === null) {
+        // No live lane entry: the ticket moved or was parked out from under this
+        // wait, so there is nothing to resume into.
+        return;
+      }
+      const token = laneEntryToken as LaneEntryToken;
+      yield* SynchronizedRef.updateEffect(runningPipelines, (current) =>
+        Effect.gen(function* () {
+          const key = ticketId as string;
+          if (current.get(key)) {
+            // Something else already owns this ticket's fiber slot; do not
+            // displace it — the newer owner is the live pipeline.
+            return current;
+          }
+          const fiber = yield* work.pipe(
+            Effect.ignoreCause({ log: true }),
+            Effect.ensuring(clearRunningPipeline(ticketId, token)),
+            Effect.forkDetach({ startImmediately: false, uninterruptible: false }),
+          );
+          const next = new Map(current);
+          next.set(key, { fiber, laneEntryToken: token });
+          return next;
+        }),
+      );
+      yield* Effect.yieldNow;
+    });
+
   const interruptRunningPipeline = (ticketId: TicketId) =>
     Effect.gen(function* () {
       const active = yield* SynchronizedRef.modify(runningPipelines, (current) => {
@@ -1268,239 +1307,291 @@ const make = Effect.gen(function* () {
         };
       }
 
-      const outcome = yield* (
-        executor.execute({
-          ticketId,
-          boardId,
-          pipelineRunId,
-          stepRunId,
-          laneEntryToken,
-          laneKey,
-          laneStepKeys,
-          step,
-          isFirstAgentStep,
-        }) as Effect.Effect<StepOutcome, WorkflowEventStoreError>
+      const executionContext = {
+        ticketId,
+        boardId,
+        pipelineRunId,
+        stepRunId,
+        laneEntryToken,
+        laneKey,
+        laneStepKeys,
+        step,
+        isFirstAgentStep,
+      };
+      let outcome = yield* (
+        executor.execute(executionContext) as Effect.Effect<StepOutcome, WorkflowEventStoreError>
       ).pipe(
         Effect.catch((error) =>
           Effect.succeed<StepOutcome>({ _tag: "failed", error: formatError(error) }),
         ),
       );
-      if (outcome._tag === "awaiting_user") {
-        const awaitingEvent = {
-          type: "StepAwaitingUser",
-          ticketId,
-          payload: {
-            stepRunId,
-            waitingReason: outcome.waitingReason,
-            ...(outcome.providerThreadId === undefined
-              ? {}
-              : { providerThreadId: outcome.providerThreadId }),
-            ...(outcome.providerRequestId === undefined
-              ? {}
-              : { providerRequestId: outcome.providerRequestId }),
-            ...(outcome.providerResponseKind === undefined
-              ? {}
-              : { providerResponseKind: outcome.providerResponseKind }),
-            ...(outcome.providerQuestionId === undefined
-              ? {}
-              : { providerQuestionId: outcome.providerQuestionId }),
-          },
-        } satisfies UnstampedWorkflowEventInput;
-        yield* commitMany(yield* awaitingUserEvents(ticketId, awaitingEvent));
-        const userResolution = yield* approvals.await(stepRunId);
-        yield* commit({
-          type: "StepUserResolved",
-          ticketId,
-          payload: {
-            stepRunId,
-            // No `outcome` here on purpose: this is a provider-originated wait,
-            // whose real terminal arrives below from the provider turn. Stamping
-            // one would let boot replay fabricate a terminal that never happened.
-            ...(userResolution.decision === undefined ? {} : { decision: userResolution.decision }),
-            ...(userResolution.answers === undefined ? {} : { answers: userResolution.answers }),
-          },
-        });
-        if (userResolution.outcome !== "success") {
-          yield* commit({
-            type: "StepFailed",
+      // Loops ONLY for agent questions: answering one produces a fresh outcome
+      // that has to run through this same handling, including the case where the
+      // continuation asks again. Every other arm returns.
+      for (;;) {
+        if (outcome._tag === "awaiting_user") {
+          const awaitingEvent = {
+            type: "StepAwaitingUser",
             ticketId,
-            payload: stepFailedPayload(
+            payload: {
               stepRunId,
-              "rejected",
-              undefined,
-              false,
-              undefined,
-              "human_rejection",
-            ),
+              waitingReason: outcome.waitingReason,
+              ...(outcome.providerThreadId === undefined
+                ? {}
+                : { providerThreadId: outcome.providerThreadId }),
+              ...(outcome.providerRequestId === undefined
+                ? {}
+                : { providerRequestId: outcome.providerRequestId }),
+              ...(outcome.providerResponseKind === undefined
+                ? {}
+                : { providerResponseKind: outcome.providerResponseKind }),
+              ...(outcome.providerQuestionId === undefined
+                ? {}
+                : { providerQuestionId: outcome.providerQuestionId }),
+            },
+          } satisfies UnstampedWorkflowEventInput;
+          yield* commitMany(yield* awaitingUserEvents(ticketId, awaitingEvent));
+          const userResolution = yield* approvals.await(stepRunId);
+          yield* commit({
+            type: "StepUserResolved",
+            ticketId,
+            payload: {
+              stepRunId,
+              // No `outcome` here on purpose: this is a provider-originated wait,
+              // whose real terminal arrives below from the provider turn. Stamping
+              // one would let boot replay fabricate a terminal that never happened.
+              ...(userResolution.decision === undefined
+                ? {}
+                : { decision: userResolution.decision }),
+              ...(userResolution.answers === undefined ? {} : { answers: userResolution.answers }),
+            },
           });
-          return {
-            result: "failed",
-            noRetry: true,
-            detail: "rejected",
-            failureClass: "human_rejection",
-            stepRunId,
-            stepKey: step.key,
-          };
-        }
-        if (outcome.providerThreadId !== undefined) {
-          const terminalResult = yield* awaitProviderTerminalForStep(
-            stepRunId,
-            outcome.providerThreadId,
-            step,
-          );
-          if (terminalResult._tag === "failed") {
-            const failureClass =
-              terminalResult.failureClass ??
-              classifyFallback(terminalResult.error, terminalResult.retryable);
+          if (userResolution.outcome !== "success") {
             yield* commit({
               type: "StepFailed",
               ticketId,
               payload: stepFailedPayload(
                 stepRunId,
-                terminalResult.error,
-                terminalResult.usage,
-                terminalResult.retryable === false ? false : undefined,
+                "rejected",
                 undefined,
-                failureClass,
+                false,
+                undefined,
+                "human_rejection",
               ),
             });
             return {
               result: "failed",
-              noRetry: terminalResult.retryable === false,
-              detail: terminalResult.error,
-              failureClass,
-              retryable: terminalResult.retryable,
+              noRetry: true,
+              detail: "rejected",
+              failureClass: "human_rejection",
               stepRunId,
               stepKey: step.key,
             };
           }
-          if (terminalResult._tag === "blocked") {
+          if (outcome.providerThreadId !== undefined) {
+            const terminalResult = yield* awaitProviderTerminalForStep(
+              stepRunId,
+              outcome.providerThreadId,
+              step,
+            );
+            if (terminalResult._tag === "failed") {
+              const failureClass =
+                terminalResult.failureClass ??
+                classifyFallback(terminalResult.error, terminalResult.retryable);
+              yield* commit({
+                type: "StepFailed",
+                ticketId,
+                payload: stepFailedPayload(
+                  stepRunId,
+                  terminalResult.error,
+                  terminalResult.usage,
+                  terminalResult.retryable === false ? false : undefined,
+                  undefined,
+                  failureClass,
+                ),
+              });
+              return {
+                result: "failed",
+                noRetry: terminalResult.retryable === false,
+                detail: terminalResult.error,
+                failureClass,
+                retryable: terminalResult.retryable,
+                stepRunId,
+                stepKey: step.key,
+              };
+            }
+            if (terminalResult._tag === "blocked") {
+              yield* commit({
+                type: "StepBlocked",
+                ticketId,
+                payload: { stepRunId, reason: terminalResult.reason },
+              });
+              const hold = isParallelismHoldReason(terminalResult.reason);
+              return {
+                result: "blocked",
+                noRetry: hold,
+                detail: terminalResult.reason,
+                parallelismHold: hold,
+              };
+            }
             yield* commit({
-              type: "StepBlocked",
+              type: "StepCompleted",
               ticketId,
-              payload: { stepRunId, reason: terminalResult.reason },
+              payload: stepCompletedPayload(stepRunId, terminalResult.output, terminalResult.usage),
             });
-            const hold = isParallelismHoldReason(terminalResult.reason);
-            return {
-              result: "blocked",
-              noRetry: hold,
-              detail: terminalResult.reason,
-              parallelismHold: hold,
-            };
+            return { result: "completed", noRetry: false };
           }
           yield* commit({
             type: "StepCompleted",
             ticketId,
-            payload: stepCompletedPayload(stepRunId, terminalResult.output, terminalResult.usage),
+            payload: stepCompletedPayload(stepRunId),
           });
           return { result: "completed", noRetry: false };
         }
+        if (outcome._tag === "failed") {
+          const failureClass =
+            outcome.failureClass ?? classifyFallback(outcome.error, outcome.retryable);
+          yield* commit({
+            type: "StepFailed",
+            ticketId,
+            payload: stepFailedPayload(
+              stepRunId,
+              outcome.error,
+              outcome.usage,
+              outcome.retryable === false ? false : undefined,
+              outcome.contractViolation === true ? true : undefined,
+              failureClass,
+            ),
+          });
+          return {
+            result: "failed",
+            noRetry: outcome.retryable === false,
+            detail: outcome.error,
+            failureClass,
+            retryable: outcome.retryable,
+            stepRunId,
+            stepKey: step.key,
+          };
+        }
+        if (outcome._tag === "blocked") {
+          yield* commit({
+            type: "StepBlocked",
+            ticketId,
+            payload: { stepRunId, reason: outcome.reason },
+          });
+          const hold = isParallelismHoldReason(outcome.reason);
+          return {
+            result: "blocked",
+            noRetry: hold,
+            detail: outcome.reason,
+            parallelismHold: hold,
+          };
+        }
+
+        if (outcome._tag === "awaiting_questions") {
+          // An agent asked the operator something. Park on the SAME approval gate
+          // every other human wait uses (SPEC §3): no provider fields are set, so
+          // `resolveApproval` accepts it, no provider respond is attempted, and
+          // DurableApprovalResume re-parks it after a restart.
+          const questions = outcome;
+          yield* commitMany(
+            yield* awaitingUserEvents(ticketId, {
+              type: "StepAwaitingUser",
+              ticketId,
+              payload: {
+                stepRunId,
+                waitingReason: questions.waitingReason,
+                formSnapshot: questions.form,
+                questionPhase: true,
+                raisedFromDispatchId: questions.raisedFromDispatchId,
+              },
+            } satisfies UnstampedWorkflowEventInput),
+          );
+          const answered = yield* approvals.await(stepRunId);
+          yield* commit({
+            type: "StepUserResolved",
+            ticketId,
+            payload: {
+              stepRunId,
+              // No `outcome` stamped: the step's real terminal comes from the
+              // continuation turn below, and stamping one here would let boot
+              // replay fabricate a terminal that never happened.
+              ...(answered.decision === undefined ? {} : { decision: answered.decision }),
+              ...(answered.answers === undefined ? {} : { answers: answered.answers }),
+            },
+          });
+          if (answered.outcome !== "success") {
+            // Cancel is the operator declining to answer; the step fails and
+            // routes through the board's existing on.failure, exactly as any
+            // other failure would.
+            yield* commit({
+              type: "StepFailed",
+              ticketId,
+              payload: stepFailedPayload(
+                stepRunId,
+                "cancelled at question",
+                undefined,
+                false,
+                undefined,
+                "human_rejection",
+              ),
+            });
+            return {
+              result: "failed",
+              noRetry: true,
+              detail: "cancelled at question",
+              failureClass: "human_rejection",
+              stepRunId,
+              stepKey: step.key,
+            };
+          }
+          outcome = yield* (
+            executor.continueWithAnswers({
+              ctx: executionContext,
+              form: questions.form,
+              answers: answered.answers ?? {},
+            }) as Effect.Effect<StepOutcome, WorkflowEventStoreError>
+          ).pipe(
+            Effect.catch((error) =>
+              Effect.succeed<StepOutcome>({ _tag: "failed", error: formatError(error) }),
+            ),
+          );
+          continue;
+        }
+
+        if (outcome._tag === "awaiting_children") {
+          // Fork suspension is decided by the engine before dispatch (see the fork
+          // branch above) and RealStepExecutor guards fork steps, so an executor must
+          // never produce this outcome. Fail closed rather than falling through to the
+          // completed path, which would commit StepCompleted and defeat the join.
+          const error = "executor returned awaiting_children for a non-fork step";
+          yield* commit({
+            type: "StepFailed",
+            ticketId,
+            payload: stepFailedPayload(stepRunId, error, undefined, false, undefined, "infra"),
+          });
+          return {
+            result: "failed",
+            noRetry: true,
+            detail: error,
+            failureClass: "infra",
+            retryable: false,
+            stepRunId,
+          };
+        }
+
         yield* commit({
           type: "StepCompleted",
           ticketId,
-          payload: stepCompletedPayload(stepRunId),
+          payload: stepCompletedPayload(
+            stepRunId,
+            outcome.output,
+            outcome.usage,
+            outcome.outputRepaired === true ? true : undefined,
+          ),
         });
         return { result: "completed", noRetry: false };
       }
-      if (outcome._tag === "failed") {
-        const failureClass =
-          outcome.failureClass ?? classifyFallback(outcome.error, outcome.retryable);
-        yield* commit({
-          type: "StepFailed",
-          ticketId,
-          payload: stepFailedPayload(
-            stepRunId,
-            outcome.error,
-            outcome.usage,
-            outcome.retryable === false ? false : undefined,
-            outcome.contractViolation === true ? true : undefined,
-            failureClass,
-          ),
-        });
-        return {
-          result: "failed",
-          noRetry: outcome.retryable === false,
-          detail: outcome.error,
-          failureClass,
-          retryable: outcome.retryable,
-          stepRunId,
-          stepKey: step.key,
-        };
-      }
-      if (outcome._tag === "blocked") {
-        yield* commit({
-          type: "StepBlocked",
-          ticketId,
-          payload: { stepRunId, reason: outcome.reason },
-        });
-        const hold = isParallelismHoldReason(outcome.reason);
-        return {
-          result: "blocked",
-          noRetry: hold,
-          detail: outcome.reason,
-          parallelismHold: hold,
-        };
-      }
-
-      if (outcome._tag === "awaiting_questions") {
-        // NOT YET IMPLEMENTED — see specs/agent-questions/SPEC.md §3 and §4.2.
-        //
-        // The real branch commits StepAwaitingUser{questionPhase,
-        // raisedFromDispatchId}, parks on approvals.await like every other human
-        // wait, and on resolution runs executor.continueWithAnswers, looping
-        // while it keeps asking. Until that exists, fail closed: falling through
-        // to the completed path would commit StepCompleted with the raw
-        // `__questions` block as the step's output — the exact silent
-        // answer-loss this design exists to prevent. Nothing sets allowQuestions
-        // yet, so this is unreachable in practice.
-        const error = "agent questions are not enabled in this build";
-        yield* commit({
-          type: "StepFailed",
-          ticketId,
-          payload: stepFailedPayload(stepRunId, error, undefined, false, undefined, "infra"),
-        });
-        return {
-          result: "failed",
-          noRetry: true,
-          detail: error,
-          failureClass: "infra",
-          retryable: false,
-          stepRunId,
-        };
-      }
-
-      if (outcome._tag === "awaiting_children") {
-        // Fork suspension is decided by the engine before dispatch (see the fork
-        // branch above) and RealStepExecutor guards fork steps, so an executor must
-        // never produce this outcome. Fail closed rather than falling through to the
-        // completed path, which would commit StepCompleted and defeat the join.
-        const error = "executor returned awaiting_children for a non-fork step";
-        yield* commit({
-          type: "StepFailed",
-          ticketId,
-          payload: stepFailedPayload(stepRunId, error, undefined, false, undefined, "infra"),
-        });
-        return {
-          result: "failed",
-          noRetry: true,
-          detail: error,
-          failureClass: "infra",
-          retryable: false,
-          stepRunId,
-        };
-      }
-
-      yield* commit({
-        type: "StepCompleted",
-        ticketId,
-        payload: stepCompletedPayload(
-          stepRunId,
-          outcome.output,
-          outcome.usage,
-          outcome.outputRepaired === true ? true : undefined,
-        ),
-      });
-      return { result: "completed", noRetry: false };
     });
 
   const runPipeline = (
@@ -4891,6 +4982,190 @@ const make = Effect.gen(function* () {
       );
     });
 
+  /**
+   * Resume a question wait whose pipeline fiber died with the process.
+   *
+   * The live path parks on `approvals.await` and continues on the same fiber.
+   * After a restart there is no such fiber, so the answer arrives here — and
+   * the default recovered-approval behaviour (complete the step, resume the
+   * lane) would finish the step with the QUESTION as its output and never send
+   * the answers to a model. This branch runs the continuation instead.
+   *
+   * Forked, because an agent turn must not block the answering user's RPC, and
+   * registered against the ticket so a park or move can still interrupt it —
+   * an unregistered fork would be reachable only by provider cancellation.
+   */
+  const resumeRecoveredQuestion = (
+    pending: PendingWait,
+    resolution: CheckpointResolution,
+    recovered: NonNullable<ReturnType<typeof recoveredStepContext>>,
+  ) =>
+    Effect.gen(function* () {
+      const stepRunId = pending.payload.stepRunId;
+      const form = pending.payload.formSnapshot;
+      if (form === undefined) {
+        // A question wait without its snapshot cannot be resumed: the answers
+        // were validated against a form we can no longer see. Fail closed.
+        yield* completeRecoveredStepUnlocked(
+          stepRunId,
+          {
+            _tag: "failed",
+            error: "question wait lost its form snapshot",
+            retryable: false,
+            failureClass: "infra",
+          },
+          undefined,
+          { allowRetry: false },
+        );
+        return;
+      }
+
+      const ticketId = recovered.stepStarted.ticketId;
+      const lane = yield* registry.getLane(
+        recovered.ticketCreated.payload.boardId,
+        recovered.pipelineStarted.payload.laneKey,
+      );
+      const steps = lane?.pipeline ?? [];
+      const step = steps.find(
+        (candidate) => candidate.key === recovered.stepStarted.payload.stepKey,
+      );
+      if (step === undefined || step.type !== "agent") {
+        yield* completeRecoveredStepUnlocked(
+          stepRunId,
+          {
+            _tag: "failed",
+            error: "question wait no longer maps to an agent step",
+            retryable: false,
+            failureClass: "infra",
+          },
+          undefined,
+          { allowRetry: false },
+        );
+        return;
+      }
+
+      const outcome = yield* (
+        executor.continueWithAnswers({
+          ctx: {
+            ticketId,
+            boardId: recovered.ticketCreated.payload.boardId,
+            pipelineRunId: recovered.pipelineStarted.payload.pipelineRunId,
+            stepRunId,
+            laneEntryToken: recovered.pipelineStarted.payload.laneEntryToken,
+            laneKey: recovered.pipelineStarted.payload.laneKey,
+            laneStepKeys: steps.map((candidate) => candidate.key),
+            step,
+          },
+          form,
+          answers: resolution.answers ?? {},
+        }) as Effect.Effect<StepOutcome, WorkflowEventStoreError>
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.succeed<StepOutcome>({ _tag: "failed", error: formatError(error) }),
+        ),
+      );
+
+      if (outcome._tag === "awaiting_questions") {
+        // Asked again. Re-park exactly as the live path does, and STOP — the
+        // step must not terminal here.
+        yield* commitMany(
+          yield* awaitingUserEvents(ticketId, {
+            type: "StepAwaitingUser",
+            ticketId,
+            payload: {
+              stepRunId,
+              waitingReason: outcome.waitingReason,
+              formSnapshot: outcome.form,
+              questionPhase: true,
+              raisedFromDispatchId: outcome.raisedFromDispatchId,
+            },
+          } satisfies UnstampedWorkflowEventInput),
+        );
+        yield* approvals.park(stepRunId);
+        return;
+      }
+
+      if (outcome._tag === "awaiting_user") {
+        // The continuation hit a native provider prompt. Persist the wait and
+        // park rather than completing: the answer path and DurableApprovalResume
+        // both key off this event.
+        yield* commitMany(
+          yield* awaitingUserEvents(ticketId, {
+            type: "StepAwaitingUser",
+            ticketId,
+            payload: {
+              stepRunId,
+              waitingReason: outcome.waitingReason,
+              ...(outcome.providerThreadId === undefined
+                ? {}
+                : { providerThreadId: outcome.providerThreadId }),
+              ...(outcome.providerRequestId === undefined
+                ? {}
+                : { providerRequestId: outcome.providerRequestId }),
+              ...(outcome.providerResponseKind === undefined
+                ? {}
+                : { providerResponseKind: outcome.providerResponseKind }),
+              ...(outcome.providerQuestionId === undefined
+                ? {}
+                : { providerQuestionId: outcome.providerQuestionId }),
+            },
+          } satisfies UnstampedWorkflowEventInput),
+        );
+        yield* approvals.park(stepRunId);
+        return;
+      }
+
+      // Terminal: hand back to the SAME tail the rest of recovery uses, so the
+      // step's terminal event, retry decision and lane resume stay in one place.
+      if (outcome._tag === "completed") {
+        yield* completeRecoveredStepUnlocked(
+          stepRunId,
+          {
+            _tag: "completed",
+            ...(outcome.output === undefined ? {} : { output: outcome.output }),
+            ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+          },
+          undefined,
+        );
+        return;
+      }
+      if (outcome._tag === "blocked") {
+        yield* completeRecoveredStepUnlocked(
+          stepRunId,
+          { _tag: "blocked", reason: outcome.reason },
+          undefined,
+        );
+        return;
+      }
+      if (outcome._tag === "failed") {
+        yield* completeRecoveredStepUnlocked(
+          stepRunId,
+          {
+            _tag: "failed",
+            error: outcome.error,
+            ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
+            ...(outcome.failureClass === undefined ? {} : { failureClass: outcome.failureClass }),
+            ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+          },
+          undefined,
+        );
+        return;
+      }
+      // awaiting_children cannot come from an agent step; fail closed rather
+      // than leaving the step running forever.
+      yield* completeRecoveredStepUnlocked(
+        stepRunId,
+        {
+          _tag: "failed",
+          error: "question continuation returned an unexpected outcome",
+          retryable: false,
+          failureClass: "infra",
+        },
+        undefined,
+        { allowRetry: false },
+      );
+    });
+
   const continueRecoveredApproval = (pending: PendingWait, resolution: CheckpointResolution) =>
     Effect.gen(function* () {
       const events = yield* readStoredEventsForStep(pending.payload.stepRunId);
@@ -4918,6 +5193,36 @@ const make = Effect.gen(function* () {
           ...(resolution.answers === undefined ? {} : { answers: resolution.answers }),
         },
       });
+      if (pending.payload.questionPhase === true) {
+        // An agent question resumes by RUNNING A NEW TURN, never by completing.
+        // Falling through would reach completeRecoveredStepUnlocked, which for a
+        // wait with no providerThreadId finishes the step from its captured
+        // output — i.e. with the question block itself as the step's result, and
+        // the operator's answers seen by nobody.
+        if (resolution.outcome !== "success") {
+          yield* completeRecoveredStepUnlocked(
+            pending.payload.stepRunId,
+            {
+              _tag: "failed",
+              error: "cancelled at question",
+              retryable: false,
+              failureClass: "human_rejection",
+            },
+            undefined,
+            { allowRetry: false },
+          );
+          return;
+        }
+        // Forked so a multi-minute agent turn does not block the answering
+        // user's RPC, and registered against the ticket so park/move can still
+        // interrupt it.
+        yield* forkTicketWork(
+          recovered.stepStarted.ticketId,
+          resumeRecoveredQuestion(pending, resolution, recovered),
+        );
+        return;
+      }
+
       if (resolution.outcome === "blocked") {
         // Must stay blocked on the recovered path too. Collapsing it into a
         // failure here would route a "hold" decision down on.failure after a

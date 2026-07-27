@@ -1,8 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 
+import { CHECKPOINT_OTHER_SENTINEL } from "@t3tools/contracts";
+
 import {
   MAX_AGENT_QUESTIONS,
-  OTHER_SENTINEL,
   QUESTION_DECISION_KEY,
   mapAgentQuestions,
   questionsWaitingReason,
@@ -123,9 +124,14 @@ describe("mapAgentQuestions", () => {
   it("reserves the freeform sentinel so an agent option cannot collide with it", () => {
     // A real option with this value would open the drawer's "Something else…"
     // box and replace the answer, making the agent's own choice unsubmittable.
-    assert.include(rejection([{ key: "k", label: "x", options: [OTHER_SENTINEL] }]), "may not use");
     assert.include(
-      rejection([{ key: "k", label: "x", options: [{ value: OTHER_SENTINEL, label: "Other" }] }]),
+      rejection([{ key: "k", label: "x", options: [CHECKPOINT_OTHER_SENTINEL] }]),
+      "may not use",
+    );
+    assert.include(
+      rejection([
+        { key: "k", label: "x", options: [{ value: CHECKPOINT_OTHER_SENTINEL, label: "Other" }] },
+      ]),
       "may not use",
     );
   });

@@ -55,6 +55,17 @@ const asStringArray = (value: unknown): ReadonlyArray<string> | null =>
  * approving. That asymmetry is deliberate — the alternative traps a reviewer who
  * is trying to say "no".
  */
+/**
+ * The value a client uses to mean "Something else…" on an `allowOther` select.
+ *
+ * It lives here because BOTH sides need it and they must not drift: the UI
+ * renders it as the freeform affordance, and validation refuses it as an
+ * answer. A form — agent-generated or hand-written — may not declare a real
+ * option with this value, or selecting that option would open the freeform box
+ * and the option could never be submitted.
+ */
+export const CHECKPOINT_OTHER_SENTINEL = "__other__";
+
 /** Mirrors CheckpointAnswerValue in workflow.ts — the event schema's envelope. */
 const CHECKPOINT_ANSWER_MAX_TEXT = 2000;
 const CHECKPOINT_ANSWER_MAX_ITEMS = 15;
@@ -149,6 +160,11 @@ export const validateCheckpointSubmission = (
       // poisoning the ticket's stream, from an input an agent can provoke.
       if (raw.length > CHECKPOINT_ANSWER_MAX_TEXT) {
         return { ok: false, message: `answer for "${field.label}" is too long` };
+      }
+      // The sentinel is a UI affordance, never an answer. A direct client could
+      // otherwise persist it and the agent would be restated a marker.
+      if (raw === CHECKPOINT_OTHER_SENTINEL) {
+        return { ok: false, message: `"${field.label}" needs an actual answer` };
       }
       answers[field.key] = raw;
       continue;

@@ -7,6 +7,7 @@ import {
   TicketId,
   type EnvironmentApi,
   type TerminalHistoryAttachStreamEvent,
+  CHECKPOINT_OTHER_SENTINEL,
   type CheckpointForm,
   toTimelineEntry,
   type WorkflowTimelineBase,
@@ -1678,9 +1679,8 @@ function TicketHistorySection({
  * Deliberately not a plausible option value: it never leaves the component —
  * `submittedAnswers` swaps it for the typed text before submitting.
  */
-// Must match OTHER_SENTINEL in the server mapper, which reserves it so an
-// agent-supplied option can never collide with this.
-const OTHER_VALUE = "__other__";
+/** Shared with server validation so the two cannot drift. */
+const OTHER_VALUE = CHECKPOINT_OTHER_SENTINEL;
 
 function CheckpointFormFields({
   form,

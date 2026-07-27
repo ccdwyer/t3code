@@ -1,4 +1,5 @@
 import {
+  CHECKPOINT_OTHER_SENTINEL,
   CheckpointFieldKey,
   type CheckpointForm,
   type CheckpointFormField,
@@ -23,15 +24,6 @@ export const MAX_AGENT_QUESTIONS = 10;
 
 /** The decision field appended to every raised form. */
 export const QUESTION_DECISION_KEY = "__continue";
-
-/**
- * The value the drawer uses to mean "Something else…" on an allowOther select.
- *
- * Reserved here so an agent cannot ship a real option that collides with it —
- * selecting that option would open the freeform box and replace the answer,
- * making the agent's own choice unsubmittable.
- */
-export const OTHER_SENTINEL = "__other__";
 
 /** Keys that are not safe as plain-object properties. */
 const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -81,8 +73,8 @@ const asOptions = (
       const trimmed = entry.trim();
       if (trimmed.length === 0) return `${where} has an empty option`;
       if (trimmed.length > MAX_OPTION_VALUE) return `${where} option "${trimmed}" is too long`;
-      if (trimmed === OTHER_SENTINEL)
-        return `${where} may not use "${OTHER_SENTINEL}" as an option`;
+      if (trimmed === CHECKPOINT_OTHER_SENTINEL)
+        return `${where} may not use "${CHECKPOINT_OTHER_SENTINEL}" as an option`;
       options.push({ value: trimmed, label: trimmed });
       continue;
     }
@@ -97,7 +89,8 @@ const asOptions = (
     if (value.length === 0) return `${where} has an option with no value`;
     if (label.length === 0) return `${where} has an option with an empty label`;
     if (value.length > MAX_OPTION_VALUE) return `${where} option "${value}" is too long`;
-    if (value === OTHER_SENTINEL) return `${where} may not use "${OTHER_SENTINEL}" as an option`;
+    if (value === CHECKPOINT_OTHER_SENTINEL)
+      return `${where} may not use "${CHECKPOINT_OTHER_SENTINEL}" as an option`;
     if (label.length > MAX_OPTION_LABEL) return `${where} option label for "${value}" is too long`;
     options.push({ value, label });
   }

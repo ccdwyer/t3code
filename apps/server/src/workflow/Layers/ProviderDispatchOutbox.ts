@@ -347,7 +347,14 @@ const make = Effect.gen(function* () {
         yield* wrapSql(sql`
           UPDATE workflow_dispatch_outbox
           SET status = 'confirmed',
-              confirmed_at = ${confirmedAt}
+              confirmed_at = ${confirmedAt},
+              -- Re-kinded, not just confirmed. A plain 'confirmed'
+              -- question-continuation COUNTS as a delivered round, so a crash
+              -- between this update and the replacement insert would make the
+              -- next boot conclude the answer was already handled and skip it
+              -- permanently. An abandoned row is retired from the sweeps AND
+              -- from the owed-continuation count.
+              dispatch_kind = 'question-continuation-abandoned'
           WHERE step_run_id = ${stepRunId}
             AND dispatch_kind = 'question-continuation'
             AND status != 'confirmed'

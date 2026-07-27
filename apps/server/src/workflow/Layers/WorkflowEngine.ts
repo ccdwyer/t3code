@@ -927,12 +927,12 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const laneEntryToken = yield* currentToken(ticketId);
       if (expectedToken !== undefined && laneEntryToken !== expectedToken) {
-        return false;
+        return "stale" as const;
       }
       if (laneEntryToken === null) {
         // No live lane entry: the ticket moved or was parked out from under this
         // wait, so there is nothing to resume into.
-        return false;
+        return "stale" as const;
       }
       const token = laneEntryToken as LaneEntryToken;
       let started = false;
@@ -961,7 +961,11 @@ const make = Effect.gen(function* () {
         }),
       );
       yield* Effect.yieldNow;
-      return started;
+      // "owned" is NOT a failure: something legitimate already holds this
+      // ticket's pipeline slot and will do the work. Conflating it with "stale"
+      // let a losing racer commit StepFailed while the winner's continuation was
+      // still running.
+      return started ? ("started" as const) : ("owned" as const);
     });
 
   const interruptRunningPipeline = (ticketId: TicketId) =>
@@ -5644,9 +5648,18 @@ const make = Effect.gen(function* () {
         // do not consult the claim — would re-drive it alongside the new turn.
         // Confirming retires the row; it does not assert its turn succeeded,
         // and the replacement is what actually delivers the answers.
-        yield* providerDispatches.value
+        // NOT ignored: a failed retirement leaves the orphan re-drivable, so
+        // dispatching a replacement anyway would produce the concurrent turns
+        // this exists to prevent. Skip the step and let the next boot retry.
+        const retired = yield* providerDispatches.value
           .tombstoneQuestionContinuations(stepRunId)
-          .pipe(Effect.ignoreCause({ log: true }));
+          .pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          );
+        if (!retired) {
+          continue;
+        }
         const recovered = recoveredStepContext(events, stepRunId);
         if (!recovered) {
           continue;
@@ -5738,11 +5751,14 @@ const make = Effect.gen(function* () {
           resumeRecoveredQuestion(pending, resolution, recovered),
           recovered.pipelineStarted.payload.laneEntryToken,
         );
-        if (!started) {
-          // The answer is already durable, so it must not be left with no owner:
-          // the ticket lost its lane entry, or another fiber holds the slot.
-          // Fail the step rather than leaving it `running` forever with an
-          // answer nobody will ever deliver.
+        if (started === "owned") {
+          // Someone else is already running this continuation. Idempotent
+          // no-op — committing a terminal here would kill work in flight.
+          return;
+        }
+        if (started === "stale") {
+          // The ticket lost its lane entry, so there is nothing to resume into
+          // and the durable answer would otherwise sit forever unowned.
           yield* completeRecoveredStepUnlocked(
             pending.payload.stepRunId,
             {

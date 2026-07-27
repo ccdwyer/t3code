@@ -4877,23 +4877,32 @@ const make = Effect.gen(function* () {
       if (Option.isNone(capturedOutputs) || Option.isNone(providerDispatches)) {
         return { kind: "none" };
       }
-      const dispatch = yield* providerDispatches.value
-        .getDispatchForStep(stepRunId)
-        .pipe(Effect.orElseSucceed(() => null));
-      if (dispatch === null || dispatch.turnId === null) {
+      // Same rule as the strict read below: only a SUCCESSFUL lookup that found
+      // nothing may mean "no question". Collapsing a transient outbox failure to
+      // null would let this window complete the step with the question stripped
+      // out — the exact loss this branch exists to prevent.
+      const dispatch = yield* providerDispatches.value.getDispatchForStep(stepRunId).pipe(
+        Effect.map((row) => ({ ok: true as const, row })),
+        Effect.orElseSucceed(() => ({ ok: false as const, row: null })),
+      );
+      if (!dispatch.ok) {
+        return { kind: "unmappable", message: "could not read the step's dispatch" };
+      }
+      if (dispatch.row === null || dispatch.row.turnId === null) {
         return { kind: "none" };
       }
+      const dispatchRow = dispatch.row;
       const alreadyRaised = events.some(
         (event) =>
           event.type === "StepAwaitingUser" &&
           event.payload.stepRunId === stepRunId &&
           event.payload.questionPhase === true &&
-          event.payload.raisedFromDispatchId === dispatch.dispatchId,
+          event.payload.raisedFromDispatchId === dispatchRow.dispatchId,
       );
       if (alreadyRaised) {
         return { kind: "leave" };
       }
-      const turn = captureTurn ?? { threadId: dispatch.threadId, turnId: dispatch.turnId };
+      const turn = captureTurn ?? { threadId: dispatchRow.threadId, turnId: dispatchRow.turnId };
       // A read FAILURE is not "no question". Swallowing it here would let a
       // transient lookup error read as semantic absence, after which the
       // permissive capture path completes the step and the question is gone.
@@ -4944,7 +4953,7 @@ const make = Effect.gen(function* () {
         kind: "raise",
         form: mapped.form,
         waitingReason: questionsWaitingReason(mapped.form),
-        raisedFromDispatchId: dispatch.dispatchId,
+        raisedFromDispatchId: dispatchRow.dispatchId,
       };
     });
 

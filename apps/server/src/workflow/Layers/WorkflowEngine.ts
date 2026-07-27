@@ -1691,6 +1691,13 @@ const make = Effect.gen(function* () {
               stepKey: step.key,
             };
           }
+          // The LIVE continuation takes the same per-step claim the recovered
+          // one does. Without it the periodic sweep cannot tell a live
+          // continuation from an abandoned row: it would retire this one
+          // mid-flight and dispatch a second turn against the same worktree.
+          yield* SynchronizedRef.update(recoveredStepClaims, (current) =>
+            new Set(current).add(stepRunId as string),
+          );
           outcome = yield* (
             executor.continueWithAnswers({
               ctx: executionContext,
@@ -1701,6 +1708,7 @@ const make = Effect.gen(function* () {
             Effect.catch((error) =>
               Effect.succeed<StepOutcome>({ _tag: "failed", error: formatError(error) }),
             ),
+            Effect.ensuring(releaseRecoveredStepClaim(stepRunId)),
           );
           continue;
         }
@@ -5347,6 +5355,8 @@ const make = Effect.gen(function* () {
     pending: PendingWait,
     resolution: CheckpointResolution,
     recovered: NonNullable<ReturnType<typeof recoveredStepContext>>,
+    /** Set when the caller already holds this step's claim and still owns it. */
+    claimHeld = false,
   ) =>
     Effect.gen(function* () {
       const stepRunId = pending.payload.stepRunId;
@@ -5358,15 +5368,17 @@ const make = Effect.gen(function* () {
       // turn on the same thread. The claim is the same one the recovery
       // completion path uses, so a continuation also cannot race a recovered
       // completion.
-      const claimed = yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
-        const key = stepRunId as string;
-        if (current.has(key)) {
-          return [false, current] as const;
-        }
-        const next = new Set(current);
-        next.add(key);
-        return [true, next] as const;
-      });
+      const claimed =
+        claimHeld ||
+        (yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
+          const key = stepRunId as string;
+          if (current.has(key)) {
+            return [false, current] as const;
+          }
+          const next = new Set(current);
+          next.add(key);
+          return [true, next] as const;
+        }));
       if (!claimed) {
         // Contended, not done. The holder may do NO continuation —
         // completeRecoveredStepUnlocked takes the claim, sees the mirrored wait,
@@ -5713,6 +5725,23 @@ const make = Effect.gen(function* () {
         // do not consult the claim — would re-drive it alongside the new turn.
         // Confirming retires the row; it does not assert its turn succeeded,
         // and the replacement is what actually delivers the answers.
+        // Claim BEFORE retiring anything. On a periodic tick — unlike at boot —
+        // a pending/started continuation row may have a LIVE owner, and
+        // tombstoning it would start a second turn against the same worktree.
+        // The live continuation holds this same claim, so a contended step is
+        // simply left for the next tick.
+        const owned = yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
+          const key = stepRunId as string;
+          if (current.has(key)) {
+            return [false, current] as const;
+          }
+          const next = new Set(current);
+          next.add(key);
+          return [true, next] as const;
+        });
+        if (!owned) {
+          continue;
+        }
         // NOT ignored: a failed retirement leaves the orphan re-drivable, so
         // dispatching a replacement anyway would produce the concurrent turns
         // this exists to prevent. Skip the step and let the next boot retry.
@@ -5723,6 +5752,7 @@ const make = Effect.gen(function* () {
             Effect.orElseSucceed(() => false),
           );
         if (!retired) {
+          yield* releaseRecoveredStepClaim(stepRunId);
           continue;
         }
         const recovered = recoveredStepContext(events, stepRunId);
@@ -5765,6 +5795,7 @@ const make = Effect.gen(function* () {
           { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
           answered,
           recovered,
+          true,
         ).pipe(Effect.ignoreCause({ log: true }));
       }
     });

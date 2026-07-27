@@ -1353,8 +1353,8 @@ const make = Effect.gen(function* () {
       // would complete the step from the QUESTION turn's capture and strand the
       // answers. This runs first and inserts its continuation row synchronously,
       // so the later sweeps see a non-confirmed row and leave the step alone.
-      // Deliberately inline: forking would let recoverPending adopt the
-      // continuation's own row before it reaches `started`.
+      // The continuation itself is forked; recoverPending skips
+      // question-continuation rows, so it cannot adopt one mid-flight.
       yield* engine.resumeAnsweredQuestions().pipe(Effect.ignoreCause({ log: true }));
       // Must run before recoverPending: tombstoneStaleDispatches also
       // confirms rows, and those superseded steps are not this sweep's

@@ -227,8 +227,14 @@ layer("agent question crash windows", (it) => {
       });
       assert.strictEqual(continuations.length, 0, "nothing should have resumed yet");
 
-      // Boot recovery must notice and deliver those answers to a model.
+      // Boot recovery must notice and deliver those answers to a model. The
+      // continuation is forked so boot is not held behind a provider turn, so
+      // wait for it rather than assuming it already ran.
       yield* engine.resumeAnsweredQuestions();
+      for (let attempt = 0; attempt < 200 && continuations.length === 0; attempt += 1) {
+        yield* Effect.promise<void>(() => new Promise((resolve) => setTimeout(resolve, 10)));
+        yield* Effect.yieldNow;
+      }
       assert.strictEqual(continuations.length, 1, "the answered question was never resumed");
       assert.strictEqual(continuations[0]?.db, "Postgres");
     }),

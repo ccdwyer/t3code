@@ -295,6 +295,11 @@ const make = Effect.gen(function* () {
             FROM workflow_dispatch_outbox AS peer
             WHERE peer.step_run_id = ${stepRunId}
               AND peer.dispatch_kind = 'question-continuation'
+              -- CONFIRMED only: a pending or started row may have been
+              -- abandoned by a process that died, and recoverPending
+              -- deliberately will not adopt it. Counting it would make the
+              -- answer look delivered and strand it forever.
+              AND peer.status = 'confirmed'
           ) AS "questionContinuations"
         FROM workflow_dispatch_outbox
         WHERE step_run_id = ${stepRunId}
@@ -728,6 +733,13 @@ const make = Effect.gen(function* () {
           status
         FROM workflow_dispatch_outbox
         WHERE status != 'confirmed'
+          -- Question continuations are OWNED by resumeAnsweredQuestions, which
+          -- holds a claim and awaits them. Re-dispatching one here would race
+          -- that owner and put two provider turns on one step. If this process
+          -- dies mid-continuation, the §4.5 sweep re-derives the debt from the
+          -- event log and runs it again — it counts only CONFIRMED
+          -- continuations, so an abandoned pending row still reads as owed.
+          AND (dispatch_kind IS NULL OR dispatch_kind != 'question-continuation')
       `);
 
       yield* Effect.forEach(

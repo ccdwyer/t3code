@@ -5635,35 +5635,45 @@ const make = Effect.gen(function* () {
           .getDispatchRequestForStep(stepRunId)
           .pipe(Effect.orElseSucceed(() => null));
         if (assembly === null || assembly.questionContinuations >= answeredRounds) {
-          // Already dispatched (possibly still unconfirmed, in which case
-          // recoverPending and monitorStartedDispatches own it — starting a
-          // second turn here would race them).
+          // Every answered round already has a CONFIRMED continuation.
           continue;
         }
         const recovered = recoveredStepContext(events, stepRunId);
         if (!recovered) {
           continue;
         }
-        // Run INLINE, not forked.
+        // Forked, so boot is not held behind a full provider turn per stuck
+        // question — sequentially, that could stall server readiness for the
+        // length of a terminal wait, several times over.
         //
-        // Forking only yields the scheduler once, while the continuation's
-        // outbox row is inserted much later — after the worktree lease, setup
-        // and instruction assembly. Recovery would march straight on into
-        // `recoverPending` and `monitorStartedDispatches`, which can observe
-        // that row while it is still `pending` and call `ensureStarted`
-        // concurrently with the fiber that owns it: two provider turns for one
-        // step. The claim stops a second CONTINUATION, not a second dispatch of
-        // the same row.
-        //
-        // The cost is that boot waits for these turns. That is a real cost, and
-        // it is the one worth paying: a stalled start is visible and recoverable,
-        // a duplicated agent turn on a shared worktree is neither.
-        const resume = resumeRecoveredQuestion(
-          { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
-          answered,
-          recovered,
-        );
-        yield* resume.pipe(Effect.ignoreCause({ log: true }));
+        // Forking used to be unsafe because the continuation's outbox row is
+        // inserted well after the fork starts, and `recoverPending` would adopt
+        // it while still `pending` — two turns on one step. That race is now
+        // closed at the source: `recoverPending` skips question-continuation
+        // rows outright (they have an owner), and the owed-continuation count
+        // considers only CONFIRMED ones, so a row abandoned by a dying process
+        // still reads as owed and is re-run rather than adopted.
+        const started = yield* forkTicketWork(
+          latestWait.ticketId,
+          resumeRecoveredQuestion(
+            { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
+            answered,
+            recovered,
+          ),
+          recovered.pipelineStarted.payload.laneEntryToken,
+        ).pipe(Effect.orElseSucceed(() => false));
+        if (!started) {
+          // The fork was declined — the ticket moved, or something already owns
+          // its pipeline slot (after a real crash nothing does, so this is the
+          // uncommon path). The answer is durable and must not be left unowned,
+          // so run it here. Inline only in this branch, which is why it cannot
+          // stall an ordinary boot.
+          yield* resumeRecoveredQuestion(
+            { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
+            answered,
+            recovered,
+          ).pipe(Effect.ignoreCause({ log: true }));
+        }
       }
     });
 

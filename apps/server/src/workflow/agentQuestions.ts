@@ -24,6 +24,9 @@ export const MAX_AGENT_QUESTIONS = 10;
 /** The decision field appended to every raised form. */
 export const QUESTION_DECISION_KEY = "__continue";
 
+/** Keys that are not safe as plain-object properties. */
+const PROTOTYPE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 /** Its two option values. Continue is the ONLY value that resumes the agent. */
 export const QUESTION_CONTINUE_VALUE = "continue";
 export const QUESTION_CANCEL_VALUE = "cancel";
@@ -120,6 +123,14 @@ export const mapAgentQuestions = (raw: unknown): AgentQuestionsResult => {
     }
     if (key === QUESTION_DECISION_KEY) {
       return reject(`${where} may not use the reserved key "${QUESTION_DECISION_KEY}"`);
+    }
+    // `__proto__` matches the key pattern but is not a normal property: writing
+    // it on a plain object hits the prototype setter instead of creating an own
+    // property, so a validated answer would vanish and the agent would be handed
+    // the inherited value. `constructor` and `prototype` are refused with it —
+    // none of them are worth the sharp edge.
+    if (PROTOTYPE_KEYS.has(key)) {
+      return reject(`${where} may not use "${key}" as a key`);
     }
     // CheckpointAnswers is a Record keyed by this, so a duplicate key would let
     // one answer silently serve two questions.

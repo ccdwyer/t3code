@@ -76,6 +76,15 @@ describe("mapAgentQuestions", () => {
     assert.include(message, "repeats key");
   });
 
+  it("rejects prototype-special keys that would swallow the answer", () => {
+    // `__proto__` matches the key pattern, but writing it on a plain object
+    // hits the prototype setter instead of creating an own property — the
+    // operator's answer would validate and then silently vanish.
+    assert.include(rejection([{ key: "__proto__", label: "Sneaky" }]), 'may not use "__proto__"');
+    assert.include(rejection([{ key: "constructor", label: "Sneaky" }]), "may not use");
+    assert.include(rejection([{ key: "prototype", label: "Sneaky" }]), "may not use");
+  });
+
   it("rejects the reserved decision key", () => {
     assert.include(rejection([{ key: QUESTION_DECISION_KEY, label: "Sneaky" }]), "reserved");
   });

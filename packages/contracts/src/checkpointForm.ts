@@ -65,7 +65,11 @@ export const validateCheckpointSubmission = (
     return { ok: true, outcome: fallbackOutcome, answers: {} };
   }
 
-  const answers: Record<string, string | ReadonlyArray<string>> = {};
+  // Null-prototype: a field key of `__proto__` would otherwise hit the
+  // prototype setter instead of creating an own property, silently dropping a
+  // validated answer. The mapper refuses such keys for agent-raised forms, but
+  // a board author writes CheckpointForms by hand too.
+  const answers = Object.create(null) as Record<string, string | ReadonlyArray<string>>;
   const submitted = submission.answers ?? {};
 
   const decision = decisionField(form);

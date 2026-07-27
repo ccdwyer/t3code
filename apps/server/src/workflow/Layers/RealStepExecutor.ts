@@ -1261,10 +1261,35 @@ const make = Effect.gen(function* () {
             } satisfies StepOutcome;
           }
 
-          // Stripped here too, not just on the initial turn: a repair that
-          // echoes the reserved key would otherwise be rejected by an
-          // `allowUnknown: false` contract, or — worse, on a permissive one —
-          // persist the raw question block as the step's output.
+          // A repair turn can ask too. Detect BEFORE stripping: stripping alone
+          // would delete the question (permissive contract) or fail the step for
+          // an unexpected key (allowUnknown: false), and in both cases the agent
+          // asked and nobody was told.
+          if (step.allowQuestions === true) {
+            const repairStrict = yield* capturedOutputs.readFinalMessage({
+              stepRunId: ctx.stepRunId,
+              threadId: threadId as never,
+              turnId: repairResult.turnId,
+            });
+            const repairQuestions = isRecord(repairStrict)
+              ? repairStrict[AGENT_QUESTIONS_KEY]
+              : undefined;
+            if (repairQuestions !== undefined) {
+              const raisedRepair = yield* countQuestionRaises(ctx.stepRunId);
+              const mappedRepair =
+                raisedRepair >= MAX_QUESTION_ROUNDS ? null : mapAgentQuestions(repairQuestions);
+              if (mappedRepair !== null && mappedRepair.ok) {
+                return {
+                  _tag: "awaiting_questions",
+                  waitingReason: questionsWaitingReason(mappedRepair.form),
+                  form: mappedRepair.form,
+                  // The REPAIR dispatch raised it, so recovery's idempotency
+                  // check keys off the turn that actually asked.
+                  raisedFromDispatchId: repairDispatchId as string,
+                } satisfies StepOutcome;
+              }
+            }
+          }
           const repairedOutput = stripQuestionsKey(
             yield* capturedOutputs.read({
               stepRunId: ctx.stepRunId,

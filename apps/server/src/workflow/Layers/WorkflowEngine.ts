@@ -4857,12 +4857,24 @@ const make = Effect.gen(function* () {
         return { kind: "leave" };
       }
       const turn = captureTurn ?? { threadId: dispatch.threadId, turnId: dispatch.turnId };
+      // A read FAILURE is not "no question". Swallowing it here would let a
+      // transient lookup error read as semantic absence, after which the
+      // permissive capture path completes the step and the question is gone.
+      // Fail the step instead: a retry can ask again, a discarded question
+      // cannot.
       const strict = yield* capturedOutputs.value
         .readFinalMessage({ stepRunId, threadId: turn.threadId, turnId: turn.turnId })
-        .pipe(Effect.orElseSucceed(() => undefined));
+        .pipe(
+          Effect.map((value) => ({ ok: true as const, value })),
+          Effect.orElseSucceed(() => ({ ok: false as const, value: undefined })),
+        );
+      if (!strict.ok) {
+        return { kind: "unmappable", message: "could not read the turn's final message" };
+      }
+      const parsed = strict.value;
       const raw =
-        typeof strict === "object" && strict !== null && !Array.isArray(strict)
-          ? (strict as Record<string, unknown>)[AGENT_QUESTIONS_KEY]
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)[AGENT_QUESTIONS_KEY]
           : undefined;
       if (raw === undefined) {
         return { kind: "none" };
@@ -5311,6 +5323,19 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const stepRunId = pending.payload.stepRunId;
+
+      // The ticket must still be on the lane entry this step belongs to.
+      //
+      // Between the answer and this resume the ticket can be moved, parked or
+      // superseded — and a restart makes that window arbitrarily long. Without
+      // this check recovery would dispatch a stale agent turn against the old
+      // step and its worktree, and on a moved ticket that work could even
+      // register under the NEW lane's token.
+      const expectedToken = recovered.pipelineStarted.payload.laneEntryToken;
+      if ((yield* currentToken(recovered.stepStarted.ticketId)) !== expectedToken) {
+        return;
+      }
+
       const form = pending.payload.formSnapshot;
       if (form === undefined) {
         // A question wait without its snapshot cannot be resumed: the answers

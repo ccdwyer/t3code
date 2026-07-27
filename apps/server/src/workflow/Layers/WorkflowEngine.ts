@@ -5522,14 +5522,22 @@ const make = Effect.gen(function* () {
         // minutes each, multiplied by however many are waiting. Starting a
         // second continuation is prevented by the claim inside
         // resumeRecoveredQuestion, not by staying inline.
-        yield* forkTicketWork(
-          latestWait.ticketId,
-          resumeRecoveredQuestion(
-            { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
-            answered,
-            recovered,
-          ),
-        ).pipe(Effect.ignoreCause({ log: true }));
+        const resume = resumeRecoveredQuestion(
+          { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
+          answered,
+          recovered,
+        );
+        const started = yield* forkTicketWork(latestWait.ticketId, resume).pipe(
+          Effect.orElseSucceed(() => false),
+        );
+        if (!started) {
+          // The fork declined — the ticket lost its lane entry, or another fiber
+          // owns its slot. The answer is already durable, so it must not be left
+          // with no owner: run it here instead. Slower (this blocks the rest of
+          // the sweep) but never silently stranded, and the claim inside still
+          // guarantees only one continuation.
+          yield* resume.pipe(Effect.ignoreCause({ log: true }));
+        }
       }
     });
 

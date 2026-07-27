@@ -690,12 +690,17 @@ const make = Effect.gen(function* () {
     /**
      * Set when this is a continuation of a step that parked on a question.
      *
-     * It replaces only the instruction and the dispatch kind — everything after
-     * the turn (capture, question detection, output contract, repair) is the
-     * SAME code the original turn ran, which is the point: a continuation that
-     * re-implemented those rules would drift from them.
+     * It APPENDS the answers to the normally-built instruction and reuses the
+     * asking turn's thread — everything else (templating, handoff pack,
+     * discussion, capture suffix, question detection, output contract, repair)
+     * is the SAME code the original turn ran.
+     *
+     * Appending rather than replacing matters: a provider without a resumable
+     * session starts fresh even on the same thread, so a prompt of only "they
+     * answered X, continue" would leave the agent with no idea what the task
+     * was.
      */
-    resume?: { readonly instruction: string },
+    resume?: { readonly answersBlock: string; readonly threadId: string },
   ) =>
     Effect.gen(function* () {
       // Budget gate: once the ticket's usage roll-up reaches its budget, no
@@ -718,31 +723,37 @@ const make = Effect.gen(function* () {
       // resume cursor. On a miss we mint a fresh thread and record it; on a hit
       // we dispatch the stored thread (and never overwrite it). Panel members
       // always keep fresh ids — lint forbids continueSession + panel.
+      // A question continuation MUST run on the thread that asked. Minting a
+      // fresh one would start a brand-new provider session whose entire prompt
+      // is the answers restatement — the agent would resume with no memory of
+      // the task it paused in the middle of.
       const threadId =
-        step.continueSession === true
-          ? yield* Effect.gen(function* () {
-              const agentKey = deriveAgentKey(
-                step.agent.instance as string,
-                step.agent.model as string,
-                step.agent.options,
-              );
-              const existing = yield* agentSessions.getThreadId(
-                ctx.ticketId,
-                ctx.laneKey,
-                agentKey,
-              );
-              if (existing !== null) {
-                return existing;
-              }
-              yield* agentSessions.upsert(
-                ctx.ticketId,
-                ctx.laneKey,
-                agentKey,
-                mintedThreadId as string,
-              );
-              return mintedThreadId as string;
-            })
-          : (mintedThreadId as string);
+        resume !== undefined
+          ? resume.threadId
+          : step.continueSession === true
+            ? yield* Effect.gen(function* () {
+                const agentKey = deriveAgentKey(
+                  step.agent.instance as string,
+                  step.agent.model as string,
+                  step.agent.options,
+                );
+                const existing = yield* agentSessions.getThreadId(
+                  ctx.ticketId,
+                  ctx.laneKey,
+                  agentKey,
+                );
+                if (existing !== null) {
+                  return existing;
+                }
+                yield* agentSessions.upsert(
+                  ctx.ticketId,
+                  ctx.laneKey,
+                  agentKey,
+                  mintedThreadId as string,
+                );
+                return mintedThreadId as string;
+              })
+            : (mintedThreadId as string);
       const resolvedInstruction = yield* Effect.gen(function* () {
         if (typeof step.instruction === "string") {
           return step.instruction;
@@ -977,6 +988,9 @@ const make = Effect.gen(function* () {
       if (step.allowQuestions === true) {
         instruction = appendAgentQuestionsInstruction(instruction);
       }
+      if (resume !== undefined) {
+        instruction = `${instruction}\n\n${resume.answersBlock}`;
+      }
       // Everything above is done templating, so the pack text can go in now —
       // it is never itself scanned for placeholders.
       // Decide against the SPLICED length but drop by re-splicing from the
@@ -1094,7 +1108,7 @@ const make = Effect.gen(function* () {
 
       const result = yield* runTurn(
         { dispatchId: dispatchId as string, threadId: threadId as string },
-        resume === undefined ? instruction : resume.instruction,
+        instruction,
         resume === undefined ? "" : " (answers)",
         resume === undefined ? undefined : "question-continuation",
       );
@@ -1460,6 +1474,20 @@ const make = Effect.gen(function* () {
   const continueWithAnswers: StepExecutorShape["continueWithAnswers"] = ({ ctx, form, answers }) =>
     Effect.gen(function* () {
       const step = ctx.step;
+      // The thread the question was asked on. Persisted, so this works in a
+      // different process after a restart — which is the whole reason the
+      // assembly read exists.
+      const assembly = yield* dispatch
+        .getDispatchRequestForStep(ctx.stepRunId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (assembly === null) {
+        return {
+          _tag: "failed",
+          error: "question continuation lost its original dispatch",
+          retryable: false,
+          failureClass: "infra",
+        } satisfies StepOutcome;
+      }
       if (step.type !== "agent") {
         // Only an agent step can park on a question, so reaching here means the
         // wait and the board definition disagree. Fail closed rather than
@@ -1477,7 +1505,8 @@ const make = Effect.gen(function* () {
         ctx,
         (worktree) =>
           executeAgentStep(ctx, worktree, step, {
-            instruction: renderAnswersPrompt(form, answers),
+            answersBlock: renderAnswersPrompt(form, answers),
+            threadId: assembly.threadId as string,
           }),
         { gateSetupOnTrust: true },
       );

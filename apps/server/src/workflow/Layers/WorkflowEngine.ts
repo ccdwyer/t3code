@@ -5178,6 +5178,41 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const stepRunId = pending.payload.stepRunId;
+      // One continuation per step run, ever.
+      //
+      // Two paths can reach here for the same wait: the §4.5 boot sweep, and
+      // continueRecoveredApproval when a user answers a re-parked wait WHILE
+      // boot recovery is still running. Without a claim both would dispatch a
+      // turn on the same thread. The claim is the same one the recovery
+      // completion path uses, so a continuation also cannot race a recovered
+      // completion.
+      const claimed = yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
+        const key = stepRunId as string;
+        if (current.has(key)) {
+          return [false, current] as const;
+        }
+        const next = new Set(current);
+        next.add(key);
+        return [true, next] as const;
+      });
+      if (!claimed) {
+        return;
+      }
+      // Released on EVERY exit — including the re-park and provider-wait paths,
+      // which return normally. A leaked claim would make that stepRunId a
+      // silent no-op for the rest of the process lifetime.
+      yield* resumeRecoveredQuestionClaimed(pending, resolution, recovered).pipe(
+        Effect.ensuring(releaseRecoveredStepClaim(stepRunId)),
+      );
+    });
+
+  const resumeRecoveredQuestionClaimed = (
+    pending: PendingWait,
+    resolution: CheckpointResolution,
+    recovered: NonNullable<ReturnType<typeof recoveredStepContext>>,
+  ) =>
+    Effect.gen(function* () {
+      const stepRunId = pending.payload.stepRunId;
       const form = pending.payload.formSnapshot;
       if (form === undefined) {
         // A question wait without its snapshot cannot be resumed: the answers

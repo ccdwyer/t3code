@@ -1742,9 +1742,24 @@ function CheckpointFormFields({
           target.tagName === "TEXTAREA" ||
           target.isContentEditable === true);
 
-      if (event.key === "Enter" && !typing) {
+      if (event.key === "Enter") {
+        // Works from the freeform box too — otherwise the one field you have to
+        // type in is the one you cannot leave with the keyboard.
+        if (typing && !(target instanceof HTMLInputElement)) return;
         event.preventDefault();
-        setActiveIndex((index) => Math.min(index + 1, questionFields.length - 1));
+        const isLast = activeIndex >= questionFields.length - 1;
+        if (!isLast) {
+          setActiveIndex((index) => Math.min(index + 1, questionFields.length - 1));
+          return;
+        }
+        // On the LAST question, Enter submits — the spec's flow is answer,
+        // advance, submit, all without reaching for the mouse. Only when every
+        // required answer is present; otherwise it stays put rather than
+        // sending something incomplete.
+        const decision = decisionField?.kind === "decision" ? decisionField.options[0] : undefined;
+        if (decision !== undefined && requiredAnswersPresent()) {
+          onSubmit(decision.value, submittedAnswers(), true);
+        }
         return;
       }
       // `s` for "steer" — jump to the freeform box. Never while typing, or it
@@ -1787,7 +1802,19 @@ function CheckpointFormFields({
     return () => {
       window.removeEventListener("keydown", onKey);
     };
-  }, [activeField, answers, disabled, questionFields.length]);
+    // Every value the handler reads is listed: Enter now submits, so a stale
+    // closure would send an older answer set than the one on screen.
+  }, [
+    activeField,
+    activeIndex,
+    answers,
+    decisionField,
+    disabled,
+    form,
+    onSubmit,
+    otherText,
+    questionFields.length,
+  ]);
 
   /**
    * What actually goes to the server.
@@ -1796,6 +1823,19 @@ function CheckpointFormFields({
    * text instead — the sentinel is a UI affordance and must never be persisted
    * as an answer.
    */
+  /** Every non-decision field marked required has an answer. */
+  const requiredAnswersPresent = (): boolean => {
+    const submitted = submittedAnswers();
+    return form.fields.every((field) => {
+      if (field.kind === "decision") return true;
+      if (!("required" in field) || field.required !== true) return true;
+      const value = submitted[field.key];
+      return Array.isArray(value)
+        ? value.length > 0
+        : typeof value === "string" && value.length > 0;
+    });
+  };
+
   const submittedAnswers = (): Record<string, string | ReadonlyArray<string>> => {
     const result: Record<string, string | ReadonlyArray<string>> = { ...answers };
     for (const field of form.fields) {

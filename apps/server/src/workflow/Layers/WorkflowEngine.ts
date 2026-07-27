@@ -5299,7 +5299,38 @@ const make = Effect.gen(function* () {
         return [true, next] as const;
       });
       if (!claimed) {
-        return;
+        // Contended, not done. Another recovery path holds the claim and may
+        // release it having done no continuation — `completeRecoveredStepUnlocked`
+        // takes the claim, sees the mirrored wait, releases and returns. Simply
+        // giving up here strands a durable answer until the next restart, so
+        // retry briefly for the holder to finish.
+        let acquired = false;
+        for (let attempt = 0; attempt < 8 && !acquired; attempt += 1) {
+          // Yield rather than sleep: the contention is between fibers in this
+          // process, and a timed wait here would stall recovery (and hang tests
+          // that drive it on a controlled clock).
+          yield* Effect.yieldNow;
+          acquired = yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
+            const key = stepRunId as string;
+            if (current.has(key)) {
+              return [false, current] as const;
+            }
+            const next = new Set(current);
+            next.add(key);
+            return [true, next] as const;
+          });
+        }
+        if (!acquired) {
+          return;
+        }
+        // Another owner may have finished it while we waited.
+        const events = yield* readStoredEventsForStep(stepRunId).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (events !== null && hasTerminalStepEvent(events, stepRunId)) {
+          yield* releaseRecoveredStepClaim(stepRunId);
+          return;
+        }
       }
       yield* completeRecoveredStepUnlocked(stepRunId, result, captureTurn).pipe(
         // Release the claim on failure so a later monitor/sweep can finish

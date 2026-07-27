@@ -108,7 +108,11 @@ export const validateCheckpointSubmission = (
     if (field.kind === "decision") {
       continue;
     }
-    const raw = submitted[field.key];
+    // Own properties only. A field key like `toString` or `hasOwnProperty`
+    // otherwise resolves an inherited FUNCTION for an omitted answer, so an
+    // unanswered field fails type validation — which breaks rejection and
+    // cancellation, where requiredness is deliberately relaxed.
+    const raw = Object.hasOwn(submitted, field.key) ? submitted[field.key] : undefined;
     const mustBeFilled = field.required === true && outcome === "success";
 
     if (field.kind === "text") {

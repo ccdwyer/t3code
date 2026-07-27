@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   MAX_AGENT_QUESTIONS,
+  OTHER_SENTINEL,
   QUESTION_DECISION_KEY,
   mapAgentQuestions,
   questionsWaitingReason,
@@ -108,6 +109,25 @@ describe("mapAgentQuestions", () => {
       label: "x",
     }));
     assert.include(rejection(tooMany), "max");
+  });
+
+  it("rejects an explicitly empty option label", () => {
+    // Absent means "use the value"; empty violates CheckpointOption and would
+    // otherwise reach the event commit as a runtime-invalid form.
+    assert.include(
+      rejection([{ key: "k", label: "x", options: [{ value: "a", label: "" }] }]),
+      "empty label",
+    );
+  });
+
+  it("reserves the freeform sentinel so an agent option cannot collide with it", () => {
+    // A real option with this value would open the drawer's "Something else…"
+    // box and replace the answer, making the agent's own choice unsubmittable.
+    assert.include(rejection([{ key: "k", label: "x", options: [OTHER_SENTINEL] }]), "may not use");
+    assert.include(
+      rejection([{ key: "k", label: "x", options: [{ value: OTHER_SENTINEL, label: "Other" }] }]),
+      "may not use",
+    );
   });
 
   it("rejects malformed options rather than raising a half-formed question", () => {

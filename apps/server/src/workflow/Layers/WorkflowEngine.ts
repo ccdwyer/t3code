@@ -5755,16 +5755,21 @@ const make = Effect.gen(function* () {
           yield* releaseRecoveredStepClaim(stepRunId);
           continue;
         }
+        // Both exits below release: the claim is held from here on, and a
+        // `continue` that keeps it marks the step owned for the rest of the
+        // process — permanently blocking later attempts and accumulating stale
+        // claims as ticks keep meeting settled candidates.
         const recovered = recoveredStepContext(events, stepRunId);
         if (!recovered) {
+          yield* releaseRecoveredStepClaim(stepRunId);
           continue;
         }
         // A completed or superseded pipeline is settled: its step will never be
         // resumed, so this is not debt. Without this the periodic tick would
         // rediscover the same non-terminal question forever after a move or
-        // park raced the answer — permanent work, and a claim contended on
-        // every pass.
+        // park raced the answer.
         if (hasPipelineCompletedEvent(events, recovered.pipelineStarted.payload.pipelineRunId)) {
+          yield* releaseRecoveredStepClaim(stepRunId);
           continue;
         }
         // INLINE, and that is what makes the ordinary sweeps safe.

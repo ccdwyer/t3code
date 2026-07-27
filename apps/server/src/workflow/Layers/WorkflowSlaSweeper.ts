@@ -208,8 +208,27 @@ const makeWorkflowSlaSweeper = (options?: WorkflowSlaSweeperLiveOptions) =>
         } satisfies WorkflowSlaSweepResult;
       });
 
+    /**
+     * Re-attempt any answered agent question whose continuation never started.
+     *
+     * The debt is derived from the event log, so it is already durable — what
+     * was missing is a TRIGGER after boot. A continuation that lost a claim
+     * race would otherwise sit until the next restart with the operator's
+     * answer stranded. This tick is that trigger: the sweep is idempotent (it
+     * only acts where a round is answered and unowed), so re-running it costs
+     * nothing when there is nothing to do.
+     */
+    const resumeStrandedQuestions = engine
+      .resumeAnsweredQuestions()
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("workflow.sla-sweeper.resume-questions-failed", { cause }),
+        ),
+      );
+
     const start: WorkflowSlaSweeperShape["start"] = () =>
       sweep().pipe(
+        Effect.andThen(resumeStrandedQuestions),
         Effect.catchCause((cause) =>
           Effect.logWarning("workflow.sla-sweeper.sweep-failed", { cause }),
         ),

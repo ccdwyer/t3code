@@ -1276,18 +1276,34 @@ const make = Effect.gen(function* () {
               : undefined;
             if (repairQuestions !== undefined) {
               const raisedRepair = yield* countQuestionRaises(ctx.stepRunId);
-              const mappedRepair =
-                raisedRepair >= MAX_QUESTION_ROUNDS ? null : mapAgentQuestions(repairQuestions);
-              if (mappedRepair !== null && mappedRepair.ok) {
+              if (raisedRepair >= MAX_QUESTION_ROUNDS) {
                 return {
-                  _tag: "awaiting_questions",
-                  waitingReason: questionsWaitingReason(mappedRepair.form),
-                  form: mappedRepair.form,
-                  // The REPAIR dispatch raised it, so recovery's idempotency
-                  // check keys off the turn that actually asked.
-                  raisedFromDispatchId: repairDispatchId as string,
+                  _tag: "failed",
+                  error: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,
+                  retryable: false,
+                  failureClass: "agent_error",
                 } satisfies StepOutcome;
               }
+              const mappedRepair = mapAgentQuestions(repairQuestions);
+              if (!mappedRepair.ok) {
+                // Fail rather than fall through to strip-and-validate: the agent
+                // asked, and continuing would delete the question and report
+                // whatever was left as the step's result.
+                return {
+                  _tag: "failed",
+                  error: `invalid ${AGENT_QUESTIONS_KEY}: ${mappedRepair.message}`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                } satisfies StepOutcome;
+              }
+              return {
+                _tag: "awaiting_questions",
+                waitingReason: questionsWaitingReason(mappedRepair.form),
+                form: mappedRepair.form,
+                // The REPAIR dispatch raised it, so recovery's idempotency check
+                // keys off the turn that actually asked.
+                raisedFromDispatchId: repairDispatchId as string,
+              } satisfies StepOutcome;
             }
           }
           const repairedOutput = stripQuestionsKey(

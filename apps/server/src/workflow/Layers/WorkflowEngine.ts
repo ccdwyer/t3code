@@ -1490,14 +1490,26 @@ const make = Effect.gen(function* () {
             // step finishes: no form, no answers, nobody notified. Re-enter the
             // question arm instead of committing a terminal.
             if (step.type === "agent" && step.allowQuestions === true) {
+              // Read/lookup failures fail the step rather than degrading to
+              // "no question": a swallowed error here completes the step with
+              // the question stripped out and nobody told.
               const stepEvents = yield* readStoredEventsForStep(stepRunId).pipe(
                 Effect.orElseSucceed(() => null),
               );
               const raise =
                 stepEvents === null
-                  ? ({ kind: "none" } as QuestionRaiseDecision)
+                  ? ({
+                      kind: "unmappable",
+                      message: "could not read the step's events",
+                    } as QuestionRaiseDecision)
                   : yield* recoverQuestionRaise(stepRunId, stepEvents, undefined).pipe(
-                      Effect.orElseSucceed(() => ({ kind: "none" }) as QuestionRaiseDecision),
+                      Effect.orElseSucceed(
+                        () =>
+                          ({
+                            kind: "unmappable",
+                            message: "could not inspect the turn for questions",
+                          }) as QuestionRaiseDecision,
+                      ),
                     );
               if (raise.kind === "raise") {
                 outcome = {

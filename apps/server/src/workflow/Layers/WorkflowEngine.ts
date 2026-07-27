@@ -1483,6 +1483,32 @@ const make = Effect.gen(function* () {
                 parallelismHold: hold,
               };
             }
+            // A turn that paused for a native provider prompt and then ended by
+            // asking the OPERATOR a question resumes here — and this path
+            // completes from `completedResultForStep`, which strips the
+            // reserved key. Without this check the question is discarded and the
+            // step finishes: no form, no answers, nobody notified. Re-enter the
+            // question arm instead of committing a terminal.
+            if (step.type === "agent" && step.allowQuestions === true) {
+              const stepEvents = yield* readStoredEventsForStep(stepRunId).pipe(
+                Effect.orElseSucceed(() => null),
+              );
+              const raise =
+                stepEvents === null
+                  ? ({ kind: "none" } as QuestionRaiseDecision)
+                  : yield* recoverQuestionRaise(stepRunId, stepEvents, undefined).pipe(
+                      Effect.orElseSucceed(() => ({ kind: "none" }) as QuestionRaiseDecision),
+                    );
+              if (raise.kind === "raise") {
+                outcome = {
+                  _tag: "awaiting_questions",
+                  waitingReason: raise.waitingReason,
+                  form: raise.form,
+                  raisedFromDispatchId: raise.raisedFromDispatchId,
+                };
+                continue;
+              }
+            }
             yield* commit({
               type: "StepCompleted",
               ticketId,
@@ -5492,53 +5518,66 @@ const make = Effect.gen(function* () {
           ).pipe(Effect.ignoreCause({ log: true }));
           continue;
         }
-        // "Nothing dispatched since" is per-ROUND: anchored on the seq of the
-        // dispatch that raised the wait being resumed. "No continuation row for
-        // the step run" would be false the moment any earlier round ran.
+        // Is a continuation OWED?
+        //
+        // Per-round, and counted rather than anchored on the raising dispatch
+        // row: that row can be pruned or tombstoned, and a missing anchor used
+        // to make this sweep skip silently — stranding the answers forever,
+        // which is the failure it exists to prevent. Every answered question
+        // round earns exactly one continuation, so if fewer continuations have
+        // been dispatched than rounds answered, one is still owed.
+        let answeredRounds = 0;
+        let sawWait = false;
+        for (const event of events) {
+          if (
+            event.type === "StepAwaitingUser" &&
+            event.payload.stepRunId === stepRunId &&
+            event.payload.questionPhase === true
+          ) {
+            sawWait = true;
+          }
+          if (
+            event.type === "StepUserResolved" &&
+            event.payload.stepRunId === stepRunId &&
+            sawWait
+          ) {
+            answeredRounds += 1;
+            sawWait = false;
+          }
+        }
         const assembly = yield* providerDispatches.value
           .getDispatchRequestForStep(stepRunId)
           .pipe(Effect.orElseSucceed(() => null));
-        const raisedSeq = yield* wrapSql(sql<{ readonly seq: number | null }>`
-          SELECT dispatch_seq AS "seq"
-          FROM workflow_dispatch_outbox
-          WHERE dispatch_id = ${latestWait.payload.raisedFromDispatchId ?? ""}
-        `).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<{ readonly seq: number | null }>));
-        const anchor = raisedSeq[0]?.seq ?? null;
-        if (assembly === null || anchor === null) {
-          continue;
-        }
-        // nextDispatchSeq is max(seq)+1, so max = nextDispatchSeq - 1. Anything
-        // above the anchor means a continuation already exists — possibly still
-        // unconfirmed, in which case recoverPending/monitorStartedDispatches own
-        // it and this sweep must not start a second turn.
-        if (assembly.nextDispatchSeq - 1 > anchor) {
+        if (assembly === null || assembly.questionContinuations >= answeredRounds) {
+          // Already dispatched (possibly still unconfirmed, in which case
+          // recoverPending and monitorStartedDispatches own it — starting a
+          // second turn here would race them).
           continue;
         }
         const recovered = recoveredStepContext(events, stepRunId);
         if (!recovered) {
           continue;
         }
-        // Forked, not awaited. Boot recovery is sequential, so awaiting a full
-        // agent turn here would stall startup behind every stuck question —
-        // minutes each, multiplied by however many are waiting. Starting a
-        // second continuation is prevented by the claim inside
-        // resumeRecoveredQuestion, not by staying inline.
+        // Run INLINE, not forked.
+        //
+        // Forking only yields the scheduler once, while the continuation's
+        // outbox row is inserted much later — after the worktree lease, setup
+        // and instruction assembly. Recovery would march straight on into
+        // `recoverPending` and `monitorStartedDispatches`, which can observe
+        // that row while it is still `pending` and call `ensureStarted`
+        // concurrently with the fiber that owns it: two provider turns for one
+        // step. The claim stops a second CONTINUATION, not a second dispatch of
+        // the same row.
+        //
+        // The cost is that boot waits for these turns. That is a real cost, and
+        // it is the one worth paying: a stalled start is visible and recoverable,
+        // a duplicated agent turn on a shared worktree is neither.
         const resume = resumeRecoveredQuestion(
           { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
           answered,
           recovered,
         );
-        const started = yield* forkTicketWork(latestWait.ticketId, resume).pipe(
-          Effect.orElseSucceed(() => false),
-        );
-        if (!started) {
-          // The fork declined — the ticket lost its lane entry, or another fiber
-          // owns its slot. The answer is already durable, so it must not be left
-          // with no owner: run it here instead. Slower (this blocks the rest of
-          // the sweep) but never silently stranded, and the claim inside still
-          // guarantees only one continuation.
-          yield* resume.pipe(Effect.ignoreCause({ log: true }));
-        }
+        yield* resume.pipe(Effect.ignoreCause({ log: true }));
       }
     });
 

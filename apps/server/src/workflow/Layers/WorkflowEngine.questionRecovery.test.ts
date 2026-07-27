@@ -21,6 +21,7 @@ import { ApprovalGateLive } from "./ApprovalGate.ts";
 import { BoardRegistryLive } from "./BoardRegistry.ts";
 import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import { WorkflowBoardSaveLocksLive } from "./WorkflowBoardSaveLocks.ts";
+import { WorkflowEventCommitter } from "../Services/WorkflowEventCommitter.ts";
 import { WorkflowEventCommitterLive } from "./WorkflowEventCommitter.ts";
 import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
@@ -197,7 +198,7 @@ const questionWaits = (ticketId: string) =>
   });
 
 layer("agent question crash windows", (it) => {
-  it.effect("§4.5 — an answered question with no continuation row is resumed", () =>
+  it.effect("§4.5 — an answered question with no continuation dispatch is resumed", () =>
     Effect.gen(function* () {
       continuations.length = 0;
       capturedBlock = questionBlock("db");
@@ -206,27 +207,30 @@ layer("agent question crash windows", (it) => {
       const stepRunId = waiting?.steps[0]?.stepRunId;
       assert.isDefined(stepRunId);
 
-      // Answer it. The live fiber is parked in this process, so this completes
-      // the round normally and records one continuation.
-      yield* engine.resolveApproval(stepRunId as never, {
-        approved: true,
-        decision: "continue",
-        answers: { db: "Postgres", __continue: "continue" } as never,
+      // THE CRASH WINDOW. Commit the answer exactly as the live path does — a
+      // StepUserResolved carrying the operator's answers — WITHOUT going through
+      // resolveApproval, so the parked fiber never wakes and no continuation is
+      // ever dispatched. That is precisely the state a kill between the resolve
+      // commit and `ensureStarted` leaves behind, and the state in which the
+      // answers are stranded in the log.
+      const committer = yield* WorkflowEventCommitter;
+      yield* committer.commit({
+        type: "StepUserResolved",
+        eventId: `evt-answer-${String(stepRunId)}` as never,
+        ticketId: ticketId as never,
+        occurredAt: "2026-01-01T00:00:00.000Z" as never,
+        payload: {
+          stepRunId: stepRunId as never,
+          decision: "continue",
+          answers: { db: "Postgres" } as never,
+        },
       });
-      yield* awaitTicketWhere(
-        ticketId as string,
-        (detail) => detail?.ticket.status !== "waiting_on_user",
-      );
-      const afterLive = continuations.length;
+      assert.strictEqual(continuations.length, 0, "nothing should have resumed yet");
 
-      // Re-running the sweep must NOT start a second turn for the same answer:
-      // the step has a terminal event, and the per-round anchor is satisfied.
+      // Boot recovery must notice and deliver those answers to a model.
       yield* engine.resumeAnsweredQuestions();
-      assert.strictEqual(
-        continuations.length,
-        afterLive,
-        "the sweep re-ran a continuation for an already-finished step",
-      );
+      assert.strictEqual(continuations.length, 1, "the answered question was never resumed");
+      assert.strictEqual(continuations[0]?.db, "Postgres");
     }),
   );
 

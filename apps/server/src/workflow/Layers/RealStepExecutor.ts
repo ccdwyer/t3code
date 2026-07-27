@@ -162,10 +162,17 @@ const make = Effect.gen(function* () {
     return rest;
   };
 
+  /**
+   * Rounds already asked, or `null` when that cannot be established.
+   *
+   * A read failure must NOT read as zero: the cap would look fresh and a sixth
+   * question would go through, defeating the bound that stops an agent parking
+   * a ticket on a human indefinitely.
+   */
   const countQuestionRaises = (stepRunId: StepRunId) =>
     dispatch.getDispatchRequestForStep(stepRunId).pipe(
-      Effect.map((assembly) => assembly?.questionContinuations ?? 0),
-      Effect.orElseSucceed(() => 0),
+      Effect.map((assembly): number | null => assembly?.questionContinuations ?? 0),
+      Effect.orElseSucceed((): number | null => null),
     );
   const agentSessions = yield* WorkflowAgentSessionStore;
   const handoffReader = yield* StepOutputHandoffReader;
@@ -1152,7 +1159,7 @@ const make = Effect.gen(function* () {
             const rawQuestions = isRecord(strict) ? strict[AGENT_QUESTIONS_KEY] : undefined;
             if (rawQuestions !== undefined) {
               const raised = yield* countQuestionRaises(ctx.stepRunId);
-              if (raised >= MAX_QUESTION_ROUNDS) {
+              if (raised === null || raised >= MAX_QUESTION_ROUNDS) {
                 return {
                   _tag: "failed",
                   error: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,
@@ -1293,7 +1300,7 @@ const make = Effect.gen(function* () {
               : undefined;
             if (repairQuestions !== undefined) {
               const raisedRepair = yield* countQuestionRaises(ctx.stepRunId);
-              if (raisedRepair >= MAX_QUESTION_ROUNDS) {
+              if (raisedRepair === null || raisedRepair >= MAX_QUESTION_ROUNDS) {
                 return {
                   _tag: "failed",
                   error: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,

@@ -936,12 +936,17 @@ const make = Effect.gen(function* () {
       }
       const token = laneEntryToken as LaneEntryToken;
       let started = false;
+      let staleInTransaction = false;
       yield* SynchronizedRef.updateEffect(runningPipelines, (current) =>
         Effect.gen(function* () {
           const key = ticketId as string;
           // Re-read inside the transaction: a move between the check above and
           // here would otherwise slip through.
           if (expectedToken !== undefined && (yield* currentToken(ticketId)) !== expectedToken) {
+            // Moved or parked inside the window. Distinct from an occupied slot:
+            // nobody owns this continuation, so the caller must close the step
+            // rather than assume another owner will.
+            staleInTransaction = true;
             return current;
           }
           if (current.get(key)) {
@@ -965,7 +970,8 @@ const make = Effect.gen(function* () {
       // ticket's pipeline slot and will do the work. Conflating it with "stale"
       // let a losing racer commit StepFailed while the winner's continuation was
       // still running.
-      return started ? ("started" as const) : ("owned" as const);
+      if (started) return "started" as const;
+      return staleInTransaction ? ("stale" as const) : ("owned" as const);
     });
 
   const interruptRunningPipeline = (ticketId: TicketId) =>
@@ -5287,6 +5293,7 @@ const make = Effect.gen(function* () {
     stepRunId,
     result,
     captureTurn,
+    options,
   ) =>
     Effect.gen(function* () {
       const claimed = yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
@@ -5301,7 +5308,7 @@ const make = Effect.gen(function* () {
       if (!claimed) {
         return;
       }
-      yield* completeRecoveredStepUnlocked(stepRunId, result, captureTurn).pipe(
+      yield* completeRecoveredStepUnlocked(stepRunId, result, captureTurn, options).pipe(
         // Release the claim on failure so a later monitor/sweep can finish
         // what this continuation could not.
         Effect.onError(() =>
@@ -5357,8 +5364,19 @@ const make = Effect.gen(function* () {
         // releases and returns — so giving up here strands a durable answer
         // until the next restart. Wait for release, then re-check.
         let acquired = false;
-        for (let attempt = 0; attempt < 200 && !acquired; attempt += 1) {
+        // Bounded generously, but the exit that matters is the terminal check
+        // below: the holder may be blocked on SQLite well past a few yields, and
+        // returning early strands a durable answer with no later trigger.
+        for (let attempt = 0; attempt < 20_000 && !acquired; attempt += 1) {
           yield* Effect.yieldNow;
+          if (attempt % 200 === 199) {
+            const progress = yield* readStoredEventsForStep(stepRunId).pipe(
+              Effect.orElseSucceed(() => null),
+            );
+            if (progress !== null && hasTerminalStepEvent(progress, stepRunId)) {
+              return;
+            }
+          }
           acquired = yield* SynchronizedRef.modify(recoveredStepClaims, (current) => {
             const key = stepRunId as string;
             if (current.has(key)) {
@@ -5631,7 +5649,7 @@ const make = Effect.gen(function* () {
         // continue: running a turn the operator declined is worse than failing
         // a step they already cancelled.
         if (answered.decision !== QUESTION_CONTINUE_VALUE) {
-          yield* completeRecoveredStepUnlocked(
+          yield* completeRecoveredStep(
             stepRunId,
             {
               _tag: "failed",
@@ -5766,7 +5784,7 @@ const make = Effect.gen(function* () {
         // output — i.e. with the question block itself as the step's result, and
         // the operator's answers seen by nobody.
         if (resolution.outcome !== "success") {
-          yield* completeRecoveredStepUnlocked(
+          yield* completeRecoveredStep(
             pending.payload.stepRunId,
             {
               _tag: "failed",
@@ -5795,7 +5813,7 @@ const make = Effect.gen(function* () {
         if (started === "stale") {
           // The ticket lost its lane entry, so there is nothing to resume into
           // and the durable answer would otherwise sit forever unowned.
-          yield* completeRecoveredStepUnlocked(
+          yield* completeRecoveredStep(
             pending.payload.stepRunId,
             {
               _tag: "failed",

@@ -251,6 +251,8 @@ export interface WorkflowEngineShape {
     stepRunId: StepRunId,
     result: RecoveredStepResult,
     captureTurn?: { readonly threadId: ThreadId; readonly turnId: TurnId },
+    /** Mirrors the unlocked tail so a claiming caller need not bypass it. */
+    options?: { readonly allowRetry?: boolean },
   ) => Effect.Effect<void, WorkflowEventStoreError>;
 }
 

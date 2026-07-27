@@ -4985,6 +4985,10 @@ const make = Effect.gen(function* () {
         !recovered ||
         hasPipelineCompletedEvent(events, recovered.pipelineStarted.payload.pipelineRunId)
       ) {
+        // Nothing recoverable here. Release rather than returning normally with
+        // the claim held — a retained claim is permanent for the process, and
+        // every later sweep would contend for it.
+        yield* releaseRecoveredStepClaim(stepRunId);
         return;
       }
 
@@ -5372,9 +5376,11 @@ const make = Effect.gen(function* () {
         // Bounded generously, but the exit that matters is the terminal check
         // below: the holder may be blocked on SQLite well past a few yields, and
         // returning early strands a durable answer with no later trigger.
-        for (let attempt = 0; attempt < 20_000 && !acquired; attempt += 1) {
+        // Short now: the periodic sweep re-derives this debt and tries again,
+        // so a long spin buys nothing and costs churn on every tick.
+        for (let attempt = 0; attempt < 400 && !acquired; attempt += 1) {
           yield* Effect.yieldNow;
-          if (attempt % 200 === 199) {
+          if (attempt % 100 === 99) {
             const progress = yield* readStoredEventsForStep(stepRunId).pipe(
               Effect.orElseSucceed(() => null),
             );
@@ -5721,6 +5727,14 @@ const make = Effect.gen(function* () {
         }
         const recovered = recoveredStepContext(events, stepRunId);
         if (!recovered) {
+          continue;
+        }
+        // A completed or superseded pipeline is settled: its step will never be
+        // resumed, so this is not debt. Without this the periodic tick would
+        // rediscover the same non-terminal question forever after a move or
+        // park raced the answer — permanent work, and a claim contended on
+        // every pass.
+        if (hasPipelineCompletedEvent(events, recovered.pipelineStarted.payload.pipelineRunId)) {
           continue;
         }
         // INLINE, and that is what makes the ordinary sweeps safe.

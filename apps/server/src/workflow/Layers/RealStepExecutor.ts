@@ -863,7 +863,13 @@ const make = Effect.gen(function* () {
           : "";
       const bodyBudget = instructionBodyBudget(
         providerBudget,
-        appendedDiscussionBlock.length,
+        // The answers block is trailing content appended after the body, same
+        // as the discussion block, so it is charged the same way. Ten 2000-char
+        // answers is ~20KB; leaving it uncharged meant a near-budget
+        // instruction could tip over AFTER the operator's answers were already
+        // durable — failing a step for a prompt we assembled, not anything they
+        // did.
+        appendedDiscussionBlock.length + (resume?.answersBlock.length ?? 0),
         step.captureOutput === true,
         step.allowQuestions === true,
       );

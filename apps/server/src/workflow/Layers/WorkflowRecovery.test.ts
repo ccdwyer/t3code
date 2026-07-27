@@ -167,6 +167,7 @@ const layer = it.layer(
               ...(captureTurn === undefined ? {} : { captureTurn }),
             });
           }),
+        resumeAnsweredQuestions: () => Effect.void,
         editTicketContextPack: () => Effect.die("unused"),
       }),
     ),
@@ -788,6 +789,7 @@ it.effect("starts recovered provider waits once when the fresh turn is still run
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          resumeAnsweredQuestions: () => Effect.void,
           editTicketContextPack: () => Effect.die("unused"),
         }),
       ),
@@ -1034,6 +1036,7 @@ it.effect("recommits recovered provider approval requests after stale dispatch c
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.void,
           completeRecoveredStep: () => Effect.void,
+          resumeAnsweredQuestions: () => Effect.void,
           editTicketContextPack: () => Effect.die("unused"),
         }),
       ),
@@ -1324,6 +1327,7 @@ it.effect("fails an interrupted panel step even when only one member row is stil
                   ),
                   Effect.asVoid,
                 ),
+              resumeAnsweredQuestions: () => Effect.void,
               editTicketContextPack: () => Effect.die("unused"),
             };
           }),
@@ -2020,6 +2024,7 @@ it.effect("cascades persisted boards whose workflow file is missing during prelo
           cancelTicketPipelines: () => Effect.void,
           recoverBoardWip: () => Effect.die("stale board must not recover wip"),
           completeRecoveredStep: () => Effect.die("unused completeRecoveredStep"),
+          resumeAnsweredQuestions: () => Effect.void,
           editTicketContextPack: () => Effect.die("unused"),
         }),
       ),
@@ -2336,6 +2341,7 @@ it.effect("preload does not resurrect a board deleted while its save lock is hel
             recoverBoardWip: (recoveredBoardId) =>
               Ref.update(recoveredBoards, (boards) => [...boards, recoveredBoardId as string]),
             completeRecoveredStep: () => Effect.die("unused completeRecoveredStep"),
+            resumeAnsweredQuestions: () => Effect.void,
             editTicketContextPack: () => Effect.die("unused"),
           }),
         ),

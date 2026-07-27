@@ -136,7 +136,7 @@ export interface ProviderDispatchOutboxShape {
   readonly getDispatchForStep: (
     stepRunId: StepRunId,
   ) => Effect.Effect<
-    { readonly threadId: ThreadId; readonly turnId: TurnId } | null,
+    { readonly threadId: ThreadId; readonly turnId: TurnId; readonly dispatchId: string } | null,
     WorkflowEventStoreError
   >;
   /**

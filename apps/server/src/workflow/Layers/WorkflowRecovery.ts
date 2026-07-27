@@ -1347,6 +1347,13 @@ const make = Effect.gen(function* () {
       yield* recoverRunningScriptRuns;
       yield* recoverRunningMergeSteps;
       yield* recoverRunningPullRequestSteps;
+      // SPEC §4.5 — BEFORE recoverConfirmedRunningSteps. A step whose agent
+      // question was answered but whose continuation never started is `running`
+      // with every row confirmed, which is exactly what that sweep selects; it
+      // would complete the step from the QUESTION turn's capture and strand the
+      // answers. This runs first and inserts its continuation row synchronously,
+      // so the later sweeps see a non-confirmed row and leave the step alone.
+      yield* engine.resumeAnsweredQuestions().pipe(Effect.ignoreCause({ log: true }));
       // Must run before recoverPending: tombstoneStaleDispatches also
       // confirms rows, and those superseded steps are not this sweep's
       // target (completeRecoveredStep's token guard handles them anyway).

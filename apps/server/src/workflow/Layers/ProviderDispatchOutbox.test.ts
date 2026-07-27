@@ -157,6 +157,7 @@ it.effect("looks up dispatch thread and turn by step run", () =>
 
       const dispatch = yield* outbox.getDispatchForStep(request.stepRunId);
       assert.deepEqual(dispatch, {
+        dispatchId: request.dispatchId as string,
         threadId: "thread-1",
         turnId: "turn-1",
       });

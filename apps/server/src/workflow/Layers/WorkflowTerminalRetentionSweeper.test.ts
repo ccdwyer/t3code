@@ -55,6 +55,7 @@ const makeEngineLayer = (
     cancelTicketPipelines,
     recoverBoardWip: () => Effect.void,
     completeRecoveredStep: () => unsupported(),
+    resumeAnsweredQuestions: () => Effect.void,
     editTicketContextPack: () => Effect.die("unused"),
   } satisfies WorkflowEngineShape);
 

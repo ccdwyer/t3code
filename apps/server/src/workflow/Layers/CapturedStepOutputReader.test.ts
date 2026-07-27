@@ -24,6 +24,7 @@ const layer = it.layer(
         ensureStarted: () => Effect.succeed({ turnId: "turn-captured-output" as never }),
         getDispatchForStep: () =>
           Effect.succeed({
+            dispatchId: "dispatch-captured-output",
             threadId: "thread-captured-output" as never,
             turnId: "turn-captured-output" as never,
           }),

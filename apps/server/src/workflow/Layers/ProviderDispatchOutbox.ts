@@ -102,6 +102,7 @@ interface StepDispatchRow {
 interface DispatchForStepRow {
   readonly threadId: string;
   readonly turnId: string | null;
+  readonly dispatchId: string;
 }
 
 interface DispatchAssemblyRow {
@@ -244,7 +245,8 @@ const make = Effect.gen(function* () {
     wrapSql(sql<DispatchForStepRow>`
       SELECT
         thread_id AS "threadId",
-        turn_id AS "turnId"
+        turn_id AS "turnId",
+        dispatch_id AS "dispatchId"
       FROM workflow_dispatch_outbox
       WHERE step_run_id = ${stepRunId}
       ORDER BY dispatch_seq DESC, created_at DESC, dispatch_id DESC
@@ -256,6 +258,7 @@ const make = Effect.gen(function* () {
           return null;
         }
         return {
+          dispatchId: row.dispatchId,
           threadId: row.threadId as never,
           turnId: row.turnId as never,
         };

@@ -232,6 +232,21 @@ export interface WorkflowEngineShape {
     ticketId: TicketId,
   ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly recoverBoardWip: (boardId: BoardId) => Effect.Effect<void, WorkflowEventStoreError>;
+  /**
+   * Resume steps whose agent question was answered but whose continuation never
+   * started (SPEC §4.5).
+   *
+   * The post-answer crash window: StepUserResolved commits, the projection flips
+   * the step back to `running`, and the process dies before the continuation
+   * dispatch exists. Nothing else re-enters — DurableApprovalResume only
+   * re-parks UNRESOLVED waits — and recoverConfirmedRunningSteps would then
+   * complete the step from the question turn's capture.
+   *
+   * Must run BEFORE that sweep, and synchronously enough that its own
+   * continuation row exists before recoverPending/monitorStartedDispatches
+   * could adopt it.
+   */
+  readonly resumeAnsweredQuestions: () => Effect.Effect<void, WorkflowEventStoreError>;
   readonly completeRecoveredStep: (
     stepRunId: StepRunId,
     result: RecoveredStepResult,

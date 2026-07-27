@@ -18,6 +18,7 @@ import type {
   WorkflowStepUsage,
   WorkflowContextPackSection,
   WorkflowContextPackSectionKey,
+  CheckpointForm,
 } from "@t3tools/contracts";
 import {
   applyTotalCap,
@@ -81,6 +82,11 @@ import {
   WorkflowRoutingContextBuilder,
   type WorkflowRoutingContext,
 } from "../Services/WorkflowRoutingContextBuilder.ts";
+import {
+  AGENT_QUESTIONS_KEY,
+  mapAgentQuestions,
+  questionsWaitingReason,
+} from "../agentQuestions.ts";
 import { ruleReferencesRunCount } from "../jsonLogicRule.ts";
 import { resolveParkActions } from "../parkActions.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
@@ -4689,6 +4695,87 @@ const make = Effect.gen(function* () {
     return { stepStarted, pipelineStarted, ticketCreated };
   };
 
+  const releaseRecoveredStepClaim = (stepRunId: StepRunId) =>
+    SynchronizedRef.update(recoveredStepClaims, (current) => {
+      const key = stepRunId as string;
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+
+  /**
+   * Decide what a recovered, capture-complete agent turn means for questions.
+   *
+   * `null`   — no question in the capture; complete the step as usual.
+   * `"leave"` — this turn already produced a wait; do NOT terminal the step.
+   * a form   — raise the wait now (the crash window, SPEC §4.4).
+   *
+   * The "already produced a wait" test is exact equality on
+   * `raisedFromDispatchId`, not a count of resolves: StepUserResolved is
+   * committed for provider and approval waits too, so counting would decline to
+   * raise on any step that had ever hit one — completing it with the question
+   * as its output.
+   */
+  const recoverQuestionRaise = (
+    stepRunId: StepRunId,
+    events: ReadonlyArray<PersistedWorkflowEvent>,
+    captureTurn: CaptureTurn | undefined,
+  ): Effect.Effect<
+    | {
+        readonly form: CheckpointForm;
+        readonly waitingReason: string;
+        readonly raisedFromDispatchId: string;
+      }
+    | "leave"
+    | null,
+    WorkflowEventStoreError
+  > =>
+    Effect.gen(function* () {
+      const { capturedOutputs, providerDispatches } = yield* getOptionalServices;
+      if (Option.isNone(capturedOutputs) || Option.isNone(providerDispatches)) {
+        return null;
+      }
+      const dispatch = yield* providerDispatches.value
+        .getDispatchForStep(stepRunId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (dispatch === null || dispatch.turnId === null) {
+        return null;
+      }
+      const alreadyRaised = events.some(
+        (event) =>
+          event.type === "StepAwaitingUser" &&
+          event.payload.stepRunId === stepRunId &&
+          event.payload.questionPhase === true &&
+          event.payload.raisedFromDispatchId === dispatch.dispatchId,
+      );
+      if (alreadyRaised) {
+        return "leave";
+      }
+      const turn = captureTurn ?? { threadId: dispatch.threadId, turnId: dispatch.turnId };
+      const strict = yield* capturedOutputs.value
+        .readFinalMessage({ stepRunId, threadId: turn.threadId, turnId: turn.turnId })
+        .pipe(Effect.orElseSucceed(() => undefined));
+      const raw =
+        typeof strict === "object" && strict !== null && !Array.isArray(strict)
+          ? (strict as Record<string, unknown>)[AGENT_QUESTIONS_KEY]
+          : undefined;
+      if (raw === undefined) {
+        return null;
+      }
+      const mapped = mapAgentQuestions(raw);
+      if (!mapped.ok) {
+        // A malformed block is not a question; let the step complete/fail on the
+        // ordinary path rather than parking a ticket on something unanswerable.
+        return null;
+      }
+      return {
+        form: mapped.form,
+        waitingReason: questionsWaitingReason(mapped.form),
+        raisedFromDispatchId: dispatch.dispatchId,
+      };
+    });
+
   const completeRecoveredStepUnlocked = (
     stepRunId: StepRunId,
     result: RecoveredStepResult,
@@ -4745,6 +4832,50 @@ const make = Effect.gen(function* () {
       }
 
       const recoveredStep = steps[currentStepIndex];
+
+      // SPEC §4.4 — the confirm-before-await crash window.
+      //
+      // The outbox confirms a successful turn BEFORE the executor returns and
+      // before StepAwaitingUser is committed. A crash in between leaves a
+      // `running` step with all rows confirmed, which is exactly what
+      // recoverConfirmedRunningSteps selects — and completing it here would
+      // finish the step with the raw `__questions` block as its output.
+      if (
+        result._tag === "completed" &&
+        result.output === undefined &&
+        recoveredStep?.type === "agent" &&
+        recoveredStep.allowQuestions === true
+      ) {
+        const outcome = yield* recoverQuestionRaise(stepRunId, events, captureTurn);
+        if (outcome === "leave") {
+          // Either the wait is already open, or it was answered and the §4.5
+          // sweep owns the continuation. Either way this must NOT terminal.
+          yield* releaseRecoveredStepClaim(stepRunId);
+          return;
+        }
+        if (outcome !== null) {
+          yield* commitMany(
+            yield* awaitingUserEvents(recovered.stepStarted.ticketId, {
+              type: "StepAwaitingUser",
+              ticketId: recovered.stepStarted.ticketId,
+              payload: {
+                stepRunId,
+                waitingReason: outcome.waitingReason,
+                formSnapshot: outcome.form,
+                questionPhase: true,
+                raisedFromDispatchId: outcome.raisedFromDispatchId,
+              },
+            } satisfies UnstampedWorkflowEventInput),
+          );
+          yield* approvals.park(stepRunId);
+          // This path returns NORMALLY, so the claim taken by
+          // completeRecoveredStep would never be released by its onError —
+          // leaving that stepRunId a silent no-op for the process lifetime.
+          yield* releaseRecoveredStepClaim(stepRunId);
+          return;
+        }
+      }
+
       let terminalResult =
         result._tag === "completed"
           ? yield* completedResultForStep(stepRunId, recoveredStep, result.output, captureTurn)
@@ -5166,6 +5297,89 @@ const make = Effect.gen(function* () {
       );
     });
 
+  /**
+   * SPEC §4.5 — the post-answer crash window.
+   *
+   * A step whose latest question wait IS answered, with no terminal event and
+   * nothing dispatched since that wait, has an operator's answers stranded in
+   * the event log. Re-enter the continuation for it.
+   */
+  const resumeAnsweredQuestions: WorkflowEngineShape["resumeAnsweredQuestions"] = () =>
+    Effect.gen(function* () {
+      const { providerDispatches } = yield* getOptionalServices;
+      if (Option.isNone(providerDispatches)) {
+        return;
+      }
+      const candidates = yield* wrapSql(sql<{ readonly stepRunId: string }>`
+        SELECT DISTINCT json_extract(payload_json, '$.stepRunId') AS "stepRunId"
+        FROM workflow_events
+        WHERE event_type = 'StepAwaitingUser'
+          AND json_extract(payload_json, '$.questionPhase') = 1
+      `).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<{ readonly stepRunId: string }>));
+
+      for (const candidate of candidates) {
+        const stepRunId = candidate.stepRunId as StepRunId;
+        const events = yield* readStoredEventsForStep(stepRunId);
+        if (events === null || hasTerminalStepEvent(events, stepRunId)) {
+          continue;
+        }
+        // The LATEST question wait, and whether it was answered.
+        let latestWait: Extract<PersistedWorkflowEvent, { type: "StepAwaitingUser" }> | null = null;
+        let answered: CheckpointResolution | null = null;
+        for (const event of events) {
+          if (
+            event.type === "StepAwaitingUser" &&
+            event.payload.stepRunId === stepRunId &&
+            event.payload.questionPhase === true
+          ) {
+            latestWait = event;
+            answered = null;
+          }
+          if (event.type === "StepUserResolved" && event.payload.stepRunId === stepRunId) {
+            answered = {
+              outcome: "success",
+              ...(event.payload.decision === undefined ? {} : { decision: event.payload.decision }),
+              ...(event.payload.answers === undefined ? {} : { answers: event.payload.answers }),
+            };
+          }
+        }
+        if (latestWait === null || answered === null) {
+          continue;
+        }
+        // "Nothing dispatched since" is per-ROUND: anchored on the seq of the
+        // dispatch that raised the wait being resumed. "No continuation row for
+        // the step run" would be false the moment any earlier round ran.
+        const assembly = yield* providerDispatches.value
+          .getDispatchRequestForStep(stepRunId)
+          .pipe(Effect.orElseSucceed(() => null));
+        const raisedSeq = yield* wrapSql(sql<{ readonly seq: number | null }>`
+          SELECT dispatch_seq AS "seq"
+          FROM workflow_dispatch_outbox
+          WHERE dispatch_id = ${latestWait.payload.raisedFromDispatchId ?? ""}
+        `).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<{ readonly seq: number | null }>));
+        const anchor = raisedSeq[0]?.seq ?? null;
+        if (assembly === null || anchor === null) {
+          continue;
+        }
+        // nextDispatchSeq is max(seq)+1, so max = nextDispatchSeq - 1. Anything
+        // above the anchor means a continuation already exists — possibly still
+        // unconfirmed, in which case recoverPending/monitorStartedDispatches own
+        // it and this sweep must not start a second turn.
+        if (assembly.nextDispatchSeq - 1 > anchor) {
+          continue;
+        }
+        const recovered = recoveredStepContext(events, stepRunId);
+        if (!recovered) {
+          continue;
+        }
+        yield* resumeRecoveredQuestion(
+          { ticketId: latestWait.ticketId, payload: latestWait.payload } as PendingWait,
+          answered,
+          recovered,
+        ).pipe(Effect.ignoreCause({ log: true }));
+      }
+    });
+
   const continueRecoveredApproval = (pending: PendingWait, resolution: CheckpointResolution) =>
     Effect.gen(function* () {
       const events = yield* readStoredEventsForStep(pending.payload.stepRunId);
@@ -5393,6 +5607,7 @@ const make = Effect.gen(function* () {
     cancelTicketPipelines,
     recoverBoardWip,
     completeRecoveredStep,
+    resumeAnsweredQuestions,
   } satisfies WorkflowEngineShape;
 });
 

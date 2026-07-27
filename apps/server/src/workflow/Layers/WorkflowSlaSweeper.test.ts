@@ -61,6 +61,7 @@ const makeEngineLayer = (calls: Array<EscalateCall>, outcome: "notified" | "stal
     cancelTicketPipelines: () => Effect.void,
     recoverBoardWip: () => Effect.void,
     completeRecoveredStep: () => unsupported(),
+    resumeAnsweredQuestions: () => Effect.void,
     editTicketContextPack: () => Effect.die("unused"),
   } satisfies WorkflowEngineShape);
 

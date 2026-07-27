@@ -66,6 +66,7 @@ const workflowEngineStub = Layer.succeed(WorkflowEngine, {
   cancelTicketPipelines: () => Effect.void,
   recoverBoardWip: () => Effect.void,
   completeRecoveredStep: () => Effect.die("unused"),
+  resumeAnsweredQuestions: () => Effect.void,
   editTicketContextPack: () => Effect.die("unused"),
 });
 

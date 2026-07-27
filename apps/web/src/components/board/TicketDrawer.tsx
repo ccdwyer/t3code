@@ -1747,6 +1747,18 @@ function CheckpointFormFields({
         // type in is the one you cannot leave with the keyboard. A text question
         // renders a textarea, so both count; Shift+Enter still inserts a
         // newline there.
+        // NEVER intercept Enter from a native interactive control. Enter on a
+        // focused Cancel button must cancel — swallowing it and submitting the
+        // first decision option instead means the operator says stop and the
+        // agent continues, which is the opposite of what they pressed.
+        if (
+          target instanceof HTMLButtonElement ||
+          target instanceof HTMLAnchorElement ||
+          target instanceof HTMLSelectElement ||
+          (target instanceof HTMLElement && target.getAttribute("role") === "button")
+        ) {
+          return;
+        }
         const inFreeform =
           target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
         if (typing && !inFreeform) return;

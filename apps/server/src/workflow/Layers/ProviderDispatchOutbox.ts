@@ -340,6 +340,20 @@ const make = Effect.gen(function* () {
       } satisfies DispatchAssembly;
     });
 
+  const tombstoneQuestionContinuations: ProviderDispatchOutboxShape["tombstoneQuestionContinuations"] =
+    (stepRunId) =>
+      Effect.gen(function* () {
+        const confirmedAt = yield* nowIso;
+        yield* wrapSql(sql`
+          UPDATE workflow_dispatch_outbox
+          SET status = 'confirmed',
+              confirmed_at = ${confirmedAt}
+          WHERE step_run_id = ${stepRunId}
+            AND dispatch_kind = 'question-continuation'
+            AND status != 'confirmed'
+        `);
+      });
+
   const getSteerTarget: ProviderDispatchOutboxShape["getSteerTarget"] = (stepRunId) =>
     wrapSql(sql<SteerTargetRow>`
       SELECT
@@ -750,6 +764,7 @@ const make = Effect.gen(function* () {
     ensureStarted,
     getDispatchForStep,
     getDispatchRequestForStep,
+    tombstoneQuestionContinuations,
     getSteerTarget,
     markSteerPending,
     clearSteerPending,

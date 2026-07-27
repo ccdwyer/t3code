@@ -94,6 +94,7 @@ const outbox = Layer.succeed(ProviderDispatchOutbox, {
       nextDispatchSeq: 1,
       questionContinuations: 0,
     }),
+  tombstoneQuestionContinuations: () => Effect.void,
   getSteerTarget: () => Effect.succeed(null),
   markSteerPending: () => Effect.succeed(true),
   clearSteerPending: () => Effect.void,

@@ -152,6 +152,18 @@ export interface ProviderDispatchOutboxShape {
   readonly getDispatchRequestForStep: (
     stepRunId: StepRunId,
   ) => Effect.Effect<DispatchAssembly | null, WorkflowEventStoreError>;
+  /**
+   * Confirm any non-confirmed question-continuation rows for a step run.
+   *
+   * Called by the post-answer sweep before it dispatches a replacement. A
+   * continuation orphaned by a crash is owned by nobody, and leaving it would
+   * let `recoverPending` or `monitorStartedDispatches` re-drive it alongside the
+   * replacement — two provider turns for one answer. Confirming it retires the
+   * row without pretending its turn succeeded.
+   */
+  readonly tombstoneQuestionContinuations: (
+    stepRunId: StepRunId,
+  ) => Effect.Effect<void, WorkflowEventStoreError>;
   /** Latest started dispatch for a step, including steer reservation cells. */
   readonly getSteerTarget: (
     stepRunId: StepRunId,

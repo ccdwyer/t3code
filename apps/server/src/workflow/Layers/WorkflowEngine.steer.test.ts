@@ -62,6 +62,7 @@ const makeOutboxLayer = (target: SteerTarget | null) =>
               : { threadId: target.threadId, turnId: target.turnId },
           ),
         getDispatchRequestForStep: () => Effect.succeed(null),
+        tombstoneQuestionContinuations: () => Effect.void,
         getSteerTarget: () =>
           Effect.succeed(target === null ? null : { ...target, steerPendingMessageId: pending }),
         markSteerPending: (dispatchId, messageId, text) =>

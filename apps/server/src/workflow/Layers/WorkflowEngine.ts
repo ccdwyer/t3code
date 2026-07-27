@@ -5638,6 +5638,15 @@ const make = Effect.gen(function* () {
           // Every answered round already has a CONFIRMED continuation.
           continue;
         }
+        // A crash mid-continuation leaves an orphaned pending/started row that
+        // nobody owns. Retire it BEFORE dispatching a replacement, or
+        // recoverPending and monitorStartedDispatches — which run after this and
+        // do not consult the claim — would re-drive it alongside the new turn.
+        // Confirming retires the row; it does not assert its turn succeeded,
+        // and the replacement is what actually delivers the answers.
+        yield* providerDispatches.value
+          .tombstoneQuestionContinuations(stepRunId)
+          .pipe(Effect.ignoreCause({ log: true }));
         const recovered = recoveredStepContext(events, stepRunId);
         if (!recovered) {
           continue;

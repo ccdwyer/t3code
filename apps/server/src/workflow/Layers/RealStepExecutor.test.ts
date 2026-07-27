@@ -389,6 +389,7 @@ const mk = (
             }),
           getDispatchForStep: () => Effect.succeed(null),
           getDispatchRequestForStep: () => Effect.succeed(null),
+          tombstoneQuestionContinuations: () => Effect.void,
           awaitTerminal: () => Effect.succeed(terminal),
           awaitStepTerminal: () => Effect.succeed(terminal),
           getSteerTarget: () => Effect.succeed(null),
@@ -2182,6 +2183,7 @@ const preCheckpointFailureLayer = it.layer(
         ensureStarted: () => Effect.succeed({ turnId: "turn-stub" as never }),
         getDispatchForStep: () => Effect.succeed(null),
         getDispatchRequestForStep: () => Effect.succeed(null),
+        tombstoneQuestionContinuations: () => Effect.void,
         awaitTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
         awaitStepTerminal: () => Effect.succeed({ ok: true, turnId: "turn-1" as never }),
         getSteerTarget: () => Effect.succeed(null),
@@ -2297,6 +2299,7 @@ const terminalTimeoutLayer = it.layer(
           }),
         getDispatchForStep: () => Effect.succeed(null),
         getDispatchRequestForStep: () => Effect.succeed(null),
+        tombstoneQuestionContinuations: () => Effect.void,
         awaitTerminal: () =>
           Effect.succeed({
             ok: false,
@@ -2512,6 +2515,7 @@ const continueSessionLayer = (terminal: ProviderDispatchTerminalResult) =>
             }),
           getDispatchForStep: () => Effect.succeed(null),
           getDispatchRequestForStep: () => Effect.succeed(null),
+          tombstoneQuestionContinuations: () => Effect.void,
           awaitTerminal: () => Effect.succeed(terminal),
           awaitStepTerminal: () => Effect.succeed(terminal),
           getSteerTarget: () => Effect.succeed(null),

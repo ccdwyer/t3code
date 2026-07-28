@@ -71,7 +71,10 @@ function fakeGhOutput(stdout: string): VcsProcess.VcsProcessOutput {
   };
 }
 
-type FakeGitTextGeneration = TextGeneration.TextGeneration["Service"];
+type FakeGitTextGeneration = Pick<
+  TextGeneration.TextGeneration["Service"],
+  "generateCommitMessage" | "generatePrContent" | "generateBranchName" | "generateThreadTitle"
+>;
 
 type FakePullRequest = NonNullable<FakeGhScenario["pullRequest"]>;
 

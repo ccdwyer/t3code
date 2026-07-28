@@ -393,7 +393,7 @@ export const make = Effect.gen(function* () {
     const recovered = yield* runStartupPhase(
       "workflow.recover",
       workflowRecovery.recover().pipe(
-        Effect.retry(Schedule.exponential("500 millis").pipe(Schedule.both(Schedule.recurs(3)))),
+        Effect.retry(Schedule.max([Schedule.exponential("500 millis"), Schedule.recurs(3)])),
         Effect.as(true),
         Effect.catch((cause) =>
           Effect.logWarning("workflow recovery failed during startup", {

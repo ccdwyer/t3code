@@ -103,6 +103,7 @@ import {
   buildThreadActionItems,
   enumerateCommandPaletteItems,
   type CommandPaletteActionItem,
+  type CommandPaletteOpenIntent,
   type CommandPaletteSubmenuItem,
   type CommandPaletteView,
   filterCommandPaletteGroups,
@@ -110,6 +111,7 @@ import {
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
+  reduceCommandPaletteUiState,
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
@@ -357,50 +359,6 @@ function overlayModeForCommand(command: string | null): SearchOverlayMode | null
   return command in OVERLAY_MODE_BY_COMMAND
     ? OVERLAY_MODE_BY_COMMAND[command as keyof typeof OVERLAY_MODE_BY_COMMAND]
     : null;
-}
-
-interface CommandPaletteOpenIntent {
-  readonly kind: "add-project" | "new-thread-in" | "new-workflow-in";
-}
-
-interface CommandPaletteUiState {
-  readonly open: boolean;
-  readonly mode: SearchOverlayMode;
-  readonly openIntent: CommandPaletteOpenIntent | null;
-}
-
-type CommandPaletteUiAction =
-  | { readonly _tag: "SetOpen"; readonly open: boolean }
-  | { readonly _tag: "ToggleMode"; readonly mode: SearchOverlayMode }
-  | { readonly _tag: "OpenAddProject" }
-  | { readonly _tag: "OpenNewThreadIn" }
-  | { readonly _tag: "OpenNewWorkflowIn" }
-  | { readonly _tag: "ClearOpenIntent" };
-
-function reduceCommandPaletteUiState(
-  state: CommandPaletteUiState,
-  action: CommandPaletteUiAction,
-): CommandPaletteUiState {
-  switch (action._tag) {
-    case "SetOpen":
-      return {
-        open: action.open,
-        mode: "command",
-        openIntent: action.open ? state.openIntent : null,
-      };
-    case "ToggleMode":
-      return state.open && state.mode === action.mode
-        ? { open: false, mode: "command", openIntent: null }
-        : { open: true, mode: action.mode, openIntent: null };
-    case "OpenAddProject":
-      return { open: true, mode: "command", openIntent: { kind: "add-project" } };
-    case "OpenNewThreadIn":
-      return { open: true, mode: "command", openIntent: { kind: "new-thread-in" } };
-    case "OpenNewWorkflowIn":
-      return { open: true, mode: "command", openIntent: { kind: "new-workflow-in" } };
-    case "ClearOpenIntent":
-      return state.openIntent ? { ...state, openIntent: null } : state;
-  }
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {

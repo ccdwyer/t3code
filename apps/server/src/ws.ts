@@ -12,9 +12,6 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
-  AuthTerminalOperateScope,
-  AuthWorkflowOperateScope,
-  AuthWorkflowReadScope,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
@@ -109,10 +106,8 @@ import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import {
-  RPC_REQUIRED_SCOPES,
-  requiredScopeForRpcMethod as requiredCoreScopeForRpcMethod,
-} from "./auth/RpcAuthorization.ts";
+import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
+export { RPC_REQUIRED_SCOPE } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -354,75 +349,6 @@ const SHELL_RESUME_MAX_GAP = 1_000;
 // hundreds of thousands of events behind have OOM-killed servers on large
 // databases. Past this gap the client is reset with a fresh thread snapshot.
 const THREAD_RESUME_MAX_GAP = 1_000;
-
-const WORKFLOW_RPC_REQUIRED_SCOPE_ENTRIES = [
-  [WS_METHODS.terminalAttachHistory, AuthTerminalOperateScope],
-  [WORKFLOW_WS_METHODS.listBoards, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getTicketTimeline, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getBoardTimeline, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.listNeedsAttentionTickets, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.createBoard, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.deleteBoard, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.renameBoard, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.subscribeBoard, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getBoard, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getBoardDefinition, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.saveBoardDefinition, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listBoardVersions, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getBoardVersion, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getTicketDetail, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getTicketDiff, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.createTicket, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.editTicket, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.editTicketContextPack, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.deleteTicket, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.moveTicket, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.invokeParkAction, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.runLane, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.resolveApproval, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.answerTicketStep, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.steerTicketStep, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.postTicketMessage, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.editTicketMessage, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.setProjectScriptTrust, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.cancelStep, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.intakeTickets, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listTicketArtifacts, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getWebhookConfig, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.getBoardDigest, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getBoardMetrics, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.dryRunBoard, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.proposeBoardImprovement, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listBoardProposals, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.getBoardProposal, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.resolveBoardProposal, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.revertBoardProposal, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listWorkSourceConnections, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.createWorkSourceConnection, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.deleteWorkSourceConnection, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listImportableWorkItems, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.importWorkItems, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listOutboundConnections, AuthWorkflowReadScope],
-  [WORKFLOW_WS_METHODS.createOutboundConnection, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.deleteOutboundConnection, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.importBoard, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.createWorkflowBoard, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.generateWorkflowDraft, AuthWorkflowOperateScope],
-  [WORKFLOW_WS_METHODS.listBoardTemplates, AuthWorkflowReadScope],
-] as const;
-
-export const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
-  ...Object.entries(RPC_REQUIRED_SCOPES),
-  ...WORKFLOW_RPC_REQUIRED_SCOPE_ENTRIES,
-]);
-
-function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {
-  const requiredScope = RPC_REQUIRED_SCOPE.get(method);
-  if (requiredScope !== undefined) {
-    return requiredScope;
-  }
-  return requiredCoreScopeForRpcMethod(method);
-}
 
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
@@ -1577,15 +1503,6 @@ const makeWsRpcLayer = (
               // catch-up followed by the buffered/ongoing live events. Overlapping
               // events are deduped by sequence on the client.
               //
-              // The replay is bounded to the projection head captured below. The
-              // catch-up range is normally tiny (a fresh HTTP snapshot sequence),
-              // but a stale cached cursor can sit hundreds of thousands of global
-              // events behind — replaying that decodes every intervening event
-              // (including every other thread's tool payloads) only to discard
-              // almost all of them, which has OOM-killed servers on large
-              // databases. A truncated replay would silently drop this thread's
-              // events, so past the gap cap we reset the client with a fresh
-              // thread snapshot instead, exactly like subscribeShell above.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;

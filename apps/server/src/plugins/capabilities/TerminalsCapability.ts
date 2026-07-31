@@ -87,21 +87,23 @@ export function makeTerminalsCapability(input: {
             request.terminalId ??
             `run-${yield* Clock.currentTimeMillis}-${(yield* Random.nextInt).toString(36)}`;
           const handle = defaultHandle(input.pluginId, terminalId);
-          const snapshot = yield* restore(
-            input.manager.open({
-              ...handle,
-              cwd: request.cwd,
-              ...(request.env === undefined ? {} : { env: request.env }),
-              cols: request.cols ?? 120,
-              rows: request.rows ?? 30,
-            }),
-          );
+          const snapshot = yield* input.manager.open({
+            ...handle,
+            cwd: request.cwd,
+            ...(request.env === undefined ? {} : { env: request.env }),
+            cols: request.cols ?? 120,
+            rows: request.rows ?? 30,
+          });
           live.set(terminalId, handle);
           yield* restore(
             input.manager.write({
               ...handle,
               data: `${commandLine(request.command, request.args)}\n`,
             }),
+          ).pipe(
+            Effect.catch((error) =>
+              closeHandle(handle).pipe(Effect.ignore, Effect.andThen(Effect.fail(error))),
+            ),
           );
           return { handle, snapshot };
         }),

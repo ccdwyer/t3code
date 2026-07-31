@@ -3,7 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { PluginId } from "@t3tools/contracts/plugin";
 import type { TerminalAttachStreamEvent, TerminalSessionSnapshot } from "@t3tools/contracts";
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -23,6 +25,7 @@ import { makeTerminalsCapability, TerminalHandleOwnershipError } from "./Termina
 import { makeTextGenerationCapability } from "./TextGenerationCapability.ts";
 
 class RollbackTestError extends Data.TaggedError("RollbackTestError") {}
+class InitialTerminalWriteTestError extends Data.TaggedError("InitialTerminalWriteTestError") {}
 
 it.effect("database executes parameterized SQL and rolls back failed transactions", () =>
   Effect.gen(function* () {
@@ -666,6 +669,109 @@ it.effect(
         terminalId: leaked.handle.terminalId,
       });
     }),
+);
+
+it.effect("terminals track opened sessions before spawn interruption can leak them", () =>
+  Effect.gen(function* () {
+    const closes: unknown[] = [];
+    const openStarted = yield* Deferred.make<void>();
+    const releaseOpen = yield* Deferred.make<void>();
+    const snapshot: TerminalSessionSnapshot = {
+      threadId: "plugin:terminal-plugin:run-1",
+      terminalId: "run-1",
+      cwd: "/repo",
+      worktreePath: null,
+      status: "running",
+      pid: 123,
+      history: "",
+      exitCode: null,
+      exitSignal: null,
+      label: "run",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+    };
+    const { capability, shutdown } = makeTerminalsCapability({
+      pluginId: PluginId.make("terminal-plugin"),
+      manager: {
+        open: () =>
+          Deferred.succeed(openStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseOpen)),
+            Effect.as(snapshot),
+          ),
+        attachStream: () => Effect.die(new Error("attachStream should not be reached")),
+        write: () => Effect.void,
+        close: (input: any) =>
+          Effect.sync(() => {
+            closes.push(input);
+          }),
+      } as any,
+    });
+
+    const spawnFiber = yield* capability
+      .spawn({
+        terminalId: "run-1",
+        cwd: "/repo",
+        command: "sleep",
+        args: ["100"],
+      })
+      .pipe(Effect.forkChild);
+
+    yield* Deferred.await(openStarted);
+    const interruptFiber = yield* Fiber.interrupt(spawnFiber).pipe(Effect.forkChild);
+    yield* Deferred.succeed(releaseOpen, undefined);
+    yield* Fiber.join(interruptFiber);
+
+    yield* shutdown;
+    assert.deepEqual(closes, [{ threadId: "plugin:terminal-plugin:run-1", terminalId: "run-1" }]);
+  }),
+);
+
+it.effect("terminals close opened sessions when the initial command write fails", () =>
+  Effect.gen(function* () {
+    const closes: unknown[] = [];
+    const snapshot: TerminalSessionSnapshot = {
+      threadId: "plugin:terminal-plugin:run-1",
+      terminalId: "run-1",
+      cwd: "/repo",
+      worktreePath: null,
+      status: "running",
+      pid: 123,
+      history: "",
+      exitCode: null,
+      exitSignal: null,
+      label: "run",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+    };
+    const { capability, shutdown } = makeTerminalsCapability({
+      pluginId: PluginId.make("terminal-plugin"),
+      manager: {
+        open: () => Effect.succeed(snapshot),
+        attachStream: () => Effect.die(new Error("attachStream should not be reached")),
+        write: () => Effect.fail(new InitialTerminalWriteTestError()),
+        close: (input: any) =>
+          Effect.sync(() => {
+            closes.push(input);
+          }),
+      } as any,
+    });
+
+    const spawned = yield* Effect.result(
+      capability.spawn({
+        terminalId: "run-1",
+        cwd: "/repo",
+        command: "echo",
+        args: ["hello"],
+      }),
+    );
+
+    assert.isTrue(Result.isFailure(spawned));
+    if (Result.isFailure(spawned)) {
+      assert.instanceOf(spawned.failure, InitialTerminalWriteTestError);
+    }
+    assert.deepEqual(closes, [{ threadId: "plugin:terminal-plugin:run-1", terminalId: "run-1" }]);
+
+    yield* shutdown;
+    assert.equal(closes.length, 1);
+  }),
 );
 
 it.effect("terminals reject forged handles for foreign/core sessions", () =>

@@ -1,8 +1,11 @@
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { PluginId } from "@t3tools/contracts/plugin";
 import type { PluginMigration } from "@t3tools/plugin-sdk";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -12,10 +15,18 @@ import * as PluginMigratorModule from "./PluginMigrator.ts";
 import { PluginMigrationDowngradeError, PluginMigrationViolation } from "./PluginMigrator.ts";
 
 const layer = it.layer(
-  PluginMigratorModule.layer.pipe(Layer.provideMerge(NodeSqliteClient.layerMemory())),
+  PluginMigratorModule.layer.pipe(
+    Layer.provideMerge(NodeSqliteClient.layerMemory()),
+    Layer.provideMerge(NodeServices.layer),
+  ),
 );
 
 const pluginPrefix = (pluginId: PluginId) => `p_${pluginId.replaceAll("-", "_")}_`;
+
+const attachmentFile = (
+  databases: ReadonlyArray<{ readonly name: string; readonly file: string }>,
+  name: string,
+) => databases.find((database) => database.name === name)?.file;
 
 const migration = (
   version: number,
@@ -33,7 +44,7 @@ const migration = (
 });
 
 const setup = Effect.gen(function* () {
-  yield* runMigrations({ toMigrationInclusive: 36 });
+  yield* runMigrations({ toMigrationInclusive: 37 });
   return yield* PluginMigratorModule.PluginMigrator;
 });
 
@@ -252,6 +263,91 @@ layer("PluginMigrator", (it) => {
       );
 
       yield* sql.unsafe('DETACH DATABASE "pre_existing_attach"').unprepared.pipe(Effect.ignore);
+    }),
+  );
+
+  it.effect("restores a pre-existing attachment detached by a violating migration", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const migrator = yield* setup;
+      const pluginId = PluginId.make("detach-plugin");
+      const tempDirectory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-plugin-migrator-",
+      });
+      const attachedFile = path.join(tempDirectory, "pre-existing.sqlite");
+
+      yield* sql.unsafe(
+        `ATTACH DATABASE '${attachedFile.replaceAll("'", "''")}' AS pre_existing_detach`,
+      ).unprepared;
+
+      const result = yield* Effect.result(
+        migrator.run(pluginId, [
+          migration(1, "Detach", ["COMMIT", 'DETACH DATABASE "pre_existing_detach"', "BEGIN"]),
+        ]),
+      );
+
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) {
+        assert.instanceOf(result.failure, PluginMigrationViolation);
+      }
+      const databases = yield* sql<{ readonly name: string; readonly file: string }>`
+        PRAGMA database_list
+      `;
+      assert.equal(
+        yield* fileSystem.realPath(attachmentFile(databases, "pre_existing_detach") ?? ""),
+        yield* fileSystem.realPath(attachedFile),
+      );
+
+      yield* sql.unsafe('DETACH DATABASE "pre_existing_detach"').unprepared.pipe(Effect.ignore);
+    }),
+  );
+
+  it.effect("restores a pre-existing attachment repointed to a different file", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const migrator = yield* setup;
+      const pluginId = PluginId.make("reattach-plugin");
+      const originalDirectory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-plugin-migrator-",
+      });
+      const replacementDirectory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-plugin-migrator-",
+      });
+      const originalFile = path.join(originalDirectory, "original.sqlite");
+      const replacementFile = path.join(replacementDirectory, "replacement.sqlite");
+
+      yield* sql.unsafe(
+        `ATTACH DATABASE '${originalFile.replaceAll("'", "''")}' AS pre_existing_repoint`,
+      ).unprepared;
+
+      const result = yield* Effect.result(
+        migrator.run(pluginId, [
+          migration(1, "Repoint", [
+            "COMMIT",
+            'DETACH DATABASE "pre_existing_repoint"',
+            `ATTACH DATABASE '${replacementFile.replaceAll("'", "''")}' AS pre_existing_repoint`,
+            "BEGIN",
+          ]),
+        ]),
+      );
+
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) {
+        assert.instanceOf(result.failure, PluginMigrationViolation);
+      }
+      const databases = yield* sql<{ readonly name: string; readonly file: string }>`
+        PRAGMA database_list
+      `;
+      assert.equal(
+        yield* fileSystem.realPath(attachmentFile(databases, "pre_existing_repoint") ?? ""),
+        yield* fileSystem.realPath(originalFile),
+      );
+
+      yield* sql.unsafe('DETACH DATABASE "pre_existing_repoint"').unprepared.pipe(Effect.ignore);
     }),
   );
 

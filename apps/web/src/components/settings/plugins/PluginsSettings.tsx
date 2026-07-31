@@ -828,6 +828,11 @@ export function PluginsSettingsPanel() {
   }, [commands, selectedSourceId]);
 
   const refreshCatalog = useCallback(async () => {
+    // The selected source may have changed since these rows were loaded. Clear them
+    // before starting the next request so a failed refresh can never leave an old
+    // artifact installable under the new source id.
+    setCatalogEntries([]);
+    setCatalogErrors([]);
     // Generation guard: changing the selected source fires overlapping refreshes,
     // and the requests can resolve out of order. Only the LATEST request may write
     // state — otherwise a slow response for a previously-selected source clobbers the

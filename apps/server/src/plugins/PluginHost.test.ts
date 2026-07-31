@@ -712,7 +712,7 @@ layer("PluginHost", (it) => {
       const store = yield* PluginLockfileStoreLayer.PluginLockfileStore;
       const previousHealthyDelay = process.env.T3_PLUGIN_HOST_HEALTHY_DELAY_MS;
 
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* installPlugin({ pluginId });
 
       process.env.T3_PLUGIN_HOST_HEALTHY_DELAY_MS = "0";
@@ -759,7 +759,7 @@ layer("PluginHost", (it) => {
         const registry = yield* PluginRuntimeRegistryLayer.PluginRuntimeRegistry;
         const store = yield* PluginLockfileStoreLayer.PluginLockfileStore;
 
-        yield* runMigrations({ toMigrationInclusive: 36 });
+        yield* runMigrations({ toMigrationInclusive: 37 });
         yield* installPlugin({ pluginId });
         const previousHealthyDelay = process.env.T3_PLUGIN_HOST_HEALTHY_DELAY_MS;
         process.env.T3_PLUGIN_HOST_HEALTHY_DELAY_MS = "0";
@@ -866,7 +866,7 @@ layer("PluginHost", (it) => {
         const host = yield* PluginHostModule.PluginHost;
         const previousHealthyDelay = process.env.T3_PLUGIN_HOST_HEALTHY_DELAY_MS;
 
-        yield* runMigrations({ toMigrationInclusive: 36 });
+        yield* runMigrations({ toMigrationInclusive: 37 });
         // Seed a prior crashCount so we can prove it is NOT reset yet (the delayed
         // reset is gated behind a long stability window that never elapses here).
         yield* installPlugin({
@@ -933,7 +933,7 @@ layer("PluginHost", (it) => {
       const registry = yield* PluginRuntimeRegistryLayer.PluginRuntimeRegistry;
       const store = yield* PluginLockfileStoreLayer.PluginLockfileStore;
 
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* installPlugin({ pluginId, entrySource: "throw new Error('boom');" });
 
       yield* host.start;
@@ -1155,7 +1155,7 @@ layer("PluginHost", (it) => {
       const previousHealthyDelay = process.env.T3_PLUGIN_HOST_HEALTHY_DELAY_MS;
       const emptyEntry = "export default { register() { return {}; } };";
 
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       // Both the current (1.0.0) and staged (2.0.0) version dirs must exist so
       // the post-promotion load of 2.0.0 succeeds.
       yield* installPlugin({ pluginId, entrySource: emptyEntry, lockEntry: { version: "1.0.0" } });
@@ -1214,7 +1214,7 @@ layer("PluginHost", (it) => {
         Effect.forkChild,
       );
 
-      yield* runMigrations({ toMigrationInclusive: 36 });
+      yield* runMigrations({ toMigrationInclusive: 37 });
       yield* installPlugin({ pluginId, entrySource: emptyEntry, lockEntry: { version: "1.0.0" } });
       yield* installPlugin({ pluginId, entrySource: emptyEntry, lockEntry: { version: "2.0.0" } });
       yield* store.updatePlugin(pluginId, () =>

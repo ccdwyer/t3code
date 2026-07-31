@@ -126,6 +126,49 @@ describe("makePluginProviderAdapter", () => {
     }),
   );
 
+  it.effect("reserves startSession atomically so one concurrent start reaches the driver", () =>
+    Effect.gen(function* () {
+      const enteredDriver = yield* Deferred.make<void>();
+      const releaseDriver = yield* Deferred.make<void>();
+      const driverCalls = yield* Ref.make(0);
+      const exitA = yield* Deferred.make<Exit.Exit<unknown, unknown>>();
+      const exitB = yield* Deferred.make<Exit.Exit<unknown, unknown>>();
+      const adapter = yield* adapterFor({
+        startSession: () =>
+          Ref.update(driverCalls, (n) => n + 1).pipe(
+            Effect.flatMap(() => Deferred.succeed(enteredDriver, undefined)),
+            Effect.flatMap(() => Deferred.await(releaseDriver)),
+          ),
+        sendTurn: () => Effect.void,
+        stopSession: () => Effect.void,
+      });
+
+      const caller = (slot: Deferred.Deferred<Exit.Exit<unknown, unknown>>) =>
+        Effect.exit(start(adapter)).pipe(Effect.flatMap((exit) => Deferred.succeed(slot, exit)));
+
+      const fiberA = yield* Effect.forkChild(caller(exitA));
+      const fiberB = yield* Effect.forkChild(caller(exitB));
+      yield* Deferred.await(enteredDriver);
+      yield* Effect.yieldNow;
+
+      assert.strictEqual(
+        yield* Ref.get(driverCalls),
+        1,
+        "only the reservation winner may invoke driver.startSession",
+      );
+
+      yield* Deferred.succeed(releaseDriver, undefined);
+      yield* Fiber.join(fiberA);
+      yield* Fiber.join(fiberB);
+      const exits = [yield* Deferred.await(exitA), yield* Deferred.await(exitB)];
+
+      assert.strictEqual(exits.filter((exit) => exit._tag === "Success").length, 1);
+      assert.strictEqual(exits.filter((exit) => exit._tag === "Failure").length, 1);
+      assert.strictEqual((yield* adapter.listSessions()).length, 1);
+      assert.isTrue(yield* adapter.hasSession(threadId));
+    }),
+  );
+
   it.effect("turns a plugin failure into a failed turn, not a host crash", () =>
     Effect.gen(function* () {
       const adapter = yield* adapterFor({

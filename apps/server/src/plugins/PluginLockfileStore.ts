@@ -114,6 +114,12 @@ export class PluginLockfileStore extends Context.Service<
         context: PluginLockfileMutationContext,
       ) => Effect.Effect<PluginLockfilePlugin | undefined, PluginLockfileStoreError | E>,
     ) => Effect.Effect<PluginLockfile, PluginLockfileStoreError | E>;
+    readonly withLockfile: <A, E = never>(
+      fn: (lockfile: PluginLockfile) => Effect.Effect<A, E>,
+    ) => Effect.Effect<
+      A,
+      PluginLockfileReadError | PluginLockfileCorruptError | PluginLockfileLockError | E
+    >;
     readonly removePlugin: (
       id: PluginId,
     ) => Effect.Effect<PluginLockfile, PluginLockfileStoreError>;
@@ -468,6 +474,18 @@ export const make = Effect.fn("PluginLockfileStore.make")(function* () {
       }),
     );
 
+  const withLockfile: PluginLockfileStore["Service"]["withLockfile"] = (fn) =>
+    provideLocalServices(
+      semaphore.withPermits(1)(
+        Effect.scoped(
+          acquireAdvisoryLock({ pluginsDir: config.pluginsDir, advisoryLockPath }).pipe(
+            Effect.flatMap(() => readLockfile),
+            Effect.flatMap(fn),
+          ),
+        ),
+      ),
+    );
+
   const removePlugin: PluginLockfileStore["Service"]["removePlugin"] = (id) =>
     updatePlugin(id, () => Effect.succeed(undefined as PluginLockfilePlugin | undefined));
 
@@ -492,6 +510,7 @@ export const make = Effect.fn("PluginLockfileStore.make")(function* () {
     readLockfile,
     updateSources,
     updatePlugin,
+    withLockfile,
     removePlugin,
     transition,
   });

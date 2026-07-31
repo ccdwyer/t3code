@@ -5,7 +5,13 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import type { AnyProviderDriver } from "../ProviderDriver.ts";
-import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
+import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
+import {
+  makeProviderInstanceRegistry,
+  ProviderInstanceRegistryLayer,
+  ProviderInstanceRegistryMutableLayer,
+} from "./ProviderInstanceRegistryLive.ts";
 
 /**
  * A driver with no infrastructure requirements, so these tests are about RESOLUTION —
@@ -87,4 +93,51 @@ describe("makeProviderInstanceRegistry dynamic drivers", () => {
       );
     }).pipe(Effect.scoped),
   );
+});
+
+describe("ProviderInstanceRegistry exported layers dynamic drivers", () => {
+  it.effect("public registry layer accepts and forwards dynamic drivers", () =>
+    Effect.gen(function* () {
+      const registry = yield* ProviderInstanceRegistry;
+
+      const live = yield* registry.listInstances;
+      assert.strictEqual(live.length, 1);
+      assert.strictEqual(live[0]?.displayName, "Acme AI");
+    }).pipe(
+      Effect.provide(
+        ProviderInstanceRegistryLayer({
+          drivers: [],
+          dynamicDrivers: Effect.succeed([fakeDriver("acme", "Acme AI")]),
+          configMap: configFor("acme_default", "acme"),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("mutable registry layer accepts and forwards dynamic drivers on reconcile", () => {
+    let dynamicDrivers: ReadonlyArray<AnyProviderDriver<never>> = [];
+
+    return Effect.gen(function* () {
+      const registry = yield* ProviderInstanceRegistry;
+      const mutator = yield* ProviderInstanceRegistryMutator;
+
+      assert.strictEqual((yield* registry.listInstances).length, 0);
+      assert.strictEqual((yield* registry.listUnavailable).length, 1);
+
+      dynamicDrivers = [fakeDriver("acme", "Acme AI")];
+      yield* mutator.reconcile(configFor("acme_default", "acme"));
+
+      const live = yield* registry.listInstances;
+      assert.strictEqual(live.length, 1);
+      assert.strictEqual(live[0]?.displayName, "Acme AI");
+    }).pipe(
+      Effect.provide(
+        ProviderInstanceRegistryMutableLayer({
+          drivers: [],
+          dynamicDrivers: Effect.sync(() => dynamicDrivers),
+          configMap: configFor("acme_default", "acme"),
+        }),
+      ),
+    );
+  });
 });

@@ -255,8 +255,42 @@ export function makeVcsCapability(input: {
       });
     });
 
+  const resolveGitWorktreeRoot = (
+    field: string,
+    cwd: string,
+  ): Effect.Effect<string, GitCommandError | PluginVcsPathError> =>
+    Effect.gen(function* () {
+      const result = yield* input.git.execute({
+        operation: "PluginVcsCapability.resolveGitWorktreeRoot",
+        cwd,
+        args: ["rev-parse", "--show-toplevel"],
+        allowNonZeroExit: true,
+      });
+      if (result.exitCode !== 0) {
+        return yield* gitCommandError({
+          operation: "PluginVcsCapability.resolveGitWorktreeRoot",
+          cwd,
+          args: ["rev-parse", "--show-toplevel"],
+          exitCode: result.exitCode ?? undefined,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          detail: "git rev-parse --show-toplevel failed",
+        });
+      }
+      const root = result.stdout.trim();
+      if (root.length === 0) {
+        return yield* new PluginVcsPathError({
+          field,
+          path: cwd,
+          reason: "git did not report a worktree root",
+        });
+      }
+      return root;
+    });
+
   // Every operation that runs git in an EXISTING repo/worktree goes through
-  // this: absolute + real-path contained in a granted root. Returns the
+  // this: absolute + real-path contained in a granted root, then git's actual
+  // worktree root must itself be contained in a granted root. Returns the
   // caller-supplied path (not the real path) so git sees the same cwd the
   // caller named.
   const requireGrantedRoot = (field: string, value: string): Effect.Effect<string, Error> =>
@@ -264,6 +298,8 @@ export function makeVcsCapability(input: {
       yield* requireAbsolute(field, value);
       const realRoots = yield* grantedRealRoots;
       yield* assertWithinRealRoots(field, value, realRoots);
+      const gitRoot = yield* resolveGitWorktreeRoot(field, value);
+      yield* assertWithinRealRoots(field, gitRoot, realRoots);
       return value;
     });
 

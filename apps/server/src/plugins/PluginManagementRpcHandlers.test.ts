@@ -4,6 +4,7 @@ import { PluginId } from "@t3tools/contracts/plugin";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -387,6 +388,67 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
     }),
   );
 
+  it.effect(
+    "serializes a live-runtime settings write with a concurrent remove-data uninstall",
+    () =>
+      Effect.gen(function* () {
+        const id = PluginId.make("mgmt-live-uninstall-race");
+        const handlers = yield* PluginManagementRpcHandlers;
+        const settingsStore = yield* PluginSettingsStoreLayer.PluginSettingsStore;
+        const store = yield* PluginLockfileStore;
+        const lockHeld = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        let setCompleted = false;
+        yield* runMigrations({});
+        yield* installEntry(id, null);
+        yield* putRuntime(id, { schema });
+
+        const uninstallLockFiber = yield* store
+          .withLockfile(() =>
+            Deferred.succeed(lockHeld, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(lockHeld);
+
+        const setFiber = yield* handlers
+          .settingsSet({
+            pluginId: id,
+            values: { baseUrl: "https://saved-after-lock.example" },
+            expectedRevision: 0,
+          })
+          .pipe(
+            Effect.tap(() => Effect.sync(() => void (setCompleted = true))),
+            Effect.forkChild({ startImmediately: true }),
+          );
+        yield* Effect.yieldNow;
+        assert.isTrue(
+          !setCompleted,
+          "settingsSet must wait for the uninstall lockfile critical section",
+        );
+        assert.equal((yield* settingsStore.readDraft(id)).revision, 0);
+
+        yield* Deferred.succeed(proceed, undefined);
+        yield* Fiber.join(uninstallLockFiber);
+        assert.equal((yield* Fiber.join(setFiber)).revision, 1);
+        yield* store.updatePlugin(id, ({ current }) =>
+          Effect.succeed({ ...current!, state: "pending-remove" as const, enabled: false }),
+        );
+        yield* settingsStore.remove(id);
+        yield* store.removePlugin(id);
+
+        const result = yield* Effect.result(
+          handlers.settingsSet({
+            pluginId: id,
+            values: { baseUrl: "https://recreated-after-remove.example" },
+            expectedRevision: 0,
+          }),
+        );
+        assert.isTrue(Result.isFailure(result), "removed plugin data must not be recreated");
+        const draft = yield* settingsStore.readDraft(id);
+        assert.equal(draft.revision, 0, "remove-data uninstall remains authoritative");
+      }),
+  );
+
   // A live runtime is authoritative, including when it declares NO settings: an
   // upgrade that removes them must not leave the old schema writable via the map.
   it.effect("prefers a live runtime that declares no settings over a stale declaration", () =>
@@ -410,6 +472,7 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
       const id = PluginId.make("mgmt-nosettings-write");
       const handlers = yield* PluginManagementRpcHandlers;
       yield* runMigrations({});
+      yield* installEntry(id, null);
       yield* putRuntime(id, undefined);
 
       const result = yield* Effect.result(
@@ -425,6 +488,7 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
       const id = PluginId.make("mgmt-baddecode");
       const handlers = yield* PluginManagementRpcHandlers;
       yield* runMigrations({});
+      yield* installEntry(id, null);
       yield* putRuntime(id, { schema });
 
       const result = yield* Effect.result(
@@ -443,6 +507,7 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
       const id = PluginId.make("mgmt-unknownkey");
       const handlers = yield* PluginManagementRpcHandlers;
       yield* runMigrations({});
+      yield* installEntry(id, null);
       // MUST use a preserve-annotated schema. A plain Schema.Struct already strips
       // excess properties on decode, so testing with one asserts nothing about the
       // host's stripping — the first version of this test passed with the stripping
@@ -476,6 +541,7 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
       const id = PluginId.make("mgmt-nested");
       const handlers = yield* PluginManagementRpcHandlers;
       yield* runMigrations({});
+      yield* installEntry(id, null);
 
       const nestedSchema = Schema.Struct({
         baseUrl: Schema.String,
@@ -512,6 +578,7 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
       const id = PluginId.make("mgmt-conflict");
       const handlers = yield* PluginManagementRpcHandlers;
       yield* runMigrations({});
+      yield* installEntry(id, null);
       yield* putRuntime(id, { schema });
 
       yield* handlers.settingsSet({
@@ -536,6 +603,7 @@ managementTest("PluginManagementRpcHandlers settings", (it) => {
       const handlers = yield* PluginManagementRpcHandlers;
       const store = yield* PluginSettingsStoreLayer.PluginSettingsStore;
       yield* runMigrations({});
+      yield* installEntry(id, null);
       yield* putRuntime(id, { schema });
 
       yield* store.write({

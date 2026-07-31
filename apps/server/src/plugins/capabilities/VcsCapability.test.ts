@@ -736,6 +736,40 @@ it.layer(TestLayer)("VcsCapability", (it) => {
       ),
     );
 
+    it.effect("rejects a granted subdirectory inside a larger repository", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const parentRepo = yield* makeTmpDir();
+          yield* initRepoWithCommit(parentRepo);
+          const grantedSubdirectory = NodePath.join(parentRepo, "nested-grant");
+          const fileSystem = yield* FileSystem.FileSystem;
+          yield* fileSystem.makeDirectory(grantedSubdirectory, { recursive: true });
+
+          const gitDriver = yield* GitVcsDriver.GitVcsDriver;
+          const checkpointStore = yield* CheckpointStore.CheckpointStore;
+          const vcs = yield* makeVcs({
+            git: gitDriver,
+            checkpoints: checkpointStore,
+            grantedRoots: [grantedSubdirectory],
+          });
+
+          yield* expectFailureContaining(
+            vcs.status({ worktreePath: grantedSubdirectory }),
+            PluginVcsPathError.name,
+          );
+
+          const standaloneRepo = yield* makeTmpDir("plugin-vcs-standalone-");
+          yield* initRepoWithCommit(standaloneRepo);
+          const standaloneVcs = yield* makeVcs({
+            git: gitDriver,
+            checkpoints: checkpointStore,
+            grantedRoots: [standaloneRepo],
+          });
+          expect(yield* standaloneVcs.status({ worktreePath: standaloneRepo })).toBeDefined();
+        }),
+      ),
+    );
+
     it.effect("rejects a new worktree path outside granted roots and the worktrees dir", () =>
       Effect.scoped(
         Effect.gen(function* () {

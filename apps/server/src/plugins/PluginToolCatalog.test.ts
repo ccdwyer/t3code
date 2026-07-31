@@ -297,6 +297,7 @@ it.layer(TestLayer)("PluginToolCatalog", (it) => {
   it("enforces per-tool concurrency cap", async () => {
     const pluginId = PluginId.make("tool-conc");
     const LiveLayer = PluginToolCatalog.layer.pipe(Layer.provideMerge(PluginRuntimeRegistry.layer));
+    // eslint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- this live-clock concurrency probe cannot run beneath it.layer's TestClock
     await Effect.runPromise(
       Effect.gen(function* () {
         const release = yield* Deferred.make<void>();
@@ -570,6 +571,25 @@ const disabledLockfileStoreLayer = Layer.succeed(
     }),
     updateSources: () => Effect.die(new Error("unused")),
     updatePlugin: () => Effect.die(new Error("unused")),
+    withLockfile: (fn) =>
+      Effect.flatMap(
+        Effect.succeed({
+          sources: [],
+          plugins: {
+            [persistedGatePluginId]: {
+              version: "1.0.0",
+              sha256: "test-sha",
+              sourceId: "local",
+              enabled: false,
+              state: "disabled" as const,
+              activation: { activatingSince: null, crashCount: 0 },
+              installedAt: "2026-07-03T00:00:00.000Z",
+              lastError: null,
+            },
+          },
+        }),
+        fn,
+      ),
     removePlugin: () => Effect.die(new Error("unused")),
     transition: () => Effect.die(new Error("unused")),
   }),

@@ -57,7 +57,15 @@ export class PluginProviderError extends Schema.TaggedErrorClass<PluginProviderE
 }
 
 interface SessionState {
-  readonly session: ProviderSession;
+  readonly session: ProviderSession | null;
+  /**
+   * Set after the host reserves a thread for startSession and before the plugin
+   * driver returns. This closes the start check-then-install race: a duplicate
+   * start observes a map entry and never reaches driver.startSession.
+   */
+  readonly starting: boolean;
+  /** Identifies the pending start that owns installing/clearing this reservation. */
+  readonly startToken: object | null;
   /** Live while a turn is running; interrupted on stop/interrupt/removal. */
   readonly turnFiber: Fiber.Fiber<void, never> | null;
   readonly activeTurnId: TurnId | null;
@@ -203,32 +211,31 @@ export const makePluginProviderAdapter = (input: {
     ) =>
       Effect.gen(function* () {
         const threadId = startInput.threadId;
-        // Reject a startSession for a thread that ALREADY has a session — before
-        // calling the driver. Blindly installing a fresh SessionState (turnFiber:
-        // null, activeTurnId: null) would orphan a running turn's fiber (interrupt /
-        // stop could no longer reach it) and drop its deltas (its turnId is no longer
-        // active). The lifecycle is startSession -> sendTurn* -> stopSession; a caller
-        // that wants to restart must stopSession first.
-        if ((yield* Ref.get(sessions)).has(threadId)) {
+        const startToken = {};
+        // ATOMIC start reservation. The guard and placeholder install are one
+        // Ref.modify, so concurrent starts for one thread cannot both pass a stale
+        // has-session check and call driver.startSession. The placeholder is also a
+        // real host-owned session slot: stopSession can mark it stopping, and a late
+        // start completion will notice that it lost the slot and clean up the driver
+        // session it just created instead of orphaning it.
+        const reserved = yield* Ref.modify(sessions, (current) => {
+          if (current.has(threadId)) return [false as const, current];
+          return [
+            true as const,
+            new Map(current).set(threadId, {
+              session: null,
+              starting: true,
+              startToken,
+              turnFiber: null,
+              activeTurnId: null,
+              stopping: false,
+              stopToken: null,
+            }),
+          ];
+        });
+        if (!reserved) {
           return yield* providerError("startSession", "A session already exists for this thread.");
         }
-        // Effect.suspend so a driver that THROWS synchronously (or returns a
-        // non-Effect) from startSession becomes a defect inside the effect.
-        // Effect.mapError only transforms typed errors — defects pass through —
-        // so catchCause (matching stopSession/interruptTurn) converts BOTH into a
-        // typed PluginProviderError. Driver code is dynamically loaded plugin JS.
-        yield* Effect.suspend(() =>
-          input.driver.startSession({ threadId, config: input.config }),
-        ).pipe(
-          Effect.catchCause((cause) =>
-            providerError("startSession", "The plugin provider driver call failed.", cause),
-          ),
-          Effect.timeoutOrElse({
-            duration: PLUGIN_LIFECYCLE_TIMEOUT,
-            orElse: () =>
-              providerError("startSession", "The plugin provider lifecycle call timed out."),
-          }),
-        );
 
         const session: ProviderSession = {
           provider: input.driverKind,
@@ -236,16 +243,74 @@ export const makePluginProviderAdapter = (input: {
           runtimeMode: startInput.runtimeMode,
           threadId,
         } as ProviderSession;
-        yield* Ref.update(sessions, (current) =>
-          new Map(current).set(threadId, {
-            session,
-            turnFiber: null,
-            activeTurnId: null,
-            stopping: false,
-            stopToken: null,
-          }),
-        );
-        return session;
+        const clearStartReservation = Ref.update(sessions, (current) => {
+          const existing = current.get(threadId);
+          if (existing?.startToken !== startToken || existing.stopping) return current;
+          const next = new Map(current);
+          next.delete(threadId);
+          return next;
+        });
+
+        return yield* Effect.gen(function* () {
+          // Effect.suspend so a driver that THROWS synchronously (or returns a
+          // non-Effect) from startSession becomes a defect inside the effect.
+          // Effect.mapError only transforms typed errors — defects pass through —
+          // so catchCause (matching stopSession/interruptTurn) converts BOTH into a
+          // typed PluginProviderError. Driver code is dynamically loaded plugin JS.
+          yield* Effect.suspend(() =>
+            input.driver.startSession({ threadId, config: input.config }),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              providerError("startSession", "The plugin provider driver call failed.", cause),
+            ),
+            Effect.timeoutOrElse({
+              duration: PLUGIN_LIFECYCLE_TIMEOUT,
+              orElse: () =>
+                providerError("startSession", "The plugin provider lifecycle call timed out."),
+            }),
+          );
+
+          const installed = yield* Ref.modify(sessions, (current) => {
+            const existing = current.get(threadId);
+            if (existing?.startToken !== startToken || existing.stopping || !existing.starting) {
+              return [false as const, current];
+            }
+            return [
+              true as const,
+              new Map(current).set(threadId, {
+                ...existing,
+                session,
+                starting: false,
+                startToken: null,
+              }),
+            ];
+          });
+
+          if (!installed) {
+            yield* Effect.suspend(() => input.driver.stopSession(threadId)).pipe(
+              Effect.timeoutOrElse({
+                duration: PLUGIN_LIFECYCLE_TIMEOUT,
+                orElse: () => Effect.void,
+              }),
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  "plugin provider startSession completed after teardown; dropping driver session failed",
+                  {
+                    driverKind: input.driverKind,
+                    threadId,
+                    cause: Cause.pretty(cause),
+                  },
+                ),
+              ),
+            );
+            return yield* providerError(
+              "startSession",
+              "The pending session was stopped before it could be installed.",
+            );
+          }
+
+          return session;
+        }).pipe(Effect.onError(() => clearStartReservation));
       });
 
     const endTurn = (threadId: ThreadId, turnId: TurnId) =>
@@ -280,6 +345,7 @@ export const makePluginProviderAdapter = (input: {
         const reservation = yield* Ref.modify(sessions, (current) => {
           const existing = current.get(threadId);
           if (existing === undefined) return ["no-session" as const, current];
+          if (existing.session === null) return ["starting" as const, current];
           // A turn racing in while stopSession is awaiting the driver's teardown must
           // be rejected: hasSession is still true (the delete comes last), so
           // reserving here would install a fiber the imminent delete then orphans —
@@ -305,6 +371,9 @@ export const makePluginProviderAdapter = (input: {
 
         if (reservation === "no-session") {
           return yield* providerError("sendTurn", "No session exists for this thread.");
+        }
+        if (reservation === "starting") {
+          return yield* providerError("sendTurn", "The session is starting.");
         }
         if (reservation === "stopping") {
           return yield* providerError("sendTurn", "The session is stopping.");
@@ -520,7 +589,11 @@ export const makePluginProviderAdapter = (input: {
       interruptTurn,
       stopSession,
       listSessions: () =>
-        Ref.get(sessions).pipe(Effect.map((map) => [...map.values()].map((s) => s.session))),
+        Ref.get(sessions).pipe(
+          Effect.map((map) =>
+            [...map.values()].flatMap((s) => (s.session === null ? [] : [s.session])),
+          ),
+        ),
       hasSession: (threadId) => Ref.get(sessions).pipe(Effect.map((map) => map.has(threadId))),
       // Provider-side history semantics. A plugin faking these would corrupt
       // checkpointing, so they fail typed rather than lying.

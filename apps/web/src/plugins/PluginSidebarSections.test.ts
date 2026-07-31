@@ -2,7 +2,10 @@ import { PluginId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { EMPTY_PLUGIN_UI_REGISTRY_SNAPSHOT } from "./PluginUiHost";
-import { getVisiblePluginSidebarSections } from "./PluginSidebarSections";
+import {
+  getPluginSidebarResetKeys,
+  getVisiblePluginSidebarSections,
+} from "./PluginSidebarSections";
 
 describe("PluginSidebarSections", () => {
   it("renders no sidebar sections for the zero-plugin registry", () => {
@@ -31,6 +34,25 @@ describe("PluginSidebarSections", () => {
         title: "Fixture",
         render: expect.any(Function),
       },
+    ]);
+  });
+
+  it("changes the error-boundary reset key when the environment changes", () => {
+    const render = () => null;
+    const sections = [
+      {
+        pluginId: PluginId.make("fixture-plugin"),
+        id: "main",
+        title: "Fixture",
+        render,
+      },
+    ];
+
+    expect(getPluginSidebarResetKeys(sections, "environment-a")).toEqual([
+      { render, environmentId: "environment-a" },
+    ]);
+    expect(getPluginSidebarResetKeys(sections, "environment-b")).toEqual([
+      { render, environmentId: "environment-b" },
     ]);
   });
 });

@@ -1,6 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useRouter } from "@tanstack/react-router";
-import { createElement, type FunctionComponent } from "react";
+import { createElement, type FunctionComponent, useMemo } from "react";
 import type { PluginSidebarSectionRenderProps } from "@t3tools/plugin-sdk-web";
 
 import { useActiveEnvironmentId } from "../state/entities";
@@ -20,11 +20,22 @@ export function getVisiblePluginSidebarSections(snapshot: PluginUiRegistrySnapsh
   return snapshot.sidebarSections;
 }
 
+export function getPluginSidebarResetKeys(
+  sections: PluginUiRegistrySnapshot["sidebarSections"],
+  environmentId: string | null,
+) {
+  return sections.map((section) => ({ render: section.render, environmentId }));
+}
+
 export function PluginSidebarSections() {
   const snapshot = useAtomValue(pluginUiRegistryAtom);
   const environmentId = useActiveEnvironmentId();
   const router = useRouter();
   const sections = getVisiblePluginSidebarSections(snapshot);
+  const resetKeys = useMemo(
+    () => getPluginSidebarResetKeys(sections, environmentId),
+    [environmentId, sections],
+  );
 
   if (sections.length === 0) {
     return null;
@@ -32,7 +43,7 @@ export function PluginSidebarSections() {
 
   return (
     <>
-      {sections.map((section) => {
+      {sections.map((section, index) => {
         // Build the base path as a real href for the active history mode so a
         // plugin's `<a href={`${routeBasePath}/...`}>` navigates correctly. The
         // desktop app uses hash history (`#/...`) and the web app uses browser
@@ -49,7 +60,7 @@ export function PluginSidebarSections() {
               <SidebarMenuItem>
                 <PluginSurfaceErrorBoundary
                   label={`sidebar:${section.pluginId}:${section.id}`}
-                  resetKey={section.render}
+                  resetKey={resetKeys[index]}
                 >
                   {createElement(
                     section.render as FunctionComponent<PluginSidebarSectionRenderProps>,

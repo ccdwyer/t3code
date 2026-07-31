@@ -450,6 +450,7 @@ export const makeProviderInstanceRegistry = <R>(input: {
  */
 export const ProviderInstanceRegistryLayer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
+  readonly dynamicDrivers?: Effect.Effect<ReadonlyArray<AnyProviderDriver<R>>, never, R>;
   readonly configMap: ProviderInstanceConfigMap;
 }): Layer.Layer<ProviderInstanceRegistry, never, R> =>
   Layer.effect(
@@ -465,6 +466,7 @@ export const ProviderInstanceRegistryLayer = <R>(input: {
  */
 export const ProviderInstanceRegistryMutableLayer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
+  readonly dynamicDrivers?: Effect.Effect<ReadonlyArray<AnyProviderDriver<R>>, never, R>;
   readonly configMap: ProviderInstanceConfigMap;
 }): Layer.Layer<ProviderInstanceRegistry | ProviderInstanceRegistryMutator, never, R> =>
   Layer.effectContext(

@@ -286,90 +286,119 @@ export const make = Effect.fn("PluginManagementRpcHandlers.make")(function* () {
     });
 
   const settingsSet: PluginManagementRpcHandlers["Service"]["settingsSet"] = (input) =>
-    Effect.gen(function* () {
-      const declared = yield* declaredSettings(input.pluginId);
-      if (Option.isNone(declared)) {
-        return yield* Effect.fail(
-          managementError(
-            "settings-not-declared",
-            "This plugin does not declare settings, or is not installed.",
-          ),
-        );
-      }
-      const settingsSchema = declared.value.schema as unknown as Parameters<
-        typeof fingerprintSettingsSchema
-      >[0];
+    store
+      .withLockfile((lockfile) =>
+        Effect.gen(function* () {
+          const entry = (
+            lockfile.plugins as Readonly<Record<string, { readonly state?: string } | undefined>>
+          )[input.pluginId];
+          if (entry === undefined || entry.state === "pending-remove") {
+            return yield* managementError(
+              "settings-not-declared",
+              "This plugin does not declare settings, or is not installed.",
+            );
+          }
 
-      // Decode server-side even though the form already validated: the client is
-      // not trusted, and a bad write would land config the plugin cannot read.
-      const decoded = yield* Schema.decodeUnknownEffect(declared.value.schema)(input.values).pipe(
-        Effect.mapError(() =>
-          // Deliberately does not embed the decode error: its rendering contains the
-          // submitted values, which would put plugin configuration into logs.
-          managementError("settings-invalid", "These settings do not match the plugin's schema."),
-        ),
-      );
+          const runtime = yield* registry.get(input.pluginId);
+          const declared = Option.isSome(runtime)
+            ? Option.flatMap(runtime, (value) =>
+                value.settings === undefined ? Option.none() : Option.some(value.settings),
+              )
+            : yield* settingsStore
+                .declaredSchema(input.pluginId)
+                .pipe(
+                  Effect.map((schema) =>
+                    Option.map(schema, (value) => ({ schema: value }) as never),
+                  ),
+                );
 
-      // Persist the ENCODED shape, canonicalised by re-encoding what we decoded —
-      // never the raw client payload (which could carry unknown keys) and never the
-      // decoded values (whose re-encode may differ, breaking the next read).
-      const encoded = yield* Schema.encodeEffect(declared.value.schema)(decoded).pipe(
-        Effect.mapError(() =>
-          managementError("settings-invalid", "These settings could not be stored."),
-        ),
-      );
+          if (Option.isNone(declared)) {
+            return yield* managementError(
+              "settings-not-declared",
+              "This plugin does not declare settings, or is not installed.",
+            );
+          }
+          const settingsSchema = declared.value.schema as unknown as Parameters<
+            typeof fingerprintSettingsSchema
+          >[0];
 
-      // Strip anything the schema does not declare, at EVERY level, on the HOST side.
-      //
-      // decode->re-encode is NOT a guarantee the host owns: `parseOptions` is a schema
-      // ANNOTATION, so a plugin can declare `onExcessProperty: "preserve"` and carry
-      // arbitrary client keys through both operations. A root-level filter was not
-      // enough either — a hidden field can hold a nested Struct with its own preserve
-      // annotation, which smuggles keys past it. Walking the derived JSON Schema makes
-      // this structural rather than trusting anything the plugin declared.
-      //
-      // REFUSE the write when the strip cannot be proven, rather than storing the
-      // value unstripped. The strip used to pass through any shape it did not model,
-      // which meant every gap in its vocabulary was a silent leak — a defect found
-      // twice, in two different wrappers. Failing closed turns the next unmodelled
-      // shape into a rejected save instead of a persisted undeclared key.
-      const stripped = stripUndeclaredSettings(encoded, settingsSchema);
-      if (stripped._tag === "Unsupported") {
-        yield* Effect.logWarning("plugin settings strip unsupported", {
-          pluginId: input.pluginId,
-          path: stripped.path,
-          detail: stripped.detail,
-        });
-        // Name the offending path. Without it the operator sees only "could not be
-        // stored" and the reason lives in server logs they may not have.
-        return yield* managementError(
-          "settings-invalid",
-          `These settings could not be stored: the plugin's settings schema uses a shape this host cannot safely store (at ${
-            stripped.path === "" ? "the settings root" : stripped.path
-          }).`,
-        );
-      }
-      const canonical = stripped.value as Readonly<Record<string, unknown>>;
+          // Decode server-side even though the form already validated: the client is
+          // not trusted, and a bad write would land config the plugin cannot read.
+          const decoded = yield* Schema.decodeUnknownEffect(declared.value.schema)(
+            input.values,
+          ).pipe(
+            Effect.mapError(() =>
+              // Deliberately does not embed the decode error: its rendering contains the
+              // submitted values, which would put plugin configuration into logs.
+              managementError(
+                "settings-invalid",
+                "These settings do not match the plugin's schema.",
+              ),
+            ),
+          );
 
-      const revision = yield* settingsStore
-        .write({
-          pluginId: input.pluginId,
-          values: canonical,
-          schemaFingerprint: fingerprintSettingsSchema(settingsSchema),
-          expectedRevision: input.expectedRevision,
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "PluginSettingsConflictError"
-              ? managementError(
-                  "settings-conflict",
-                  "These settings changed elsewhere. Reload and reapply your edit.",
-                )
-              : managementError("lockfile", "Could not store plugin settings."),
-          ),
-        );
-      return { revision } satisfies PluginSettingsSetResult;
-    });
+          // Persist the ENCODED shape, canonicalised by re-encoding what we decoded —
+          // never the raw client payload (which could carry unknown keys) and never the
+          // decoded values (whose re-encode may differ, breaking the next read).
+          const encoded = yield* Schema.encodeEffect(declared.value.schema)(decoded).pipe(
+            Effect.mapError(() =>
+              managementError("settings-invalid", "These settings could not be stored."),
+            ),
+          );
+
+          // Strip anything the schema does not declare, at EVERY level, on the HOST side.
+          //
+          // decode->re-encode is NOT a guarantee the host owns: `parseOptions` is a schema
+          // ANNOTATION, so a plugin can declare `onExcessProperty: "preserve"` and carry
+          // arbitrary client keys through both operations. A root-level filter was not
+          // enough either — a hidden field can hold a nested Struct with its own preserve
+          // annotation, which smuggles keys past it. Walking the derived JSON Schema makes
+          // this structural rather than trusting anything the plugin declared.
+          //
+          // REFUSE the write when the strip cannot be proven, rather than storing the
+          // value unstripped. The strip used to pass through any shape it did not model,
+          // which meant every gap in its vocabulary was a silent leak — a defect found
+          // twice, in two different wrappers. Failing closed turns the next unmodelled
+          // shape into a rejected save instead of a persisted undeclared key.
+          const stripped = stripUndeclaredSettings(encoded, settingsSchema);
+          if (stripped._tag === "Unsupported") {
+            yield* Effect.logWarning("plugin settings strip unsupported", {
+              pluginId: input.pluginId,
+              path: stripped.path,
+              detail: stripped.detail,
+            });
+            // Name the offending path. Without it the operator sees only "could not be
+            // stored" and the reason lives in server logs they may not have.
+            return yield* managementError(
+              "settings-invalid",
+              `These settings could not be stored: the plugin's settings schema uses a shape this host cannot safely store (at ${
+                stripped.path === "" ? "the settings root" : stripped.path
+              }).`,
+            );
+          }
+          const canonical = stripped.value as Readonly<Record<string, unknown>>;
+
+          const revision = yield* settingsStore
+            .write({
+              pluginId: input.pluginId,
+              values: canonical,
+              schemaFingerprint: fingerprintSettingsSchema(settingsSchema),
+              expectedRevision: input.expectedRevision,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "PluginSettingsConflictError"
+                  ? managementError(
+                      "settings-conflict",
+                      "These settings changed elsewhere. Reload and reapply your edit.",
+                    )
+                  : managementError("lockfile", "Could not store plugin settings."),
+              ),
+            );
+          return { revision } satisfies PluginSettingsSetResult;
+        }),
+      )
+      .pipe(Effect.mapError(toManagementError));
 
   return PluginManagementRpcHandlers.of({
     listSources,

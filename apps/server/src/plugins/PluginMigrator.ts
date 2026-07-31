@@ -72,6 +72,11 @@ interface SqliteMasterObject {
   readonly sql: string | null;
 }
 
+interface AttachedDatabase {
+  readonly name: string;
+  readonly file: string;
+}
+
 export class PluginMigrator extends Context.Service<
   PluginMigrator,
   {
@@ -94,6 +99,15 @@ const sqliteMasterSnapshot = (sql: SqlClient.SqlClient) =>
       AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
     ORDER BY type, name
   `;
+
+const attachedDatabaseSnapshot = (sql: SqlClient.SqlClient) =>
+  Effect.map(sql<AttachedDatabase>`PRAGMA database_list`, (databases) =>
+    databases.filter((database) => database.name !== "main" && database.name !== "temp"),
+  );
+
+const sqliteIdentifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
+
+const sqliteStringLiteral = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 const objectKey = (entry: SqliteMasterObject) => `${entry.type}:${entry.name}`;
 
@@ -344,15 +358,12 @@ export const make = Effect.fn("PluginMigrator.make")(function* () {
               SELECT name, sql FROM sqlite_temp_master
             `.pipe(Effect.orElseSucceed(() => []));
             // Snapshot attachments BEFORE the migration so pre-existing ATTACHes
-            // on this shared SqlClient are not treated as migration violations
-            // (and must never be DETACHed — that would break other code on the
-            // connection). Only names ADDED (or pre-existing ones REMOVED) by
-            // the migration are violations.
-            const databasesBefore = yield* sql<{ readonly name: string }>`PRAGMA database_list`;
-            const attachedBefore = new Set(
-              databasesBefore
-                .filter((database) => database.name !== "main" && database.name !== "temp")
-                .map((database) => database.name),
+            // on this shared SqlClient are not treated as migration violations.
+            // Track both name and file: DETACH + re-ATTACH under the same alias
+            // still mutates shared connection state and must be restored.
+            const attachedBefore = yield* attachedDatabaseSnapshot(sql);
+            const attachedBeforeByName = new Map(
+              attachedBefore.map((database) => [database.name, database]),
             );
             yield* migration.up.pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
@@ -371,26 +382,51 @@ export const make = Effect.fn("PluginMigrator.make")(function* () {
             // outright rather than pretend they are covered.
             // database_list always reports "main" (and "temp" once the temp
             // schema exists); anything else is an ATTACHed database.
-            const databasesAfter = yield* sql<{ readonly name: string }>`PRAGMA database_list`;
-            const attachedAfter = databasesAfter.filter(
-              (database) => database.name !== "main" && database.name !== "temp",
+            const attachedAfter = yield* attachedDatabaseSnapshot(sql);
+            const attachedAfterByName = new Map(
+              attachedAfter.map((database) => [database.name, database]),
             );
-            const attachedAfterNames = new Set(attachedAfter.map((database) => database.name));
             const newlyAttached = attachedAfter.filter(
-              (database) => !attachedBefore.has(database.name),
+              (database) => !attachedBeforeByName.has(database.name),
             );
-            const removedPreExisting = [...attachedBefore].filter(
-              (name) => !attachedAfterNames.has(name),
+            const removedPreExisting = attachedBefore.filter(
+              (database) => !attachedAfterByName.has(database.name),
             );
-            if (newlyAttached.length > 0 || removedPreExisting.length > 0) {
-              // Best-effort DETACH of only what THIS migration attached — never
-              // touch pre-existing attachments that other code may rely on.
+            const repointedPreExisting = attachedBefore.filter((database) => {
+              const afterDatabase = attachedAfterByName.get(database.name);
+              return afterDatabase !== undefined && afterDatabase.file !== database.file;
+            });
+            if (
+              newlyAttached.length > 0 ||
+              removedPreExisting.length > 0 ||
+              repointedPreExisting.length > 0
+            ) {
+              // Restore shared connection state before reporting the violation.
               yield* Effect.forEach(newlyAttached, (database) =>
                 sql
-                  .unsafe(`DETACH DATABASE "${database.name.replaceAll('"', '""')}"`)
+                  .unsafe(`DETACH DATABASE ${sqliteIdentifier(database.name)}`)
                   .unprepared.pipe(Effect.ignore),
               );
-              const objectName = newlyAttached[0]?.name ?? removedPreExisting[0] ?? "unknown";
+              yield* Effect.forEach(repointedPreExisting, (database) =>
+                sql
+                  .unsafe(`DETACH DATABASE ${sqliteIdentifier(database.name)}`)
+                  .unprepared.pipe(
+                    Effect.andThen(
+                      sql.unsafe(
+                        `ATTACH DATABASE ${sqliteStringLiteral(database.file)} AS ${sqliteIdentifier(database.name)}`,
+                      ).unprepared,
+                    ),
+                  ),
+              );
+              yield* Effect.forEach(
+                removedPreExisting,
+                (database) =>
+                  sql.unsafe(
+                    `ATTACH DATABASE ${sqliteStringLiteral(database.file)} AS ${sqliteIdentifier(database.name)}`,
+                  ).unprepared,
+              );
+              const restoredPreExisting = removedPreExisting[0] ?? repointedPreExisting[0];
+              const objectName = newlyAttached[0]?.name ?? restoredPreExisting?.name ?? "unknown";
               return yield* new PluginMigrationViolation({
                 pluginId,
                 version: migration.version,
@@ -398,7 +434,9 @@ export const make = Effect.fn("PluginMigrator.make")(function* () {
                 detail:
                   newlyAttached.length > 0
                     ? "ATTACH DATABASE is not permitted in plugin migrations"
-                    : "DETACH DATABASE of a pre-existing attachment is not permitted in plugin migrations",
+                    : repointedPreExisting.length > 0
+                      ? "Repointing a pre-existing attachment is not permitted in plugin migrations"
+                      : "DETACH DATABASE of a pre-existing attachment is not permitted in plugin migrations",
               });
             }
             const tempAfter = yield* sql<{ readonly name: string; readonly sql: string | null }>`

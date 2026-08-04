@@ -101,7 +101,7 @@ const encodeProposalDefinition = Schema.encodeSync(WorkflowDefinition);
 // Used to parse `TicketParked` event payloads for the routeOutcomes fold in
 // getBoardMetrics — the shape is opaque (asRecord-checked field by field
 // below), so UnknownFromJsonString (not a specific schema) is the right tool.
-const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 /**
  * `projection_ticket.fork_origin`. A real schema rather than a hand-rolled
@@ -138,7 +138,7 @@ interface ProposalFullSqlRow extends ProposalSqlRow {
 
 // ─── End board proposal codec block ──────────────────────────────────────────
 
-const decodeOutputJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeOutputJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeTicketAttachmentsJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(TicketAttachment)),
 );

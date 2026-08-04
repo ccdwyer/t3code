@@ -12,7 +12,7 @@ import {
 } from "../Services/CapturedStepOutputReader.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
 
-const decodeCapturedJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeCapturedJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const findLastJsonBlock = (text: string) => {
   const jsonBlock = /```json\s*([\s\S]*?)```/gi;

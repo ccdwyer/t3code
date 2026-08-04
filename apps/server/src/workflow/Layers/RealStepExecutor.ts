@@ -95,7 +95,7 @@ import { WorktreeCoordinator, type OverlapGateResult } from "../Services/Worktre
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { PARALLELISM_HOLD_REASON_ACTIVE, serializeHoldReason } from "../worktreeOverlap.ts";
 
-const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const toExecutorError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });

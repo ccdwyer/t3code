@@ -49,7 +49,7 @@ const seedStepRun = (input: {
     const outputJson =
       input.output === undefined
         ? null
-        : yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)(input.output);
+        : yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(input.output);
     yield* sql`
       INSERT INTO projection_step_run
         (step_run_id, pipeline_run_id, ticket_id, step_key, step_type, status, started_at, finished_at, output_json)

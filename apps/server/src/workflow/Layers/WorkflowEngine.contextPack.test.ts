@@ -25,7 +25,7 @@ import { WorkflowEngineLayer } from "./WorkflowEngine.ts";
 import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 
-const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const succeedingExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),

@@ -49,7 +49,7 @@ import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import { WorkflowBoardSaveLocksLive } from "./WorkflowBoardSaveLocks.ts";
 import { ticketBaseRef } from "../ticketRefs.ts";
 
-const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const context: StepExecutionContext = {
   ticketId: "ticket-1" as never,
@@ -773,7 +773,7 @@ const seedHandoffStepRun = (input: {
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const outputJson = yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)(
+    const outputJson = yield* Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
       input.output,
     );
     yield* sql`

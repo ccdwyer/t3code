@@ -9,7 +9,6 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
-import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import { workflowHooksRouteLayer } from "./workflow/webhookRoute.ts";
 import {
   otlpTracesProxyRouteLayer,
@@ -93,6 +92,7 @@ import * as CloudManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts"
 import * as CloudCliTokenManager from "./cloud/CliTokenManager.ts";
 import * as CloudCliState from "./cloud/CliState.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
+import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
@@ -196,9 +196,6 @@ const HttpServerLive = Layer.unwrap(
     }
   }),
 );
-
-const HttpResponseCompressionLive =
-  typeof Bun !== "undefined" ? HttpResponseCompression.layerBun : HttpResponseCompression.layerNode;
 
 const PlatformServicesLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -429,6 +426,14 @@ const RuntimeServicesLive = ServerRuntimeStartup.layer.pipe(
   Layer.provideMerge(RuntimeDependenciesLive),
 );
 
+const commandReadinessLayer = HttpRouter.middleware(
+  (httpEffect) =>
+    Effect.flatMap(ServerRuntimeStartup.ServerRuntimeStartup, (startup) =>
+      startup.awaitCommandReady.pipe(Effect.orDie, Effect.andThen(httpEffect)),
+    ),
+  { global: true },
+);
+
 export const makeRoutesLayer = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
@@ -448,6 +453,7 @@ export const makeRoutesLayer = Layer.mergeAll(
 ).pipe(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),
+  Layer.provide(commandReadinessLayer),
   Layer.provide(browserApiCorsLayer),
   Layer.provide(httpCompressionLayer),
 );
@@ -598,7 +604,7 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     const serverApplicationLayer = Layer.mergeAll(
-      HttpRouter.serve(makeRoutesLayer, {
+      HttpRouter.serve(makeRoutesLayer.pipe(Layer.provide(ServiceLauncherClient.layer)), {
         disableLogger: !config.logWebSocketEvents,
       }),
       httpListeningLayer,
@@ -610,7 +616,6 @@ export const makeServerLayer = Layer.unwrap(
     return serverApplicationLayer.pipe(
       Layer.provideMerge(RuntimeServicesLive),
       Layer.provideMerge(serverRelayBrokerTracingLayer),
-      Layer.provideMerge(HttpResponseCompressionLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ApplicationObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),

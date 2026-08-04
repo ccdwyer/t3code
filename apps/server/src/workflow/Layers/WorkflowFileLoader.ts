@@ -32,7 +32,7 @@ import {
 import { lintWorkflowDefinition, type LintContext } from "../workflowFile.ts";
 
 const decodeWorkflowDefinition = Schema.decodeUnknownEffect(WorkflowDefinition);
-const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeUnknownJsonString = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeProviderInstanceId = Schema.decodeUnknownEffect(ProviderInstanceId);
 
 const toWorkflowRpcError = (message: string) => (cause: unknown) =>
@@ -136,7 +136,13 @@ const make = Effect.gen(function* () {
         readInstructionFile: (repoRelativePath) =>
           instructionContents.get(repoRelativePath) ?? null,
         selectorSchemaFor: (p) =>
-          p === "github" ? GithubSelector : p === "asana" ? AsanaSelector : p === "jira" ? JiraSelector : null,
+          p === "github"
+            ? GithubSelector
+            : p === "asana"
+              ? AsanaSelector
+              : p === "jira"
+                ? JiraSelector
+                : null,
       };
     });
 

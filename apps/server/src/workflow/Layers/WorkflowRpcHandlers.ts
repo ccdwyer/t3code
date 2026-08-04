@@ -571,7 +571,7 @@ const workflowRpcError = (message: string, cause?: unknown) =>
     ...(cause === undefined ? {} : { cause }),
   });
 
-const decodeUnknownJsonStringSync = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeUnknownJsonStringSync = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeWorkflowDefinition = Schema.decodeUnknownEffect(WorkflowDefinition);
 const decodeWorkflowCreateBoardInput = Schema.decodeUnknownEffect(WorkflowCreateBoardInput);
 const decodeWorkflowRenameBoardInput = Schema.decodeUnknownEffect(WorkflowRenameBoardInput);

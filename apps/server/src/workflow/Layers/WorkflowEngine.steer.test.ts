@@ -36,7 +36,7 @@ import { DeterministicWorkflowIds } from "./WorkflowIds.ts";
 import { WorkflowRoutingContextBuilderLive } from "./WorkflowRoutingContextBuilder.ts";
 import { STEER_REJECTION } from "../steerHelpers.ts";
 
-const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const idleExecutor = Layer.succeed(StepExecutor, {
   execute: () => Effect.succeed({ _tag: "completed" as const }),

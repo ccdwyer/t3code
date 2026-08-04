@@ -90,6 +90,7 @@ import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -655,10 +656,13 @@ const buildAppUnderTest = (options?: {
     );
 
     // @effect-diagnostics-next-line unnecessaryPipeChain:off — split because a single pipe caps at 20 args; merging re-introduces TS2554
-    const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
-      disableListenLog: true,
-      disableLogger: true,
-    })
+    const servedRoutesLayer = HttpRouter.serve(
+      makeRoutesLayer.pipe(Layer.provide(ServiceLauncherClient.layer)),
+      {
+        disableListenLog: true,
+        disableLogger: true,
+      },
+    )
       .pipe(
         Layer.provide(
           Layer.mock(Keybindings.Keybindings)({
@@ -790,11 +794,10 @@ const buildAppUnderTest = (options?: {
               open: () => Effect.die("PreviewManager not stubbed in this test"),
               navigate: () => Effect.die("PreviewManager not stubbed in this test"),
               resize: () => Effect.die("PreviewManager not stubbed in this test"),
-            reportStatus: () => Effect.void,
-            refresh: () => Effect.void,
-            close: () => Effect.void,
-            list: () =>
-              Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
+              reportStatus: () => Effect.void,
+              refresh: () => Effect.void,
+              close: () => Effect.void,
+              list: () => Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
               events: Stream.empty,
               subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
                 PubSub.subscribe(pubsub),

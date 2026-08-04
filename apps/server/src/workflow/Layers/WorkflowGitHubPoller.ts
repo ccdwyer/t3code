@@ -32,8 +32,8 @@ const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 // JSON encode/decode via Schema (the codebase convention for persisted JSON —
 // see WorkflowProjectionPipeline). Payloads are already sanitized + bounded.
-const encodePayloadJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
-const decodePayloadJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodePayloadJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const decodePayloadJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 // A watched ticket: an open PR whose projection row is still non-terminal.
 interface WatchedTicketRow {

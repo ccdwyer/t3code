@@ -25,7 +25,7 @@ interface Row {
 
 const decodePayloadJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeWorkflowEvent = Schema.decodeUnknownEffect(WorkflowEvent);
-const encodePayloadJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodePayloadJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const toStoreError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });

@@ -10,7 +10,7 @@ import {
   type StepOutputHandoffReaderShape,
 } from "../Services/StepOutputHandoffReader.ts";
 
-const decodeOutputJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeOutputJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const toReaderError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });

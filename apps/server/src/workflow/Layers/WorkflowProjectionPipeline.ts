@@ -22,9 +22,9 @@ import {
 const toProjectionError = (cause: unknown) =>
   new WorkflowEventStoreError({ message: "projection failed", cause });
 
-const encodeOutputJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodeOutputJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 // Sync variant for the pack folds, which build their SQL inline.
-const encodeJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeTicketAttachmentsJson = Schema.encodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(TicketAttachment)),
 );

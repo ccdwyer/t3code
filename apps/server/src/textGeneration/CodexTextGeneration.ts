@@ -36,7 +36,7 @@ import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 
 const CODEX_GIT_TEXT_GENERATION_REASONING_EFFORT = "low";
 const CODEX_TIMEOUT_MS = 180_000;
-const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
+const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 /**
  * Build the `codex exec` argv for a structured-output text-generation run.

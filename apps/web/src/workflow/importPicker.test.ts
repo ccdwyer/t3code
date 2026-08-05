@@ -73,6 +73,19 @@ describe("applyPickerFilters", () => {
     expect(out.map((r) => r.externalId)).toEqual(["2"]);
   });
 
+  it("a pasted URL bypasses hideTasked and assignedToMe (direct lookup)", () => {
+    const out = applyPickerFilters(
+      [row({ mappedTicketId: "t1" as any, assignees: ["bob"] })],
+      {
+        search: "https://github.com/a/b/issues/1",
+        hideTasked: true,
+        assignedToMe: true,
+      },
+      { s1: { id: "alice", aliases: ["alice"] } },
+    );
+    expect(out.map((r) => r.externalId)).toEqual(["1"]);
+  });
+
   it("a pasted URL matches exactly, not as a prefix (issues/1 not issues/10)", () => {
     const out = applyPickerFilters(
       [
@@ -176,6 +189,14 @@ describe("workItemUrlIdentity", () => {
     ).toBe("asana:1200000000000042");
   });
 
+  it("takes the second numeric (the task) in marker-less /0/ paths with trailing ids", () => {
+    expect(
+      workItemUrlIdentity(
+        "https://app.asana.com/0/1200000000000001/1200000000000042/1300000000000099",
+      ),
+    ).toBe("asana:1200000000000042");
+  });
+
   it("extracts the asana task gid across permalink generations", () => {
     expect(workItemUrlIdentity("https://app.asana.com/0/1200000000000001/1200000000000042")).toBe(
       "asana:1200000000000042",
@@ -228,6 +249,21 @@ describe("urlMatchesRow", () => {
       urlMatchesRow(
         "https://tracker.example.com/view?id=5",
         "http://tracker.example.com/view?id=5",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps hash fragments significant in the fallback comparison", () => {
+    expect(
+      urlMatchesRow(
+        "https://tracker.example.com/app#/task/5",
+        "https://tracker.example.com/app#/task/6",
+      ),
+    ).toBe(false);
+    expect(
+      urlMatchesRow(
+        "https://tracker.example.com/app#/task/5",
+        "http://tracker.example.com/app#/task/5",
       ),
     ).toBe(true);
   });

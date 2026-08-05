@@ -7,7 +7,7 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { PlusIcon, Undo2Icon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
@@ -81,20 +81,21 @@ export function CanvasView({
   const [laneHeights, setLaneHeights] = useState<LaneHeights>({});
   // Loaded once per mount; the host remounts this view per board (key=boardId
   // in WorkflowEditor), which is what keeps the state and the storage key in
-  // agreement.
-  const [lanePositions, setLanePositions] = useState<LanePositions>(() =>
-    loadLanePositions(boardId),
-  );
-  const applyLanePositions = useCallback(
-    (next: LanePositions) => {
-      // Persist OUTSIDE the state updater — updaters must stay pure (React may
-      // double-invoke them); drag-end and reset are discrete events, so
-      // computing from the render-fresh value is safe.
-      saveLanePositions(boardId, next);
-      setLanePositions(next);
-    },
-    [boardId],
-  );
+  // agreement. Entries for lanes the definition no longer has are pruned at
+  // load, so a renamed/deleted lane can't keep "Reset layout" alive forever.
+  const [lanePositions, setLanePositions] = useState<LanePositions>(() => {
+    const loaded = loadLanePositions(boardId);
+    const laneKeys = new Set(model.definition.lanes.map((lane) => String(lane.key)));
+    return Object.fromEntries(Object.entries(loaded).filter(([laneKey]) => laneKeys.has(laneKey)));
+  });
+  // Persistence is an EFFECT of the state, not part of the updater (updaters
+  // must stay pure) and not computed from a render captured value (a stale
+  // closure in a future memoized handler would silently drop other lanes'
+  // positions). The first run rewrites the just-loaded (pruned) value, which
+  // also self-heals stale storage entries.
+  useEffect(() => {
+    saveLanePositions(boardId, lanePositions);
+  }, [boardId, lanePositions]);
   const [anchors, setAnchors] = useState<CanvasAnchors>({});
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -107,8 +108,8 @@ export function CanvasView({
   );
   const hasMovedLanes = Object.keys(lanePositions).length > 0;
   const resetLaneLayout = useCallback(() => {
-    applyLanePositions({});
-  }, [applyLanePositions]);
+    setLanePositions({});
+  }, []);
   const layoutByLaneKey = useMemo(
     () => new Map(layout.lanes.map((laneLayout) => [laneLayout.laneKey, laneLayout])),
     [layout.lanes],
@@ -187,13 +188,13 @@ export function CanvasView({
     if (move) {
       const current = layoutByLaneKey.get(move.laneKey);
       if (current && (event.delta.x !== 0 || event.delta.y !== 0)) {
-        applyLanePositions({
-          ...lanePositions,
+        setLanePositions((positions) => ({
+          ...positions,
           [move.laneKey]: {
             x: Math.max(0, Math.round(current.x + event.delta.x)),
             y: Math.max(0, Math.round(current.y + event.delta.y)),
           },
-        });
+        }));
       }
       return;
     }

@@ -39,13 +39,13 @@ export const normalizeWorkItemUrl = (raw: string): string | null => {
 
 /**
  * Comparison key for the unknown-host fallback. Unlike identity parsing this
- * KEEPS the query string — for trackers that address items via query params
- * (`/view?id=5` vs `/view?id=6`), dropping it would collapse distinct items
- * into one match.
+ * KEEPS the query string and fragment — trackers address items via query
+ * params (`/view?id=5`) or hash routes (`/app#/task/5`), and dropping either
+ * would collapse distinct items into one match.
  */
 export const workItemUrlComparisonKey = (raw: string): string | null => {
   const url = parseHttpUrl(raw);
-  return url === null ? null : `${normalizedHostPath(url)}${url.search}`;
+  return url === null ? null : `${normalizedHostPath(url)}${url.search}${url.hash}`;
 };
 
 /**
@@ -81,13 +81,15 @@ export const workItemUrlIdentity = (raw: string): string | null => {
         return `asana:${candidate}`;
       }
     }
-    for (let i = segments.length - 1; i >= 1; i -= 1) {
-      const segment = segments[i] ?? "";
-      if (/^\d{6,}$/.test(segment)) {
-        return `asana:${segment}`;
-      }
+    const numerics = segments.filter((segment) => /^\d{6,}$/.test(segment));
+    // The classic /0/<project>/<task>/… generation: the FIRST numeric is the
+    // project, the SECOND is the task — later numerics are comment/focus ids,
+    // so "last numeric" would latch onto the wrong entity.
+    if (segments[1] === "0" && numerics.length >= 2) {
+      return `asana:${numerics[1]}`;
     }
-    return null;
+    const last = numerics.at(-1);
+    return last === undefined ? null : `asana:${last}`;
   }
   const jira = /^([^/]+)\/browse\/([a-z][a-z0-9_]*-\d+)$/i.exec(normalized);
   if (jira) {
@@ -121,13 +123,16 @@ export const applyPickerFilters = (
   const url = isUrl(raw) ? raw : null;
   const q = url ? null : raw.toLowerCase();
   return rows.filter((r) => {
+    // A pasted URL is a direct lookup: it bypasses the hide/assignee filters
+    // so the answer is always "here it is" (with its badges) — never a
+    // misleading "not loaded" caused by a filter the user forgot about.
+    if (url !== null) return urlMatchesRow(url, r.url);
     if (f.hideTasked && r.mappedTicketId !== null) return false;
     if (f.assignedToMe) {
       const v = viewer[r.sourceId];
       if (v === null || v === undefined) return false;
       if (!r.assignees.some((a) => v.aliases.includes(a))) return false;
     }
-    if (url !== null) return urlMatchesRow(url, r.url);
     if (q !== null && q.length > 0 && !`${r.title} ${r.displayRef}`.toLowerCase().includes(q))
       return false;
     return true;

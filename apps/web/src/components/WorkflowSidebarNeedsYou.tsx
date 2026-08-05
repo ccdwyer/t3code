@@ -45,7 +45,7 @@ export function WorkflowSidebarNeedsYou({
         onClick={() => {
           setOpen((current) => !current);
         }}
-        className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2.5 text-left text-sidebar-foreground outline-none select-none hover:bg-sidebar-row-hover"
+        className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2.5 text-left text-sidebar-foreground outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring/35"
       >
         <BellIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">Needs you</span>
@@ -93,7 +93,7 @@ function NeedsYouTicketList({
             onClick={() => {
               onOpenTicket(ticket);
             }}
-            className="flex w-full cursor-pointer items-center gap-2 rounded-md py-1 pr-2.5 pl-4 text-left outline-none select-none hover:bg-sidebar-row-hover"
+            className="flex w-full cursor-pointer items-center gap-2 rounded-md py-1 pr-2.5 pl-4 text-left outline-none select-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-ring/35"
             title={ticket.attentionReason ?? undefined}
           >
             <span

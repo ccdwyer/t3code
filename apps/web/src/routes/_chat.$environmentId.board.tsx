@@ -648,6 +648,10 @@ function WorkflowBoardRouteView() {
           void handleMove(ticketId, action.toLane);
           return;
         case "openDependency":
+          // The dependency may be excluded by the active search filter, in
+          // which case no view can show it — clear the filter so the target
+          // is present before (and after) the views' local open paths run.
+          setSearchQuery("");
           handleOpenTicket(action.ticketId);
           return;
       }

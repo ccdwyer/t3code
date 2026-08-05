@@ -12,7 +12,14 @@ import { getTicketDiff } from "~/workflow/boardRpc";
 type TicketDiffLoadState =
   | { readonly status: "loading" }
   | { readonly status: "loaded"; readonly diff: TicketDiffData }
-  | { readonly status: "error"; readonly message: string };
+  | {
+      readonly status: "error";
+      readonly message: string;
+      /** hasStartedWork AT FETCH TIME — classification must use the value the
+       *  error was fetched under, or the render between the prop flipping and
+       *  the refetch would flash a cached pre-run error as worktree loss. */
+      readonly hasStartedWorkAtFetch: boolean;
+    };
 
 /**
  * How a diff-load error should render. The no-worktree fragment alone is not
@@ -57,7 +64,11 @@ export function TicketDiff({
       },
       (error: unknown) => {
         if (!cancelled) {
-          setLoadState({ status: "error", message: errorMessage(error) });
+          setLoadState({
+            status: "error",
+            message: errorMessage(error),
+            hasStartedWorkAtFetch: hasStartedWork,
+          });
         }
       },
     );
@@ -80,7 +91,7 @@ export function TicketDiff({
   }
 
   if (loadState.status === "error") {
-    const kind = classifyTicketDiffError(loadState.message, hasStartedWork);
+    const kind = classifyTicketDiffError(loadState.message, loadState.hasStartedWorkAtFetch);
     // A ticket that hasn't run a step yet has no worktree — that's the normal
     // starting state, not a failure, so render a quiet empty card for it.
     if (kind === "pre-run") {

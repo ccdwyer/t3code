@@ -107,15 +107,15 @@ export function ConsoleBoardView({
     },
     [onParkAction],
   );
-  // openDependency travels the VIEW's own selection path — the subject pane
-  // follows selectedId, so only moving the route's selection would leave the
-  // pane on its old subject.
+  // openDependency travels the VIEW's own selection path (the subject pane
+  // follows selectedId) AND still reaches the route handler, whose arm clears
+  // the board search filter — a filtered-out dependency has no row here until
+  // the filter drops, after which the tracked selectedId finds it.
   const runUnstickAction = useCallback(
     (ticketId: string, action: CardUnstickAction) => {
       if (action.type === "openDependency") {
         setSelectedId(action.ticketId);
         onOpen(action.ticketId);
-        return;
       }
       onUnstickAction?.(ticketId, action);
     },

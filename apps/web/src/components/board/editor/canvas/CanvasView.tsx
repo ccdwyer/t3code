@@ -100,9 +100,10 @@ export function CanvasView({
   // mid-session must drop its entry, or "Reset layout" keeps pointing at
   // invisible state and a re-added lane with the same key would inherit an
   // unrelated position.
-  const laneKeyList = model.definition.lanes.map((lane) => String(lane.key)).join("\u0000");
+  // JSON-encoded so no lane key content can collide with a join delimiter.
+  const laneKeyList = JSON.stringify(model.definition.lanes.map((lane) => String(lane.key)));
   useEffect(() => {
-    const laneKeys = new Set(laneKeyList.split("\u0000"));
+    const laneKeys = new Set(JSON.parse(laneKeyList) as ReadonlyArray<string>);
     setLanePositions((positions) => {
       const entries = Object.entries(positions).filter(([laneKey]) => laneKeys.has(laneKey));
       return entries.length === Object.keys(positions).length

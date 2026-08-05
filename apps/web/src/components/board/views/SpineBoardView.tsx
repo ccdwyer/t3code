@@ -131,13 +131,13 @@ export function SpineBoardView({
   );
 
   // openDependency must travel the VIEW's own open path (openFrom drives this
-  // view's panel state); handing it to the route would change the route's
-  // selection while this view's panel keeps its old subject.
+  // view's panel state) AND still reach the route handler, whose arm clears
+  // the board search filter — a filtered-out dependency is otherwise absent
+  // from this view's state and could never render in the panel.
   const runUnstickAction = useCallback(
     (ticketId: string, action: CardUnstickAction) => {
       if (action.type === "openDependency") {
         openFrom(action.ticketId);
-        return;
       }
       onUnstickAction?.(ticketId, action);
     },

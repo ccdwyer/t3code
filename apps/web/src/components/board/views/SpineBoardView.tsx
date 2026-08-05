@@ -1,10 +1,7 @@
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import {
-  visibleStuckDiagnosis,
-  type CardUnstickAction,
-} from "~/workflow/stuckDiagnosisView";
+import { visibleStuckDiagnosis, type CardUnstickAction } from "~/workflow/stuckDiagnosisView";
 import type { BoardViewState, BoardViewTicket } from "../BoardView";
 import {
   TIER_COLOR,
@@ -462,9 +459,10 @@ function SpineCard({
   const ref = useScrollIntoView(selected);
   const parked = ticket.parked;
   const actions = parked?.actions ?? [];
-  // The park reason already explains a parked card; everyone else gets the
-  // server's stuck diagnosis (age-gated by its own displayAfterMs).
-  const diagnosis = parked === undefined ? visibleStuckDiagnosis(ticket.diagnosis, now) : null;
+  // The park state already explains a parked card (even when its re-resolved
+  // actions are absent), so gate on STATUS, matching cardUnstickActions.
+  const diagnosis =
+    ticket.status === "parked" ? null : visibleStuckDiagnosis(ticket.diagnosis, now);
 
   return (
     <article

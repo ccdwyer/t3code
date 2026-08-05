@@ -27,7 +27,6 @@ export function WorkflowSidebarNeedsYou({
   readonly onOpenTicket: (ticket: WorkflowNeedsAttentionTicketView) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const now = useNowTick(60_000);
 
   if (tickets.length === 0) {
     return null;
@@ -60,49 +59,72 @@ export function WorkflowSidebarNeedsYou({
       </button>
 
       {open ? (
-        <ul role="list" data-testid="sidebar-v2-needs-you-list" className="mt-0.5 flex flex-col">
-          {visible.map((ticket) => (
-            <li key={ticket.ticketId}>
-              <button
-                type="button"
-                data-testid={`sidebar-v2-needs-you-ticket-${ticket.ticketId}`}
-                onClick={() => {
-                  onOpenTicket(ticket);
-                }}
-                className="flex w-full cursor-pointer items-center gap-2 rounded-md py-1 pr-2.5 pl-4 text-left outline-none select-none hover:bg-sidebar-row-hover"
-                title={ticket.attentionReason ?? undefined}
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "size-2 shrink-0 rounded-full border-2",
-                    attentionKindToneClass(ticket.attentionKind),
-                  )}
-                />
-                <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                  <span className="truncate text-[13px] text-sidebar-foreground/90">
-                    {ticket.title}
-                  </span>
-                  <span className="truncate text-[11px] text-sidebar-muted-foreground/70">
-                    {ticket.boardName}
-                  </span>
-                </span>
-                <span className="shrink-0 font-mono text-[10px] text-sidebar-muted-foreground/70">
-                  {ageFrom(ticket.parkedAt ?? ticket.updatedAt, now)}
-                </span>
-              </button>
-            </li>
-          ))}
-          {hiddenCount > 0 ? (
-            <li
-              className="py-1 pr-2.5 pl-8 text-[11px] text-sidebar-muted-foreground/70"
-              data-testid="sidebar-v2-needs-you-overflow"
-            >
-              …and {hiddenCount} more on their boards
-            </li>
-          ) : null}
-        </ul>
+        <NeedsYouTicketList
+          visible={visible}
+          hiddenCount={hiddenCount}
+          onOpenTicket={onOpenTicket}
+        />
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Split out so the minute tick only exists while the list is actually open —
+ * the collapsed header renders no ages and should not re-render on a timer.
+ */
+function NeedsYouTicketList({
+  visible,
+  hiddenCount,
+  onOpenTicket,
+}: {
+  readonly visible: ReadonlyArray<WorkflowNeedsAttentionTicketView>;
+  readonly hiddenCount: number;
+  readonly onOpenTicket: (ticket: WorkflowNeedsAttentionTicketView) => void;
+}) {
+  const now = useNowTick(60_000);
+  return (
+    <ul role="list" data-testid="sidebar-v2-needs-you-list" className="mt-0.5 flex flex-col">
+      {visible.map((ticket) => (
+        <li key={`${ticket.boardId}:${ticket.ticketId}`}>
+          <button
+            type="button"
+            data-testid={`sidebar-v2-needs-you-ticket-${ticket.ticketId}`}
+            onClick={() => {
+              onOpenTicket(ticket);
+            }}
+            className="flex w-full cursor-pointer items-center gap-2 rounded-md py-1 pr-2.5 pl-4 text-left outline-none select-none hover:bg-sidebar-row-hover"
+            title={ticket.attentionReason ?? undefined}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "size-2 shrink-0 rounded-full border-2",
+                attentionKindToneClass(ticket.attentionKind),
+              )}
+            />
+            <span className="flex min-w-0 flex-1 flex-col leading-tight">
+              <span className="truncate text-[13px] text-sidebar-foreground/90">
+                {ticket.title}
+              </span>
+              <span className="truncate text-[11px] text-sidebar-muted-foreground/70">
+                {ticket.boardName}
+              </span>
+            </span>
+            <span className="shrink-0 font-mono text-[10px] text-sidebar-muted-foreground/70">
+              {ageFrom(ticket.parkedAt ?? ticket.updatedAt, now)}
+            </span>
+          </button>
+        </li>
+      ))}
+      {hiddenCount > 0 ? (
+        <li
+          className="py-1 pr-2.5 pl-8 text-[11px] text-sidebar-muted-foreground/70"
+          data-testid="sidebar-v2-needs-you-overflow"
+        >
+          …and {hiddenCount} more on their boards
+        </li>
+      ) : null}
+    </ul>
   );
 }

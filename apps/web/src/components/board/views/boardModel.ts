@@ -1,7 +1,4 @@
-import {
-  cardUnstickActions,
-  type CardUnstickAction,
-} from "~/workflow/stuckDiagnosisView";
+import { cardUnstickActions, type CardUnstickAction } from "~/workflow/stuckDiagnosisView";
 
 import type { BoardViewState, BoardViewTicket } from "../BoardView";
 import type { LaneColumnView } from "../LaneColumn";
@@ -174,13 +171,14 @@ export const optionsFor = (
     readonly run: (ticketId: string, action: CardUnstickAction) => void;
   },
 ): ReadonlyArray<TicketOption> => {
-  // Park actions only bind while the ticket is ACTUALLY parked.
+  // Digit ownership, in precedence order: a PARKED ticket's digits belong to
+  // its park-recovery actions; a WAITING ticket's digits stay free for its
+  // question/approval form (cardUnstickActions excludes that status); any
+  // other stuck ticket's digits run the diagnosis's card-safe unstick actions.
   //
   // A park and an open agent-question wait can coexist — the projection handles
   // a StepAwaitingUser landing on a parked row explicitly — so "has parked
-  // details" is not enough on its own. Requiring the live status keeps the
-  // digits owned by exactly one of the two: parked tickets get park actions,
-  // and everything else leaves the digits free for a question form.
+  // details" is not enough on its own; the live status decides.
   if (ticket?.status === "parked") {
     if (ticket.parked === undefined || onParkAction === undefined) return [];
     const parked = ticket.parked;

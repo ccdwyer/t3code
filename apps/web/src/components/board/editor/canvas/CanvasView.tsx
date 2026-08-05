@@ -20,10 +20,7 @@ import {
   type WorkflowEditorSelection,
 } from "~/workflow/editorModel";
 
-import {
-  loadLanePositions,
-  saveLanePositions,
-} from "~/workflow/canvasLayoutStorage";
+import { loadLanePositions, saveLanePositions } from "~/workflow/canvasLayoutStorage";
 
 import { LaneForm } from "../LaneForm";
 import { TransitionFields } from "../RoutingEditor";
@@ -82,16 +79,19 @@ export function CanvasView({
       LANE_GAP_X * Math.max(0, model.definition.lanes.length - 1),
   );
   const [laneHeights, setLaneHeights] = useState<LaneHeights>({});
+  // Loaded once per mount; the host remounts this view per board (key=boardId
+  // in WorkflowEditor), which is what keeps the state and the storage key in
+  // agreement.
   const [lanePositions, setLanePositions] = useState<LanePositions>(() =>
     loadLanePositions(boardId),
   );
   const applyLanePositions = useCallback(
-    (update: (positions: LanePositions) => LanePositions) => {
-      setLanePositions((positions) => {
-        const next = update(positions);
-        saveLanePositions(boardId, next);
-        return next;
-      });
+    (next: LanePositions) => {
+      // Persist OUTSIDE the state updater — updaters must stay pure (React may
+      // double-invoke them); drag-end and reset are discrete events, so
+      // computing from the render-fresh value is safe.
+      saveLanePositions(boardId, next);
+      setLanePositions(next);
     },
     [boardId],
   );
@@ -106,10 +106,9 @@ export function CanvasView({
     [containerWidth, laneHeights, lanePositions, model.definition],
   );
   const hasMovedLanes = Object.keys(lanePositions).length > 0;
-  const resetLaneLayout = useCallback(
-    () => applyLanePositions(() => ({})),
-    [applyLanePositions],
-  );
+  const resetLaneLayout = useCallback(() => {
+    applyLanePositions({});
+  }, [applyLanePositions]);
   const layoutByLaneKey = useMemo(
     () => new Map(layout.lanes.map((laneLayout) => [laneLayout.laneKey, laneLayout])),
     [layout.lanes],
@@ -188,13 +187,13 @@ export function CanvasView({
     if (move) {
       const current = layoutByLaneKey.get(move.laneKey);
       if (current && (event.delta.x !== 0 || event.delta.y !== 0)) {
-        applyLanePositions((positions) => ({
-          ...positions,
+        applyLanePositions({
+          ...lanePositions,
           [move.laneKey]: {
             x: Math.max(0, Math.round(current.x + event.delta.x)),
             y: Math.max(0, Math.round(current.y + event.delta.y)),
           },
-        }));
+        });
       }
       return;
     }

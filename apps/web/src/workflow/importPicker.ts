@@ -10,24 +10,42 @@ type ViewerMap = Record<string, { id: string; aliases: ReadonlyArray<string> } |
 
 export const isUrl = (s: string): boolean => /^https?:\/\//i.test(s.trim());
 
-/**
- * Normalize a work-item URL for comparison: lowercase host, drop "www.",
- * query, hash, and any trailing slash. Returns null when the string is not a
- * parseable http(s) URL.
- */
-export const normalizeWorkItemUrl = (raw: string): string | null => {
+const parseHttpUrl = (raw: string): URL | null => {
   let url: URL;
   try {
     url = new URL(raw.trim());
   } catch {
     return null;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return null;
-  }
+  return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+};
+
+const normalizedHostPath = (url: URL): string => {
   const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const port = url.port === "" ? "" : `:${url.port}`;
   const path = url.pathname.replace(/\/+$/, "");
-  return `${host}${path}`;
+  return `${host}${port}${path}`;
+};
+
+/**
+ * Normalize a work-item URL's provider-shaped part for identity parsing:
+ * lowercase host (minus "www."), no hash, no query, no trailing slash.
+ * Returns null when the string is not a parseable http(s) URL.
+ */
+export const normalizeWorkItemUrl = (raw: string): string | null => {
+  const url = parseHttpUrl(raw);
+  return url === null ? null : normalizedHostPath(url);
+};
+
+/**
+ * Comparison key for the unknown-host fallback. Unlike identity parsing this
+ * KEEPS the query string — for trackers that address items via query params
+ * (`/view?id=5` vs `/view?id=6`), dropping it would collapse distinct items
+ * into one match.
+ */
+export const workItemUrlComparisonKey = (raw: string): string | null => {
+  const url = parseHttpUrl(raw);
+  return url === null ? null : `${normalizedHostPath(url)}${url.search}`;
 };
 
 /**
@@ -42,7 +60,9 @@ export const workItemUrlIdentity = (raw: string): string | null => {
   if (normalized === null) {
     return null;
   }
-  const github = /^github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)$/i.exec(normalized);
+  // A trailing subpath after the number (…/pull/42/files, …/issues/42/timeline)
+  // still names the same item — people paste from PR tabs.
+  const github = /^github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)(?:\/|$)/i.exec(normalized);
   if (github) {
     // GitHub owner/repo are case-insensitive; the issue number is not.
     return `github:${(github[1] ?? "").toLowerCase()}/${(github[2] ?? "").toLowerCase()}#${github[3]}`;
@@ -50,9 +70,17 @@ export const workItemUrlIdentity = (raw: string): string | null => {
   if (normalized.startsWith("app.asana.com/")) {
     // Asana permalinks come in several generations: /0/<project>/<gid>,
     // /0/<project>/<gid>/f, /1/<workspace>/project/<p>/task/<gid>, and
-    // /1/<workspace>/inbox/.../item/<gid>. The task gid is the last long
-    // numeric segment (ignoring the trailing "/f" focus marker).
+    // /1/<workspace>/inbox/.../item/<gid>. Prefer the segment right after an
+    // explicit task/item marker (later segments may be comment or focus ids);
+    // otherwise the task gid is the last long numeric segment.
     const segments = normalized.split("/").filter((s) => s !== "" && s !== "f");
+    for (const marker of ["task", "item"]) {
+      const at = segments.indexOf(marker);
+      const candidate = at === -1 ? "" : (segments[at + 1] ?? "");
+      if (/^\d{6,}$/.test(candidate)) {
+        return `asana:${candidate}`;
+      }
+    }
     for (let i = segments.length - 1; i >= 1; i -= 1) {
       const segment = segments[i] ?? "";
       if (/^\d{6,}$/.test(segment)) {
@@ -74,8 +102,8 @@ export const urlMatchesRow = (pasted: string, rowUrl: string): boolean => {
   if (pastedIdentity !== null) {
     return pastedIdentity === workItemUrlIdentity(rowUrl);
   }
-  const pastedNormalized = normalizeWorkItemUrl(pasted);
-  return pastedNormalized !== null && pastedNormalized === normalizeWorkItemUrl(rowUrl);
+  const pastedKey = workItemUrlComparisonKey(pasted);
+  return pastedKey !== null && pastedKey === workItemUrlComparisonKey(rowUrl);
 };
 
 export const selectionKey = (r: Pick<ImportableWorkItemView, "sourceId" | "externalId">): string =>

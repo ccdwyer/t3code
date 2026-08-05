@@ -182,9 +182,18 @@ export function WorkflowSidebarList(props: WorkflowSidebarListProps) {
         <WorkflowSidebarNeedsYou
           tickets={attentionTickets}
           onOpenTicket={(ticket) => {
+            // Route through the ticket's own board row when present so the
+            // link stays correct even if boards ever span environments; the
+            // primary env is only the (currently always-true) fallback.
+            const boardRow = rows.find(
+              (row) => row.kind === "board" && row.boardId === ticket.boardId,
+            );
             void navigate({
               to: "/$environmentId/board",
-              params: { environmentId: primaryEnvironmentId },
+              params: {
+                environmentId:
+                  boardRow?.kind === "board" ? boardRow.environmentId : primaryEnvironmentId,
+              },
               search: { boardId: ticket.boardId, ticket: ticket.ticketId },
             });
           }}

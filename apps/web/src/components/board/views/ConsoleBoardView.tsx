@@ -1,10 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import {
-  visibleStuckDiagnosis,
-  type CardUnstickAction,
-} from "~/workflow/stuckDiagnosisView";
+import { visibleStuckDiagnosis, type CardUnstickAction } from "~/workflow/stuckDiagnosisView";
 import type { BoardViewState, BoardViewTicket } from "../BoardView";
 import {
   TIER_COLOR,
@@ -229,10 +226,11 @@ function ConsoleRow({
 }) {
   const tier = tierOf(ticket);
   const ref = useScrollIntoView(selected);
-  // Parked rows already carry their park label through the tier chip; everyone
-  // else gets the server's stuck diagnosis, age-gated by its own displayAfterMs.
+  // Parked rows already carry their park state through the tier chip (even
+  // when re-resolved actions are absent), so gate on STATUS, matching
+  // cardUnstickActions.
   const diagnosis =
-    ticket.parked === undefined ? visibleStuckDiagnosis(ticket.diagnosis, now) : null;
+    ticket.status === "parked" ? null : visibleStuckDiagnosis(ticket.diagnosis, now);
 
   return (
     <article

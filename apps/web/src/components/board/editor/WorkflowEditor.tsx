@@ -621,6 +621,10 @@ export function WorkflowEditor({
         </div>
       ) : (
         <CanvasView
+          // Remount per board: lane-position state is loaded once on mount, so
+          // a boardId change without a remount would leak board A's layout
+          // into board B's storage key.
+          key={boardId}
           model={model}
           selection={selection}
           disabled={saving}

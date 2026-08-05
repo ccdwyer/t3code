@@ -14,12 +14,33 @@ type TicketDiffLoadState =
   | { readonly status: "loaded"; readonly diff: TicketDiffData }
   | { readonly status: "error"; readonly message: string };
 
+/**
+ * How a diff-load error should render. The no-worktree fragment alone is not
+ * enough to call the state benign: a ticket that already ran steps and THEN
+ * lost its worktree ref is a real (if quiet) loss, not a fresh ticket.
+ */
+export type TicketDiffErrorKind = "pre-run" | "worktree-missing" | "failure";
+
+export const classifyTicketDiffError = (
+  message: string,
+  hasStartedWork: boolean,
+): TicketDiffErrorKind => {
+  if (!isTicketNoWorktreeMessage(message)) {
+    return "failure";
+  }
+  return hasStartedWork ? "worktree-missing" : "pre-run";
+};
+
 export function TicketDiff({
   api,
   ticketId,
+  hasStartedWork = false,
 }: {
   readonly api: EnvironmentApi;
   readonly ticketId: TicketId;
+  /** True once the ticket has any step run — flips the no-worktree copy from
+   *  "no changes yet" to an honest "worktree no longer attached". */
+  readonly hasStartedWork?: boolean | undefined;
 }) {
   const { resolvedTheme } = useTheme();
   const [loadState, setLoadState] = useState<TicketDiffLoadState>({ status: "loading" });
@@ -55,15 +76,29 @@ export function TicketDiff({
   }
 
   if (loadState.status === "error") {
+    const kind = classifyTicketDiffError(loadState.message, hasStartedWork);
     // A ticket that hasn't run a step yet has no worktree — that's the normal
     // starting state, not a failure, so render a quiet empty card for it.
-    if (isTicketNoWorktreeMessage(loadState.message)) {
+    if (kind === "pre-run") {
       return (
         <section
           className="shrink-0 rounded-md border border-border/70 bg-card/35 p-3 text-sm text-muted-foreground"
           data-testid="ticket-diff-no-worktree"
         >
           No changes yet — a worktree is created when the ticket&apos;s first step runs.
+        </section>
+      );
+    }
+    // Work happened but the worktree ref is gone (GC'd, moved, projection
+    // drift): say so honestly — neither a false "no changes yet" nor a red
+    // alarm for what may be routine post-land cleanup.
+    if (kind === "worktree-missing") {
+      return (
+        <section
+          className="shrink-0 rounded-md border border-warning/40 bg-warning/8 p-3 text-sm text-warning-foreground"
+          data-testid="ticket-diff-worktree-missing"
+        >
+          This ticket&apos;s worktree is no longer attached — the accumulated diff is unavailable.
         </section>
       );
     }

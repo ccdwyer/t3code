@@ -843,7 +843,13 @@ export function TicketDrawer({
             </section>
 
             {api ? <TicketArtifacts api={api} ticketId={detail.ticket.ticketId} /> : null}
-            {api ? <TicketDiff api={api} ticketId={TicketId.make(detail.ticket.ticketId)} /> : null}
+            {api ? (
+              <TicketDiff
+                api={api}
+                ticketId={TicketId.make(detail.ticket.ticketId)}
+                hasStartedWork={detail.steps.length > 0}
+              />
+            ) : null}
           </div>
           <footer className="shrink-0 space-y-2 border-t border-border px-3 py-2">
             {onMove && laneActions.length > 0 ? (
@@ -2977,7 +2983,11 @@ export function TicketFullscreen({
             ) : null}
             {api ? (
               <div className="shrink-0">
-                <TicketDiff api={api} ticketId={TicketId.make(detail.ticket.ticketId)} />
+                <TicketDiff
+                  api={api}
+                  ticketId={TicketId.make(detail.ticket.ticketId)}
+                  hasStartedWork={detail.steps.length > 0}
+                />
               </div>
             ) : null}
           </div>

@@ -137,7 +137,11 @@ describe("selection + grouping", () => {
       expect(applyPickerFilters(rows, { ...base, search: pasted }, {})).toHaveLength(1);
     }
     expect(
-      applyPickerFilters(rows, { ...base, search: "https://github.com/acme/widgets/issues/43" }, {}),
+      applyPickerFilters(
+        rows,
+        { ...base, search: "https://github.com/acme/widgets/issues/43" },
+        {},
+      ),
     ).toHaveLength(0);
     expect(
       applyPickerFilters(rows, { ...base, search: "https://github.com/acme/other/issues/42" }, {}),
@@ -153,6 +157,23 @@ describe("workItemUrlIdentity", () => {
     expect(workItemUrlIdentity("https://github.com/acme/widgets/pull/7?diff=split")).toBe(
       "github:acme/widgets#7",
     );
+  });
+
+  it("matches deep-linked github tabs to the same item", () => {
+    expect(workItemUrlIdentity("https://github.com/acme/widgets/pull/7/files")).toBe(
+      "github:acme/widgets#7",
+    );
+    expect(workItemUrlIdentity("https://github.com/acme/widgets/issues/7/timeline")).toBe(
+      "github:acme/widgets#7",
+    );
+  });
+
+  it("prefers the segment after a task/item marker over later long numerics", () => {
+    expect(
+      workItemUrlIdentity(
+        "https://app.asana.com/1/1100000000000001/project/1200000000000001/task/1200000000000042/comment/1300000000000099",
+      ),
+    ).toBe("asana:1200000000000042");
   });
 
   it("extracts the asana task gid across permalink generations", () => {
@@ -193,6 +214,27 @@ describe("urlMatchesRow", () => {
     ).toBe(true);
     expect(
       urlMatchesRow("https://tracker.example.com/item/5", "https://tracker.example.com/item/6"),
+    ).toBe(false);
+  });
+
+  it("keeps query params significant in the fallback comparison", () => {
+    expect(
+      urlMatchesRow(
+        "https://tracker.example.com/view?id=5",
+        "https://tracker.example.com/view?id=6",
+      ),
+    ).toBe(false);
+    expect(
+      urlMatchesRow(
+        "https://tracker.example.com/view?id=5",
+        "http://tracker.example.com/view?id=5",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps distinct ports distinct in the fallback comparison", () => {
+    expect(
+      urlMatchesRow("http://tracker.example.com:8080/item/5", "http://tracker.example.com/item/5"),
     ).toBe(false);
   });
 

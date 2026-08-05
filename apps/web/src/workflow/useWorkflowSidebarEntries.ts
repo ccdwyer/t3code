@@ -15,6 +15,7 @@ import { workflowEnvironment } from "../state/workflow";
 import {
   groupAttentionByBoard,
   resolveWorkflowSidebarAttentionPill,
+  sortNeedsAttentionTickets,
   workflowBoardAttentionKey,
   type WorkflowSidebarAttentionPill,
   type WorkflowSidebarAttentionSummary,
@@ -53,6 +54,12 @@ export type WorkflowSidebarListRow = WorkflowSidebarBoardRow | WorkflowSidebarPr
 export interface WorkflowSidebarEntriesState {
   readonly boards: ReadonlyArray<WorkflowSidebarBoardRow>;
   readonly rows: ReadonlyArray<WorkflowSidebarListRow>;
+  /**
+   * Every needs-attention ticket across the primary environment's boards,
+   * inbox-sorted (urgency, then longest-waiting). Feeds the aggregate
+   * Needs You section above the board rows.
+   */
+  readonly attentionTickets: ReadonlyArray<WorkflowNeedsAttentionTicketView>;
   readonly pending: boolean;
   readonly errorsByProject: ReadonlyMap<ProjectId, string>;
   /**
@@ -87,6 +94,7 @@ export function buildWorkflowSidebarEntries(input: {
 }): {
   readonly boards: ReadonlyArray<WorkflowSidebarBoardRow>;
   readonly rows: ReadonlyArray<WorkflowSidebarListRow>;
+  readonly attentionTickets: ReadonlyArray<WorkflowNeedsAttentionTicketView>;
   readonly pending: boolean;
   readonly errorsByProject: ReadonlyMap<ProjectId, string>;
   readonly isEmpty: boolean;
@@ -174,6 +182,10 @@ export function buildWorkflowSidebarEntries(input: {
   return {
     boards,
     rows,
+    attentionTickets:
+      input.primaryEnvironmentId === null || input.attentionTickets === null
+        ? []
+        : sortNeedsAttentionTickets(input.attentionTickets),
     pending: anyPending,
     errorsByProject,
     isEmpty,
@@ -211,6 +223,7 @@ function readProjectBoardsResult(
 const PENDING_STATE: Omit<WorkflowSidebarEntriesState, "refreshProject" | "refreshAll"> = {
   boards: [],
   rows: [],
+  attentionTickets: [],
   pending: true,
   errorsByProject: new Map(),
   isEmpty: false,

@@ -7,6 +7,7 @@ import {
   dominantAttentionKind,
   groupAttentionByBoard,
   resolveWorkflowSidebarAttentionPill,
+  sortNeedsAttentionTickets,
   workflowBoardAttentionKey,
 } from "./workflowSidebarStatus";
 
@@ -132,5 +133,61 @@ describe("attentionKindToneClass", () => {
     expect(attentionKindToneClass("parked_issue")).toContain("border-red");
     expect(attentionKindToneClass("parked_waiting")).toContain("border-yellow");
     expect(attentionKindToneClass(null)).toContain("border-yellow");
+  });
+});
+
+describe("sortNeedsAttentionTickets", () => {
+  const ticket = (
+    id: string,
+    kind: Parameters<typeof attentionKindToneClass>[0],
+    over: Partial<{ updatedAt: string; parkedAt: string | null }> = {},
+  ) =>
+    ({
+      ticketId: id,
+      boardId: BoardId.make("p__b"),
+      boardName: "Board",
+      title: id,
+      status: "blocked",
+      currentLaneKey: "work",
+      attentionKind: kind,
+      attentionReason: null,
+      updatedAt: over.updatedAt ?? "2026-08-05T10:00:00Z",
+      parkedAt: over.parkedAt ?? null,
+      slaBreachedAt: null,
+      slaBreachedReason: null,
+    }) as never;
+
+  it("orders by kind precedence, then longest-waiting, then ticketId", () => {
+    const sorted = sortNeedsAttentionTickets([
+      ticket("waiting-new", "waiting_for_input", { updatedAt: "2026-08-05T11:00:00Z" }),
+      ticket("blocked-1", "blocked"),
+      ticket("waiting-old", "waiting_for_input", { updatedAt: "2026-08-05T09:00:00Z" }),
+      ticket("tie-b", "parked_waiting"),
+      ticket("tie-a", "parked_waiting"),
+    ]);
+    expect(sorted.map((t: { ticketId: string }) => t.ticketId)).toEqual([
+      "blocked-1",
+      "waiting-old",
+      "waiting-new",
+      "tie-a",
+      "tie-b",
+    ]);
+  });
+
+  it("ages parked rows from parkedAt, not updatedAt", () => {
+    const sorted = sortNeedsAttentionTickets([
+      ticket("parked-recent", "parked_issue", {
+        updatedAt: "2026-08-05T09:00:00Z",
+        parkedAt: "2026-08-05T11:30:00Z",
+      }),
+      ticket("parked-old", "parked_issue", {
+        updatedAt: "2026-08-05T11:59:00Z",
+        parkedAt: "2026-08-05T08:00:00Z",
+      }),
+    ]);
+    expect(sorted.map((t: { ticketId: string }) => t.ticketId)).toEqual([
+      "parked-old",
+      "parked-recent",
+    ]);
   });
 });

@@ -128,6 +128,27 @@ export function compareAttentionKindPrecedence(
 }
 
 /**
+ * Inbox ordering for the cross-board Needs You list: most urgent kind first
+ * (total precedence), then whoever has been waiting longest. Parked rows age
+ * from `parkedAt` (the projection bumps `updatedAt` on any edit); everything
+ * else ages from `updatedAt`. Ties fall back to ticketId so the order is
+ * stable across refreshes.
+ */
+export function sortNeedsAttentionTickets(
+  tickets: ReadonlyArray<WorkflowNeedsAttentionTicketView>,
+): ReadonlyArray<WorkflowNeedsAttentionTicketView> {
+  return [...tickets].sort((left, right) => {
+    const byKind = compareAttentionKindPrecedence(left.attentionKind, right.attentionKind);
+    if (byKind !== 0) return byKind;
+    const leftSince = left.parkedAt ?? left.updatedAt;
+    const rightSince = right.parkedAt ?? right.updatedAt;
+    const bySince = leftSince.localeCompare(rightSince);
+    if (bySince !== 0) return bySince;
+    return left.ticketId.localeCompare(right.ticketId);
+  });
+}
+
+/**
  * Pick the dominant kind from a list (total precedence). Used by tests and
  * callers that already have kinds without ticket rows.
  */

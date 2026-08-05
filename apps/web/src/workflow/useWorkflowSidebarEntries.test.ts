@@ -573,6 +573,7 @@ describe("resolveRenderSnapshot (render-phase scope-change guard)", () => {
     const snapshot = {
       boards: [],
       rows: [],
+      attentionTickets: [],
       pending: false,
       errorsByProject: new Map(),
       isEmpty: true,
@@ -586,6 +587,7 @@ describe("resolveRenderSnapshot (render-phase scope-change guard)", () => {
     const staleSnapshot = {
       boards: [],
       rows: [],
+      attentionTickets: [],
       pending: false,
       errorsByProject: new Map(),
       isEmpty: true,

@@ -16,6 +16,7 @@ import {
   type WorkflowSidebarEligibleProject,
 } from "../workflow/useWorkflowSidebarEntries";
 import { isSidebarBoardRouteActive, type SidebarBoardRouteIdentity } from "./Sidebar.logic";
+import { WorkflowSidebarNeedsYou } from "./WorkflowSidebarNeedsYou";
 import {
   SidebarV2WorkflowBoardRow,
   SidebarV2WorkflowProjectErrorRow,
@@ -57,10 +58,11 @@ export function WorkflowSidebarList(props: WorkflowSidebarListProps) {
     [primaryEnvironmentId, projects, scopedProject],
   );
 
-  const { rows, pending, isEmpty, refreshProject, refreshAll } = useWorkflowSidebarEntries({
-    eligibleProjects,
-    primaryEnvironmentId,
-  });
+  const { rows, attentionTickets, pending, isEmpty, refreshProject, refreshAll } =
+    useWorkflowSidebarEntries({
+      eligibleProjects,
+      primaryEnvironmentId,
+    });
 
   // Mode-enter refresh: this component mounts only on workflows mode enter.
   useEffect(() => {
@@ -175,31 +177,45 @@ export function WorkflowSidebarList(props: WorkflowSidebarListProps) {
   }
 
   return (
-    <ul role="list" data-testid="sidebar-v2-workflows-list" className="flex flex-col gap-px">
-      {rows.map((row) => {
-        if (row.kind === "project-error") {
+    <>
+      {primaryEnvironmentId !== null ? (
+        <WorkflowSidebarNeedsYou
+          tickets={attentionTickets}
+          onOpenTicket={(ticket) => {
+            void navigate({
+              to: "/$environmentId/board",
+              params: { environmentId: primaryEnvironmentId },
+              search: { boardId: ticket.boardId, ticket: ticket.ticketId },
+            });
+          }}
+        />
+      ) : null}
+      <ul role="list" data-testid="sidebar-v2-workflows-list" className="flex flex-col gap-px">
+        {rows.map((row) => {
+          if (row.kind === "project-error") {
+            return (
+              <SidebarV2WorkflowProjectErrorRow
+                key={`error:${row.environmentId}:${row.projectId}`}
+                row={row}
+                onRetry={handleRetry}
+              />
+            );
+          }
           return (
-            <SidebarV2WorkflowProjectErrorRow
-              key={`error:${row.environmentId}:${row.projectId}`}
+            <SidebarV2WorkflowBoardRow
+              key={`${row.environmentId}:${row.projectId}:${row.boardId}`}
               row={row}
-              onRetry={handleRetry}
+              isActive={isSidebarBoardRouteActive(activeRouteBoard, {
+                environmentId: row.environmentId,
+                projectId: row.projectId,
+                boardId: row.boardId,
+              })}
+              onActivate={handleActivate}
+              onDelete={handleDelete}
             />
           );
-        }
-        return (
-          <SidebarV2WorkflowBoardRow
-            key={`${row.environmentId}:${row.projectId}:${row.boardId}`}
-            row={row}
-            isActive={isSidebarBoardRouteActive(activeRouteBoard, {
-              environmentId: row.environmentId,
-              projectId: row.projectId,
-              boardId: row.boardId,
-            })}
-            onActivate={handleActivate}
-            onDelete={handleDelete}
-          />
-        );
-      })}
-    </ul>
+        })}
+      </ul>
+    </>
   );
 }

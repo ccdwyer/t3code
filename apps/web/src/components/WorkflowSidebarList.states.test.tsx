@@ -67,6 +67,7 @@ function entriesState(
   return {
     boards: [],
     rows: [],
+    attentionTickets: [],
     pending: false,
     errorsByProject: new Map(),
     isEmpty: false,

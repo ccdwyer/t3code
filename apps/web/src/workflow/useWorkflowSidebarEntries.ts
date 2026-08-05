@@ -179,13 +179,19 @@ export function buildWorkflowSidebarEntries(input: {
   const isEmpty =
     !anyPending && allSucceeded && boards.length === 0 && projectErrorRows.length === 0;
 
+  // The attention list is environment-wide, but the inbox must respect the
+  // same scope as the rows: with the sidebar filtered to one project, another
+  // project's tickets have no board row to land on and must not be counted.
+  const visibleBoardIds = new Set(boards.map((board) => board.boardId as string));
   return {
     boards,
     rows,
     attentionTickets:
       input.primaryEnvironmentId === null || input.attentionTickets === null
         ? []
-        : sortNeedsAttentionTickets(input.attentionTickets),
+        : sortNeedsAttentionTickets(
+            input.attentionTickets.filter((ticket) => visibleBoardIds.has(ticket.boardId)),
+          ),
     pending: anyPending,
     errorsByProject,
     isEmpty,

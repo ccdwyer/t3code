@@ -1,6 +1,8 @@
+import type { WorkflowStuckDiagnosis } from "@t3tools/contracts";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import type { CardUnstickAction } from "~/workflow/stuckDiagnosisView";
 import type { LaneColumnView } from "./LaneColumn";
 import { ConsoleBoardView } from "./views/ConsoleBoardView";
 import { SpineBoardView } from "./views/SpineBoardView";
@@ -24,6 +26,8 @@ export interface BoardViewTicket {
       }
     | undefined;
   readonly attentionKind?: string | undefined;
+  /** Server-derived "why is this ticket stuck" — see stuckDiagnosisView. */
+  readonly diagnosis?: WorkflowStuckDiagnosis | undefined;
   readonly currentStepLabel?: string | undefined;
   readonly slaBreachedAt?: string | undefined;
   // Park-in-place details — present while status is "parked". `actions` is
@@ -112,6 +116,7 @@ export function BoardView({
   state,
   onOpen,
   onParkAction,
+  onUnstickAction,
   pendingParkActionTicketIds,
   mode,
   onModeChange,
@@ -129,6 +134,8 @@ export function BoardView({
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  /** Dispatch one of the diagnosis's card-safe unstick actions. */
+  readonly onUnstickAction?: ((ticketId: string, action: CardUnstickAction) => void) | undefined;
   // Tickets with a park action in flight (from any surface); threaded to each
   // card so the whole ticket's recovery controls share one disable.
   readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
@@ -193,6 +200,7 @@ export function BoardView({
           renderTicketDetail={renderTicketDetail}
           onCloseDetail={onCloseDetail}
           onParkAction={onParkAction}
+          onUnstickAction={onUnstickAction}
           pendingParkActionTicketIds={pendingParkActionTicketIds}
         />
       ) : (
@@ -201,6 +209,7 @@ export function BoardView({
           onOpen={onOpen}
           renderTicketDetail={renderTicketDetail}
           onParkAction={onParkAction}
+          onUnstickAction={onUnstickAction}
           pendingParkActionTicketIds={pendingParkActionTicketIds}
         />
       )}

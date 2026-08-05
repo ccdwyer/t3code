@@ -34,6 +34,7 @@ import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { countNeedsAttention } from "../workflow/agingFormat";
 import { useNowTick } from "../workflow/useNowTick";
 import { emptyBoardState, type BoardState } from "../workflow/boardState";
+import type { CardUnstickAction } from "../workflow/stuckDiagnosisView";
 import {
   answerTicketStep,
   createTicket,
@@ -613,6 +614,33 @@ function WorkflowBoardRouteView() {
     setEditorOpen(false);
     setSelectedTicketId(TicketId.make(ticketId));
   }, []);
+  // Card-safe unstick actions from the server's stuck diagnosis. Every arm
+  // dispatches an EXISTING RPC; failures surface as toasts and the live board
+  // subscription carries the state change back.
+  const handleUnstickAction = useCallback(
+    (ticketId: string, action: CardUnstickAction) => {
+      switch (action.type) {
+        case "runLane":
+          void api.runLane({ ticketId: TicketId.make(ticketId) }).then(undefined, (error: unknown) => {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Couldn't run the lane",
+                description: actionErrorMessage(error),
+              }),
+            );
+          });
+          return;
+        case "moveToLane":
+          void handleMove(ticketId, action.toLane);
+          return;
+        case "openDependency":
+          handleOpenTicket(action.ticketId);
+          return;
+      }
+    },
+    [api, handleMove, handleOpenTicket],
+  );
   const closeTicketDrawer = useCallback(() => {
     setSelectedTicketId(null);
   }, []);
@@ -1075,6 +1103,7 @@ function WorkflowBoardRouteView() {
                 onMove={handleMove}
                 onOpen={handleOpenTicket}
                 onParkAction={handleParkAction}
+                onUnstickAction={handleUnstickAction}
                 pendingParkActionTicketIds={pendingParkActionTicketIds}
               />
               {boardId && !boardHasSources ? (

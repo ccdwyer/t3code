@@ -1,6 +1,10 @@
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import {
+  visibleStuckDiagnosis,
+  type CardUnstickAction,
+} from "~/workflow/stuckDiagnosisView";
 import type { BoardViewState, BoardViewTicket } from "../BoardView";
 import {
   TIER_COLOR,
@@ -56,6 +60,7 @@ export function SpineBoardView({
   state,
   onOpen,
   onParkAction,
+  onUnstickAction,
   pendingParkActionTicketIds,
   renderTicketDetail,
   onCloseDetail,
@@ -65,6 +70,7 @@ export function SpineBoardView({
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  readonly onUnstickAction?: ((ticketId: string, action: CardUnstickAction) => void) | undefined;
   readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
   readonly renderTicketDetail?: ((ticketId: string) => ReactNode) | undefined;
   readonly onCloseDetail?: (() => void) | undefined;
@@ -106,8 +112,13 @@ export function SpineBoardView({
   const cursorLane = models[cursor.col]?.lane;
   const selected = cursor.id === undefined ? undefined : state.ticketById[cursor.id];
   const options = useMemo(
-    () => optionsFor(selected, onParkAction === undefined ? undefined : runParkAction),
-    [onParkAction, runParkAction, selected],
+    () =>
+      optionsFor(
+        selected,
+        onParkAction === undefined ? undefined : runParkAction,
+        onUnstickAction === undefined ? undefined : { now, run: onUnstickAction },
+      ),
+    [now, onParkAction, onUnstickAction, runParkAction, selected],
   );
   const openTicket = openId === null ? undefined : state.ticketById[openId];
 
@@ -451,6 +462,9 @@ function SpineCard({
   const ref = useScrollIntoView(selected);
   const parked = ticket.parked;
   const actions = parked?.actions ?? [];
+  // The park reason already explains a parked card; everyone else gets the
+  // server's stuck diagnosis (age-gated by its own displayAfterMs).
+  const diagnosis = parked === undefined ? visibleStuckDiagnosis(ticket.diagnosis, now) : null;
 
   return (
     <article
@@ -531,6 +545,16 @@ function SpineCard({
             .filter((part): part is string => part !== undefined)
             .join(" · ")}
         </p>
+        {diagnosis !== null ? (
+          <p
+            className="truncate text-2xs"
+            style={{ color }}
+            title={diagnosis.detail ?? diagnosis.summary}
+            data-testid="spine-diagnosis"
+          >
+            {diagnosis.summary} · {ageFrom(diagnosis.since, now)}
+          </p>
+        ) : null}
 
         {/* Recovery actions: full width, wrapped, never truncated or hidden. */}
         {parked !== undefined && actions.length > 0 && onParkAction !== undefined ? (

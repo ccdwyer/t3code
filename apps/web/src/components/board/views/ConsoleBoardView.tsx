@@ -1,6 +1,10 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import {
+  visibleStuckDiagnosis,
+  type CardUnstickAction,
+} from "~/workflow/stuckDiagnosisView";
 import type { BoardViewState, BoardViewTicket } from "../BoardView";
 import {
   TIER_COLOR,
@@ -32,6 +36,7 @@ export function ConsoleBoardView({
   state,
   onOpen,
   onParkAction,
+  onUnstickAction,
   pendingParkActionTicketIds,
   renderTicketDetail,
 }: {
@@ -40,6 +45,7 @@ export function ConsoleBoardView({
   readonly onParkAction?:
     | ((ticketId: string, actionIndex: number, parkedEventId: string) => Promise<void>)
     | undefined;
+  readonly onUnstickAction?: ((ticketId: string, action: CardUnstickAction) => void) | undefined;
   readonly pendingParkActionTicketIds?: ReadonlySet<string> | undefined;
   readonly renderTicketDetail?: ((ticketId: string) => ReactNode) | undefined;
 }) {
@@ -105,8 +111,13 @@ export function ConsoleBoardView({
     [onParkAction],
   );
   const options = useMemo(
-    () => optionsFor(selected, onParkAction === undefined ? undefined : runParkAction),
-    [onParkAction, runParkAction, selected],
+    () =>
+      optionsFor(
+        selected,
+        onParkAction === undefined ? undefined : runParkAction,
+        onUnstickAction === undefined ? undefined : { now, run: onUnstickAction },
+      ),
+    [now, onParkAction, onUnstickAction, runParkAction, selected],
   );
 
   /**
@@ -218,6 +229,10 @@ function ConsoleRow({
 }) {
   const tier = tierOf(ticket);
   const ref = useScrollIntoView(selected);
+  // Parked rows already carry their park label through the tier chip; everyone
+  // else gets the server's stuck diagnosis, age-gated by its own displayAfterMs.
+  const diagnosis =
+    ticket.parked === undefined ? visibleStuckDiagnosis(ticket.diagnosis, now) : null;
 
   return (
     <article
@@ -288,6 +303,16 @@ function ConsoleRow({
           </span>
         ) : null}
       </div>
+      {diagnosis !== null ? (
+        <p
+          className="mt-0.5 truncate pl-1 text-[10px]"
+          style={{ color: TIER_COLOR[tier] }}
+          title={diagnosis.detail ?? diagnosis.summary}
+          data-testid="console-diagnosis"
+        >
+          {diagnosis.summary} · {ageFrom(diagnosis.since, now)}
+        </p>
+      ) : null}
     </article>
   );
 }

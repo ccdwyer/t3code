@@ -1,3 +1,8 @@
+import {
+  cardUnstickActions,
+  type CardUnstickAction,
+} from "~/workflow/stuckDiagnosisView";
+
 import type { BoardViewState, BoardViewTicket } from "../BoardView";
 import type { LaneColumnView } from "../LaneColumn";
 
@@ -156,13 +161,18 @@ export interface TicketOption {
 /**
  * The numbered actions a selected ticket offers.
  *
- * Only ever park-recovery actions the server actually resolved: when `actions`
- * is absent the board definition changed under the park and there is nothing
- * safe to offer, so the list is empty rather than guessed.
+ * Only ever actions the server actually resolved — park-recovery actions for a
+ * parked ticket (when `actions` is absent the board definition changed under
+ * the park and there is nothing safe to offer), or the diagnosis's card-safe
+ * unstick actions for a stuck one.
  */
 export const optionsFor = (
   ticket: BoardViewTicket | undefined,
   onParkAction: ((ticketId: string, index: number, parkedEventId: string) => void) | undefined,
+  unstick?: {
+    readonly now: number;
+    readonly run: (ticketId: string, action: CardUnstickAction) => void;
+  },
 ): ReadonlyArray<TicketOption> => {
   // Park actions only bind while the ticket is ACTUALLY parked.
   //
@@ -171,13 +181,23 @@ export const optionsFor = (
   // details" is not enough on its own. Requiring the live status keeps the
   // digits owned by exactly one of the two: parked tickets get park actions,
   // and everything else leaves the digits free for a question form.
-  if (ticket?.status !== "parked") return [];
-  if (ticket.parked === undefined || onParkAction === undefined) return [];
-  const parked = ticket.parked;
-  return (parked.actions ?? []).map((action, index) => ({
+  if (ticket?.status === "parked") {
+    if (ticket.parked === undefined || onParkAction === undefined) return [];
+    const parked = ticket.parked;
+    return (parked.actions ?? []).map((action, index) => ({
+      label: action.label,
+      run: () => {
+        onParkAction(ticket.ticketId, index, parked.parkedEventId);
+      },
+    }));
+  }
+  // Stuck-diagnosis unstick actions: `cardUnstickActions` already excludes
+  // parked and waiting tickets, so the digits keep exactly one owner.
+  if (ticket === undefined || unstick === undefined) return [];
+  return cardUnstickActions(ticket, unstick.now).map((action) => ({
     label: action.label,
     run: () => {
-      onParkAction(ticket.ticketId, index, parked.parkedEventId);
+      unstick.run(ticket.ticketId, action);
     },
   }));
 };

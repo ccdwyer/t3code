@@ -68,3 +68,51 @@ describe("tierOf", () => {
     expect(tierOf(ticket({ status: "parked", parked: parkedDetails }))).toBe("issue");
   });
 });
+
+describe("optionsFor unstick actions", () => {
+  const NOW = Date.parse("2026-08-05T12:00:00Z");
+  const stuck = (status: string) =>
+    ticket({
+      status,
+      diagnosis: {
+        kind: "idle_unstarted",
+        summary: "Sitting in an auto lane without a pipeline run",
+        since: new Date(NOW - 600_000).toISOString(),
+        displayAfterMs: 60_000,
+        actions: [
+          { type: "runLane", label: "Start work" },
+          { type: "openTicket", label: "Open" },
+        ],
+      },
+    } as Partial<BoardViewTicket>);
+
+  it("offers the diagnosis's card-safe actions for a stuck, unparked ticket", () => {
+    const ran: Array<string> = [];
+    const options = optionsFor(stuck("idle"), undefined, {
+      now: NOW,
+      run: (ticketId, action) => {
+        ran.push(`${ticketId}:${action.type}`);
+      },
+    });
+    expect(options.map((option) => option.label)).toEqual(["Start work"]);
+    options[0]?.run();
+    expect(ran).toEqual(["ticket-1:runLane"]);
+  });
+
+  it("keeps the digits with park actions when the ticket is parked", () => {
+    const parked = ticket({
+      status: "parked",
+      parked: parkedDetails,
+      diagnosis: (stuck("parked") as { diagnosis?: unknown }).diagnosis,
+    } as Partial<BoardViewTicket>);
+    const options = optionsFor(parked, () => {}, {
+      now: NOW,
+      run: () => {},
+    });
+    expect(options.map((option) => option.label)).toEqual(["Retry"]);
+  });
+
+  it("offers nothing without an unstick runner", () => {
+    expect(optionsFor(stuck("idle"), undefined)).toHaveLength(0);
+  });
+});

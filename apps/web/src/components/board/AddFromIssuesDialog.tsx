@@ -22,6 +22,7 @@ import {
   applyPickerFilters,
   defaultChecked,
   groupSelectedBySource,
+  isUrl,
   selectionKey,
   type FilterState,
 } from "~/workflow/importPicker";
@@ -275,8 +276,8 @@ export function AddFromIssuesDialog(props: {
                     const value = e.currentTarget.value;
                     setFilter((f) => ({ ...f, search: value }));
                   }}
-                  placeholder="Search or paste a URL…"
-                  aria-label="Search or paste a URL"
+                  placeholder="Search, or paste an issue/task URL…"
+                  aria-label="Search, or paste an issue or task URL"
                 />
                 <div className="flex flex-wrap items-center gap-3 text-xs">
                   <label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground">
@@ -347,7 +348,15 @@ export function AddFromIssuesDialog(props: {
                 )}
 
                 {visibleItems.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No importable items found.</p>
+                  isUrl(filter.search) ? (
+                    <p className="text-xs text-muted-foreground" data-testid="url-miss-notice">
+                      That URL doesn&apos;t match any loaded item. Only items inside each
+                      source&apos;s configured scope are searchable here (up to the first 500 per
+                      source) — widen the source&apos;s scope in the workflow editor to reach it.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No importable items found.</p>
+                  )
                 ) : (
                   <ul className="space-y-1.5">
                     {visibleItems.map((row) => {

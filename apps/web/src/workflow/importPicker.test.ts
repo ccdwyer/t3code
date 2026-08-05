@@ -6,8 +6,12 @@ import {
   groupSelectedBySource,
   isUrl,
   selectionKey,
+  urlMatchesRow,
+  workItemUrlIdentity,
   type FilterState,
 } from "./importPicker.ts";
+
+const base: FilterState = { search: "", assignedToMe: false, hideTasked: false };
 
 const row = (over: Partial<Parameters<typeof applyPickerFilters>[0][number]> = {}) => ({
   provider: "github" as const,
@@ -25,8 +29,6 @@ const row = (over: Partial<Parameters<typeof applyPickerFilters>[0][number]> = {
 });
 
 describe("applyPickerFilters", () => {
-  const base: FilterState = { search: "", assignedToMe: false, hideTasked: false };
-
   it("hide tasked drops mapped rows", () => {
     const out = applyPickerFilters(
       [row({ mappedTicketId: "t1" as any }), row({ externalId: "2" })],
@@ -120,5 +122,87 @@ describe("selection + grouping", () => {
   it("isUrl detects http(s) urls", () => {
     expect(isUrl("https://x/y")).toBe(true);
     expect(isUrl("fix bug")).toBe(false);
+  });
+
+  it("url search matches through normalization variants", () => {
+    const rows = [row({ url: "https://github.com/acme/widgets/issues/42" })];
+    for (const pasted of [
+      "https://github.com/acme/widgets/issues/42",
+      "https://github.com/acme/widgets/issues/42/",
+      "https://github.com/acme/widgets/issues/42?ref=notifications#issuecomment-1",
+      "https://www.github.com/acme/widgets/issues/42",
+      "http://github.com/acme/widgets/issues/42",
+      "https://github.com/ACME/widgets/pull/42",
+    ]) {
+      expect(applyPickerFilters(rows, { ...base, search: pasted }, {})).toHaveLength(1);
+    }
+    expect(
+      applyPickerFilters(rows, { ...base, search: "https://github.com/acme/widgets/issues/43" }, {}),
+    ).toHaveLength(0);
+    expect(
+      applyPickerFilters(rows, { ...base, search: "https://github.com/acme/other/issues/42" }, {}),
+    ).toHaveLength(0);
+  });
+});
+
+describe("workItemUrlIdentity", () => {
+  it("identifies github issue and pull urls as the same item", () => {
+    expect(workItemUrlIdentity("https://github.com/Acme/Widgets/issues/7")).toBe(
+      "github:acme/widgets#7",
+    );
+    expect(workItemUrlIdentity("https://github.com/acme/widgets/pull/7?diff=split")).toBe(
+      "github:acme/widgets#7",
+    );
+  });
+
+  it("extracts the asana task gid across permalink generations", () => {
+    expect(workItemUrlIdentity("https://app.asana.com/0/1200000000000001/1200000000000042")).toBe(
+      "asana:1200000000000042",
+    );
+    expect(workItemUrlIdentity("https://app.asana.com/0/1200000000000001/1200000000000042/f")).toBe(
+      "asana:1200000000000042",
+    );
+    expect(
+      workItemUrlIdentity(
+        "https://app.asana.com/1/1100000000000001/project/1200000000000001/task/1200000000000042",
+      ),
+    ).toBe("asana:1200000000000042");
+  });
+
+  it("identifies jira browse urls case-insensitively on the key prefix", () => {
+    expect(workItemUrlIdentity("https://acme.atlassian.net/browse/PROJ-12")).toBe(
+      "jira:acme.atlassian.net/PROJ-12",
+    );
+    expect(workItemUrlIdentity("https://acme.atlassian.net/browse/proj-12/")).toBe(
+      "jira:acme.atlassian.net/PROJ-12",
+    );
+  });
+
+  it("returns null for non-provider or unparseable urls", () => {
+    expect(workItemUrlIdentity("https://example.com/things/9")).toBeNull();
+    expect(workItemUrlIdentity("not a url")).toBeNull();
+    expect(workItemUrlIdentity("ftp://github.com/a/b/issues/1")).toBeNull();
+    expect(workItemUrlIdentity("https://app.asana.com/0/browse")).toBeNull();
+  });
+});
+
+describe("urlMatchesRow", () => {
+  it("falls back to normalized comparison for unknown hosts", () => {
+    expect(
+      urlMatchesRow("https://tracker.example.com/item/5/", "http://tracker.example.com/item/5"),
+    ).toBe(true);
+    expect(
+      urlMatchesRow("https://tracker.example.com/item/5", "https://tracker.example.com/item/6"),
+    ).toBe(false);
+  });
+
+  it("never cross-matches identity urls against lookalike plain urls", () => {
+    // Pasted parses to a github identity; the row is a different provider shape.
+    expect(
+      urlMatchesRow(
+        "https://github.com/acme/widgets/issues/7",
+        "https://example.com/github.com/acme/widgets/issues/7",
+      ),
+    ).toBe(false);
   });
 });

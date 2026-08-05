@@ -50,6 +50,8 @@ import {
   WorkflowResolveBoardProposalResult,
   WorkflowRevertBoardProposalResult,
   WorkflowTicketMessageView,
+  isTicketNoWorktreeMessage,
+  TICKET_NO_WORKTREE_MESSAGE,
   WORKFLOW_WS_METHODS,
   WorkflowSourceConfig,
   WorkSourceAutoPull,
@@ -2867,4 +2869,16 @@ describe("Workflow park sub-states (WorkflowRouteTarget)", () => {
       assert.equal(yield* decode("stale"), "stale");
     }),
   );
+});
+
+describe("ticket no-worktree message", () => {
+  it("matches the exact fragment the server emits", () => {
+    assert.isTrue(
+      isTicketNoWorktreeMessage(
+        `Workflow ticket abc ${TICKET_NO_WORKTREE_MESSAGE}`,
+      ),
+    );
+    assert.isFalse(isTicketNoWorktreeMessage("Failed to resolve workflow ticket worktree refs"));
+    assert.isFalse(isTicketNoWorktreeMessage(""));
+  });
 });

@@ -94,6 +94,18 @@ export const PARK_ACTION_DRIFT_MESSAGES = {
   targetLaneMissing: "no longer exists in the board definition",
 } as const;
 
+/**
+ * Message fragment for "this ticket has no attached worktree yet" — shared by
+ * the server (which emits it from the ticket-worktree resolver) and the web
+ * (which renders a quiet "no changes yet" empty state instead of a failure
+ * card). Same single-source-of-truth idiom as PARK_ACTION_DRIFT_MESSAGES.
+ */
+export const TICKET_NO_WORKTREE_MESSAGE = "does not have an attached worktree" as const;
+
+/** True when an RPC error message is the benign pre-first-run no-worktree case. */
+export const isTicketNoWorktreeMessage = (message: string): boolean =>
+  message.includes(TICKET_NO_WORKTREE_MESSAGE);
+
 const makeId = <Brand extends string>(brand: Brand) =>
   TrimmedNonEmptyString.pipe(Schema.brand(brand));
 

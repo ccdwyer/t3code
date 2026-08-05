@@ -58,6 +58,7 @@ import {
   type TerminalEvent,
   type TerminalHistoryAttachStreamEvent,
   type TerminalMetadataStreamEvent,
+  TICKET_NO_WORKTREE_MESSAGE,
   WORKFLOW_WS_METHODS,
   WorkflowRpcError,
   WS_METHODS,
@@ -1158,7 +1159,7 @@ const makeWsRpcLayer = (
             );
             if (!ref?.worktreePath) {
               return yield* new WorkflowRpcError({
-                message: `Workflow ticket ${ticketId} does not have an attached worktree`,
+                message: `Workflow ticket ${ticketId} ${TICKET_NO_WORKTREE_MESSAGE}`,
               });
             }
             return {

@@ -1,6 +1,7 @@
 import { FileDiff } from "@pierre/diffs/react";
 import type { FileDiffMetadata } from "@pierre/diffs/types";
 import type { EnvironmentApi, TicketDiff as TicketDiffData, TicketId } from "@t3tools/contracts";
+import { isTicketNoWorktreeMessage } from "@t3tools/contracts";
 import { useEffect, useMemo, useState } from "react";
 
 import { DiffStatLabel } from "~/components/chat/DiffStatLabel";
@@ -54,6 +55,18 @@ export function TicketDiff({
   }
 
   if (loadState.status === "error") {
+    // A ticket that hasn't run a step yet has no worktree — that's the normal
+    // starting state, not a failure, so render a quiet empty card for it.
+    if (isTicketNoWorktreeMessage(loadState.message)) {
+      return (
+        <section
+          className="shrink-0 rounded-md border border-border/70 bg-card/35 p-3 text-sm text-muted-foreground"
+          data-testid="ticket-diff-no-worktree"
+        >
+          No changes yet — a worktree is created when the ticket&apos;s first step runs.
+        </section>
+      );
+    }
     return (
       <section className="shrink-0 rounded-md border border-destructive/35 bg-destructive/6 p-3 text-sm text-destructive-foreground">
         {loadState.message}

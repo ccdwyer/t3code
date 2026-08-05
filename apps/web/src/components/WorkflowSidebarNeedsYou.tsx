@@ -1,11 +1,11 @@
 import type { WorkflowNeedsAttentionTicketView } from "@t3tools/contracts";
 import { BellIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { ageFrom } from "~/components/board/views/boardModel";
 import { useNowTick } from "~/workflow/useNowTick";
-import { attentionKindToneClass } from "~/workflow/workflowSidebarStatus";
+import { attentionKindToneClass, needsAttentionSince } from "~/workflow/workflowSidebarStatus";
 
 /** Keep the sidebar bounded — everything is one click away on its board. */
 const MAX_VISIBLE_TICKETS = 12;
@@ -27,8 +27,17 @@ export function WorkflowSidebarNeedsYou({
   readonly onOpenTicket: (ticket: WorkflowNeedsAttentionTicketView) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const isEmpty = tickets.length === 0;
 
-  if (tickets.length === 0) {
+  // Fold the section when it empties: without this, an inbox expanded, then
+  // cleared, then repopulated hours later would surprise-open on arrival.
+  useEffect(() => {
+    if (isEmpty) {
+      setOpen(false);
+    }
+  }, [isEmpty]);
+
+  if (isEmpty) {
     return null;
   }
 
@@ -72,8 +81,10 @@ export function WorkflowSidebarNeedsYou({
 /**
  * Split out so the minute tick only exists while the list is actually open —
  * the collapsed header renders no ages and should not re-render on a timer.
+ * Exported for static render tests (effects don't run there, so the parent's
+ * collapsed default can't be toggled open in a test).
  */
-function NeedsYouTicketList({
+export function NeedsYouTicketList({
   visible,
   hiddenCount,
   onOpenTicket,
@@ -112,7 +123,7 @@ function NeedsYouTicketList({
               </span>
             </span>
             <span className="shrink-0 font-mono text-[10px] text-sidebar-muted-foreground/70">
-              {ageFrom(ticket.parkedAt ?? ticket.updatedAt, now)}
+              {ageFrom(needsAttentionSince(ticket), now)}
             </span>
           </button>
         </li>

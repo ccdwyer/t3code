@@ -128,11 +128,23 @@ export function compareAttentionKindPrecedence(
 }
 
 /**
+ * The stable clock a needs-attention row has been waiting since. Parked rows
+ * age from `parkedAt` and SLA-only rows (null attentionKind) from
+ * `slaBreachedAt`, because the projection bumps `updatedAt` on ANY edit — an
+ * edited two-hour-old breach must not look freshly waiting. `updatedAt` is the
+ * last resort.
+ */
+export function needsAttentionSince(
+  ticket: Pick<WorkflowNeedsAttentionTicketView, "parkedAt" | "slaBreachedAt" | "updatedAt">,
+): string {
+  return ticket.parkedAt ?? ticket.slaBreachedAt ?? ticket.updatedAt;
+}
+
+/**
  * Inbox ordering for the cross-board Needs You list: most urgent kind first
- * (total precedence), then whoever has been waiting longest. Parked rows age
- * from `parkedAt` (the projection bumps `updatedAt` on any edit); everything
- * else ages from `updatedAt`. Ties fall back to ticketId so the order is
- * stable across refreshes.
+ * (total precedence), then whoever has been waiting longest (see
+ * needsAttentionSince). Ties fall back to ticketId so the order is stable
+ * across refreshes.
  */
 export function sortNeedsAttentionTickets(
   tickets: ReadonlyArray<WorkflowNeedsAttentionTicketView>,
@@ -140,9 +152,7 @@ export function sortNeedsAttentionTickets(
   return [...tickets].sort((left, right) => {
     const byKind = compareAttentionKindPrecedence(left.attentionKind, right.attentionKind);
     if (byKind !== 0) return byKind;
-    const leftSince = left.parkedAt ?? left.updatedAt;
-    const rightSince = right.parkedAt ?? right.updatedAt;
-    const bySince = leftSince.localeCompare(rightSince);
+    const bySince = needsAttentionSince(left).localeCompare(needsAttentionSince(right));
     if (bySince !== 0) return bySince;
     return left.ticketId.localeCompare(right.ticketId);
   });

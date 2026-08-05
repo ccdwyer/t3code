@@ -107,14 +107,28 @@ export function ConsoleBoardView({
     },
     [onParkAction],
   );
+  // openDependency travels the VIEW's own selection path — the subject pane
+  // follows selectedId, so only moving the route's selection would leave the
+  // pane on its old subject.
+  const runUnstickAction = useCallback(
+    (ticketId: string, action: CardUnstickAction) => {
+      if (action.type === "openDependency") {
+        setSelectedId(action.ticketId);
+        onOpen(action.ticketId);
+        return;
+      }
+      onUnstickAction?.(ticketId, action);
+    },
+    [onOpen, onUnstickAction],
+  );
   const options = useMemo(
     () =>
       optionsFor(
         selected,
         onParkAction === undefined ? undefined : runParkAction,
-        onUnstickAction === undefined ? undefined : { now, run: onUnstickAction },
+        onUnstickAction === undefined ? undefined : { now, run: runUnstickAction },
       ),
-    [now, onParkAction, onUnstickAction, runParkAction, selected],
+    [now, onParkAction, onUnstickAction, runParkAction, runUnstickAction, selected],
   );
 
   /**

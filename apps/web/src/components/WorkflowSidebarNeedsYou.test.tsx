@@ -3,7 +3,7 @@ import type { WorkflowNeedsAttentionTicketView } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { WorkflowSidebarNeedsYou } from "./WorkflowSidebarNeedsYou";
+import { NeedsYouTicketList, WorkflowSidebarNeedsYou } from "./WorkflowSidebarNeedsYou";
 
 const ticket = (
   id: string,
@@ -35,15 +35,35 @@ describe("WorkflowSidebarNeedsYou", () => {
 
   it("renders the header with a total count, collapsed by default", () => {
     const markup = renderToStaticMarkup(
-      <WorkflowSidebarNeedsYou
-        tickets={[ticket("t1"), ticket("t2")]}
-        onOpenTicket={() => {}}
-      />,
+      <WorkflowSidebarNeedsYou tickets={[ticket("t1"), ticket("t2")]} onOpenTicket={() => {}} />,
     );
     expect(markup).toContain("Needs you");
     expect(markup).toContain('data-testid="sidebar-v2-needs-you-count"');
     expect(markup).toContain(">2<");
     // Collapsed: the list is not in the markup (static render has no effects).
     expect(markup).not.toContain("sidebar-v2-needs-you-list");
+  });
+});
+
+describe("NeedsYouTicketList", () => {
+  it("renders rows with board name, tone dot, age, focus ring, and overflow", () => {
+    const markup = renderToStaticMarkup(
+      <NeedsYouTicketList
+        visible={[
+          ticket("t1"),
+          ticket("t2", {
+            attentionKind: null,
+            slaBreachedAt: "2026-08-05T09:00:00Z" as never,
+          }),
+        ]}
+        hiddenCount={3}
+        onOpenTicket={() => {}}
+      />,
+    );
+    expect(markup).toContain("Delivery");
+    expect(markup).toContain('data-testid="sidebar-v2-needs-you-ticket-t1"');
+    expect(markup).toContain("focus-visible:ring-2");
+    expect(markup).toContain("border-red");
+    expect(markup).toContain("…and 3 more on their boards");
   });
 });

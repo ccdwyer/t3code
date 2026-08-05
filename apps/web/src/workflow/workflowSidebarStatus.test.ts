@@ -7,6 +7,7 @@ import {
   dominantAttentionKind,
   groupAttentionByBoard,
   resolveWorkflowSidebarAttentionPill,
+  needsAttentionSince,
   sortNeedsAttentionTickets,
   workflowBoardAttentionKey,
 } from "./workflowSidebarStatus";
@@ -188,6 +189,59 @@ describe("sortNeedsAttentionTickets", () => {
     expect(sorted.map((t: { ticketId: string }) => t.ticketId)).toEqual([
       "parked-old",
       "parked-recent",
+    ]);
+  });
+});
+
+describe("needsAttentionSince", () => {
+  it("prefers parkedAt, then slaBreachedAt, then updatedAt", () => {
+    expect(
+      needsAttentionSince({
+        parkedAt: "2026-08-05T08:00:00Z",
+        slaBreachedAt: "2026-08-05T09:00:00Z",
+        updatedAt: "2026-08-05T11:00:00Z",
+      }),
+    ).toBe("2026-08-05T08:00:00Z");
+    expect(
+      needsAttentionSince({
+        parkedAt: null,
+        slaBreachedAt: "2026-08-05T09:00:00Z",
+        updatedAt: "2026-08-05T11:00:00Z",
+      }),
+    ).toBe("2026-08-05T09:00:00Z");
+    expect(
+      needsAttentionSince({
+        parkedAt: null,
+        slaBreachedAt: null,
+        updatedAt: "2026-08-05T11:00:00Z",
+      }),
+    ).toBe("2026-08-05T11:00:00Z");
+  });
+
+  it("sorts an edited SLA-only breach by its breach time, not the edit", () => {
+    const sla = (id: string, breached: string, updated: string) =>
+      ({
+        ticketId: id,
+        boardId: BoardId.make("p__b"),
+        boardName: "Board",
+        title: id,
+        status: "running",
+        currentLaneKey: "work",
+        attentionKind: null,
+        attentionReason: null,
+        updatedAt: updated,
+        parkedAt: null,
+        slaBreachedAt: breached,
+        slaBreachedReason: "over budget",
+      }) as never;
+    const sorted = sortNeedsAttentionTickets([
+      sla("breached-recent", "2026-08-05T11:00:00Z", "2026-08-05T11:00:00Z"),
+      // Breached two hours earlier but edited a minute ago.
+      sla("breached-old-edited", "2026-08-05T09:00:00Z", "2026-08-05T11:59:00Z"),
+    ]);
+    expect(sorted.map((t: { ticketId: string }) => t.ticketId)).toEqual([
+      "breached-old-edited",
+      "breached-recent",
     ]);
   });
 });

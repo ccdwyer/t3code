@@ -65,7 +65,11 @@ export function TicketDiff({
     return () => {
       cancelled = true;
     };
-  }, [api, ticketId]);
+    // hasStartedWork is a real dependency: when the first step starts while
+    // the drawer is open, the cached pre-run "no worktree" error would
+    // otherwise be reclassified as worktree loss instead of refetching the
+    // diff that now exists.
+  }, [api, ticketId, hasStartedWork]);
 
   if (loadState.status === "loading") {
     return (

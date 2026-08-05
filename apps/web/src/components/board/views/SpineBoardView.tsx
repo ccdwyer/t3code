@@ -108,16 +108,6 @@ export function SpineBoardView({
   });
   const cursorLane = models[cursor.col]?.lane;
   const selected = cursor.id === undefined ? undefined : state.ticketById[cursor.id];
-  const options = useMemo(
-    () =>
-      optionsFor(
-        selected,
-        onParkAction === undefined ? undefined : runParkAction,
-        onUnstickAction === undefined ? undefined : { now, run: onUnstickAction },
-      ),
-    [now, onParkAction, onUnstickAction, runParkAction, selected],
-  );
-  const openTicket = openId === null ? undefined : state.ticketById[openId];
 
   /**
    * The rectangle the detail grows out of and shrinks back into. Captured from
@@ -139,6 +129,31 @@ export function SpineBoardView({
     },
     [measureCard, onOpen],
   );
+
+  // openDependency must travel the VIEW's own open path (openFrom drives this
+  // view's panel state); handing it to the route would change the route's
+  // selection while this view's panel keeps its old subject.
+  const runUnstickAction = useCallback(
+    (ticketId: string, action: CardUnstickAction) => {
+      if (action.type === "openDependency") {
+        openFrom(action.ticketId);
+        return;
+      }
+      onUnstickAction?.(ticketId, action);
+    },
+    [onUnstickAction, openFrom],
+  );
+  const options = useMemo(
+    () =>
+      optionsFor(
+        selected,
+        onParkAction === undefined ? undefined : runParkAction,
+        onUnstickAction === undefined ? undefined : { now, run: runUnstickAction },
+      ),
+    [now, onParkAction, onUnstickAction, runParkAction, runUnstickAction, selected],
+  );
+  const openTicket = openId === null ? undefined : state.ticketById[openId];
+
   const close = useCallback(() => {
     if (openId !== null) originRef.current = measureCard(openId) ?? originRef.current;
     setOpenId(null);

@@ -616,21 +616,34 @@ function WorkflowBoardRouteView() {
   }, []);
   // Card-safe unstick actions from the server's stuck diagnosis. Every arm
   // dispatches an EXISTING RPC; failures surface as toasts and the live board
-  // subscription carries the state change back.
+  // subscription carries the state change back. runLane carries a per-ticket
+  // in-flight guard so a doubled digit-press can't fire two RPCs (the second
+  // of which would reject into a spurious error toast).
+  const unstickRunLaneInFlightRef = useRef<Set<string>>(new Set());
   const handleUnstickAction = useCallback(
     (ticketId: string, action: CardUnstickAction) => {
       switch (action.type) {
-        case "runLane":
-          void api.runLane({ ticketId: TicketId.make(ticketId) }).then(undefined, (error: unknown) => {
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: "Couldn't run the lane",
-                description: actionErrorMessage(error),
-              }),
-            );
-          });
+        case "runLane": {
+          if (unstickRunLaneInFlightRef.current.has(ticketId)) {
+            return;
+          }
+          unstickRunLaneInFlightRef.current.add(ticketId);
+          void api
+            .runLane({ ticketId: TicketId.make(ticketId) })
+            .then(undefined, (error: unknown) => {
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Couldn't run the lane",
+                  description: actionErrorMessage(error),
+                }),
+              );
+            })
+            .finally(() => {
+              unstickRunLaneInFlightRef.current.delete(ticketId);
+            });
           return;
+        }
         case "moveToLane":
           void handleMove(ticketId, action.toLane);
           return;

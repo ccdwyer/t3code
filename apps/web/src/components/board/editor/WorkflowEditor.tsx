@@ -624,6 +624,7 @@ export function WorkflowEditor({
           model={model}
           selection={selection}
           disabled={saving}
+          boardId={boardId}
           onSelect={setSelection}
           onMutate={mutateModel}
         />

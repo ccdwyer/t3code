@@ -20,6 +20,11 @@ import {
   type WorkflowEditorSelection,
 } from "~/workflow/editorModel";
 
+import {
+  loadLanePositions,
+  saveLanePositions,
+} from "~/workflow/canvasLayoutStorage";
+
 import { LaneForm } from "../LaneForm";
 import { TransitionFields } from "../RoutingEditor";
 import { StepFields } from "../StepFields";
@@ -56,6 +61,8 @@ export interface CanvasViewProps {
   readonly model: WorkflowEditorModel;
   readonly selection: WorkflowEditorSelection | null;
   readonly disabled?: boolean;
+  /** When set, manual lane positions persist per board across reloads. */
+  readonly boardId?: string;
   readonly onSelect: (selection: WorkflowEditorSelection | null) => void;
   readonly onMutate: WorkflowEditorMutation;
 }
@@ -64,6 +71,7 @@ export function CanvasView({
   model,
   selection,
   disabled = false,
+  boardId = "",
   onSelect,
   onMutate,
 }: CanvasViewProps) {
@@ -74,7 +82,19 @@ export function CanvasView({
       LANE_GAP_X * Math.max(0, model.definition.lanes.length - 1),
   );
   const [laneHeights, setLaneHeights] = useState<LaneHeights>({});
-  const [lanePositions, setLanePositions] = useState<LanePositions>({});
+  const [lanePositions, setLanePositions] = useState<LanePositions>(() =>
+    loadLanePositions(boardId),
+  );
+  const applyLanePositions = useCallback(
+    (update: (positions: LanePositions) => LanePositions) => {
+      setLanePositions((positions) => {
+        const next = update(positions);
+        saveLanePositions(boardId, next);
+        return next;
+      });
+    },
+    [boardId],
+  );
   const [anchors, setAnchors] = useState<CanvasAnchors>({});
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -86,7 +106,10 @@ export function CanvasView({
     [containerWidth, laneHeights, lanePositions, model.definition],
   );
   const hasMovedLanes = Object.keys(lanePositions).length > 0;
-  const resetLaneLayout = useCallback(() => setLanePositions({}), []);
+  const resetLaneLayout = useCallback(
+    () => applyLanePositions(() => ({})),
+    [applyLanePositions],
+  );
   const layoutByLaneKey = useMemo(
     () => new Map(layout.lanes.map((laneLayout) => [laneLayout.laneKey, laneLayout])),
     [layout.lanes],
@@ -165,7 +188,7 @@ export function CanvasView({
     if (move) {
       const current = layoutByLaneKey.get(move.laneKey);
       if (current && (event.delta.x !== 0 || event.delta.y !== 0)) {
-        setLanePositions((positions) => ({
+        applyLanePositions((positions) => ({
           ...positions,
           [move.laneKey]: {
             x: Math.max(0, Math.round(current.x + event.delta.x)),

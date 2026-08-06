@@ -198,3 +198,14 @@ describe("TicketArtifactFinalizer", () => {
     }).pipe(Effect.provide(finalizerHarness(pathBox, committed))) as never;
   });
 });
+
+describe("global byte-order traversal (via the workspace walker contract)", () => {
+  it("a!.md precedes a/z in unsigned UTF-8 order of full paths", () => {
+    // The pinned property the walker's dir-as-"name/" sort key guarantees:
+    // 0x21 ('!') < 0x2F ('/'), so the FILE beside the directory comes first.
+    const byteOrder = ["a!.md", "a/z.md"].sort((l, r) =>
+      Buffer.compare(Buffer.from(l, "utf8"), Buffer.from(r, "utf8")),
+    );
+    assert.deepEqual(byteOrder, ["a!.md", "a/z.md"]);
+  });
+});

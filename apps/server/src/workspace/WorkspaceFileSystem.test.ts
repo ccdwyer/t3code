@@ -371,6 +371,26 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
       }),
     );
 
+    it.effect("order:'bytes' emits GLOBAL unsigned-UTF-8 path order (dir-as-prefix)", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        // '!' (0x21) sorts before '/' (0x2F): the FILE beside the directory
+        // must be emitted before the directory's children.
+        yield* writeTextFile(cwd, "artifacts/a!.md", "x\n");
+        yield* writeTextFile(cwd, "artifacts/a/z.md", "y\n");
+        yield* writeTextFile(cwd, "artifacts/b.md", "z\n");
+
+        const names = yield* workspaceFileSystem.listFilesRecursive!({
+          cwd,
+          relativePath: "artifacts",
+          order: "bytes",
+        });
+
+        expect([...names]).toEqual(["a!.md", "a/z.md", "b.md"]);
+      }),
+    );
+
     it.effect("returns an empty list for a missing directory", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;

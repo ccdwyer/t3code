@@ -603,6 +603,10 @@ const make = Effect.gen(function* () {
         });
       const supersededBlobs: Array<string> = [];
       const unadoptedBlobs: Array<string> = [];
+      // Filled INSIDE the transaction, merged into adoptedBlobIds only AFTER
+      // the commit succeeds — a rollback must leave the adopted set empty so
+      // the every-exit cleanup removes every staged blob.
+      const txAdopted: Array<string> = [];
       const txResult = yield* sql
         .withTransaction(
           Effect.gen(function* () {
@@ -683,7 +687,7 @@ const make = Effect.gen(function* () {
                 `;
                 count += 1;
                 bytes += size;
-                adoptedBlobIds.add(blobId);
+                txAdopted.push(blobId);
                 ingested.push(item.candidate.normalized);
                 continue;
               }
@@ -724,7 +728,7 @@ const make = Effect.gen(function* () {
                 WHERE artifact_id = ${row.artifactId}
               `;
               bytes += delta;
-              adoptedBlobIds.add(blobId);
+              txAdopted.push(blobId);
               supersededBlobs.push(row.blobId);
               ingested.push(item.candidate.normalized);
             }
@@ -739,6 +743,9 @@ const make = Effect.gen(function* () {
           Effect.onError(() => removeStagedExcept(adoptedBlobIds)),
           Effect.onInterrupt(() => removeStagedExcept(adoptedBlobIds)),
         );
+      for (const blobId of txAdopted) {
+        adoptedBlobIds.add(blobId);
+      }
 
       if (txResult.ticketMissing) {
         // Whole batch no-ops: remove everything we staged.
@@ -768,16 +775,22 @@ const make = Effect.gen(function* () {
         scanTruncated,
       } satisfies IngestReport;
     }).pipe(
-      Effect.onInterrupt(() =>
-        Effect.promise(async () => {
-          for (const path of promotedBlobPaths) {
-            if (!adoptedBlobIds.has(NodePath.basename(path))) {
-              await Fs.rm(path, { force: true }).catch(() => undefined);
-            }
-          }
-        }),
-      ),
+      // EVERY exit: errors thrown during Phase-A staging (before the
+      // tx-scoped handlers exist), tx rollback, and interrupts all remove
+      // promoted-but-unadopted blobs. Idempotent with the tx-level handlers.
+      Effect.onError(() => removePromotedUnadopted()),
+      Effect.onInterrupt(() => removePromotedUnadopted()),
     );
+
+    function removePromotedUnadopted() {
+      return Effect.promise(async () => {
+        for (const path of promotedBlobPaths) {
+          if (!adoptedBlobIds.has(NodePath.basename(path))) {
+            await Fs.rm(path, { force: true }).catch(() => undefined);
+          }
+        }
+      });
+    }
   };
 
   const deleteRowsForTickets: TicketArtifactStoreShape["deleteRowsForTickets"] = (ticketIds) =>

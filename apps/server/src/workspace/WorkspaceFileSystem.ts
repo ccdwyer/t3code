@@ -694,11 +694,30 @@ export const make = Effect.gen(function* () {
                 makeOperationError(input, operation, absDir, absDir, cause),
               ),
             );
-          const ordered = [...entries].sort((left, right) =>
-            input.order === "bytes"
-              ? Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
-              : left.localeCompare(right),
-          );
+          // "bytes" order must be GLOBAL over emitted relative paths, not
+          // merely per-directory: a directory's descendants all carry a
+          // "name/" prefix, so sorting the dir entry AS "name/" makes the
+          // depth-first emission equal the byte order of full paths
+          // (e.g. "a!.md" (0x21) correctly precedes "a/z" (0x2F)).
+          let ordered: ReadonlyArray<string>;
+          if (input.order === "bytes") {
+            const kinds = new Map<string, boolean>();
+            for (const entry of entries) {
+              const info = yield* fileSystem
+                .stat(path.join(absDir, entry))
+                .pipe(Effect.orElseSucceed(() => null));
+              kinds.set(entry, info?.type === "Directory");
+            }
+            const sortKey = (entry: string) => (kinds.get(entry) === true ? `${entry}/` : entry);
+            ordered = [...entries].sort((left, right) =>
+              Buffer.compare(
+                Buffer.from(sortKey(left), "utf8"),
+                Buffer.from(sortKey(right), "utf8"),
+              ),
+            );
+          } else {
+            ordered = [...entries].sort((left, right) => left.localeCompare(right));
+          }
           for (const entry of ordered) {
             if (results.length >= limit) {
               return;

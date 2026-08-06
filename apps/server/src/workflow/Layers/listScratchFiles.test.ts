@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as NodePath from "node:path";
 
 import { TicketId, WORKFLOW_WS_METHODS, type WorkflowTicketArtifact } from "@t3tools/contracts";
-import { assert, describe, it } from "@effect/vitest";
+import { afterAll, assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -25,8 +25,16 @@ import { workflowRpcHandlers } from "./WorkflowRpcHandlers.ts";
 
 const TICKET = "ticket-1";
 
+const TEMP_DIRS: Array<string> = [];
+afterAll(() => {
+  // Each case makes a temp worktree; without this they accumulate under the
+  // system temp dir across watch and CI runs.
+  for (const dir of TEMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
 const makeWorktree = () => {
   const cwd = mkdtempSync(NodePath.join(tmpdir(), "scratch-rpc-"));
+  TEMP_DIRS.push(cwd);
   const ticketDir = NodePath.join(cwd, ".t3", "ticket", TICKET);
   mkdirSync(ticketDir, { recursive: true });
   return { cwd, ticketDir };

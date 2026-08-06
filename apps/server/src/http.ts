@@ -393,7 +393,10 @@ const serveTicketScratch = (
         }
 
         const readExactly = (start: number, length: number) =>
-          Effect.promise(async () => {
+          // `Effect.promise` would turn an ordinary read failure into a defect
+          // (500). Every other unavailable case on this route answers 404, so a
+          // failed read does too; interruption still propagates.
+          Effect.tryPromise(async () => {
             const buffer = Buffer.alloc(length);
             let readTotal = 0;
             while (readTotal < length) {
@@ -409,7 +412,7 @@ const serveTicketScratch = (
             // A truncation between the fstat and the read would otherwise send a
             // body shorter than the Content-Length we already promised.
             return readTotal === length ? new Uint8Array(buffer) : null;
-          });
+          }).pipe(Effect.orElseSucceed(() => null));
 
         if (decision.kind === "partial") {
           const end = decision.openEnded

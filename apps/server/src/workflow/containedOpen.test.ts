@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, rmSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import * as Fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as NodePath from "node:path";
 
-import { assert, describe, it } from "@effect/vitest";
+import { afterAll, assert, describe, it } from "@effect/vitest";
 
 import {
   isInsideRealDirectory,
@@ -22,8 +22,17 @@ import {
  * detectable on canonical paths rather than on a spelling.
  */
 
+const TEMP_DIRS: Array<string> = [];
+afterAll(() => {
+  // Each case makes a temp worktree; without this they accumulate under the
+  // system temp dir across watch and CI runs.
+  for (const dir of TEMP_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
 const makeTree = () => {
   const base = mkdtempSync(NodePath.join(tmpdir(), "contained-"));
+  TEMP_DIRS.push(base);
+  TEMP_DIRS.push(base);
   const ticketDir = NodePath.join(base, ".t3", "ticket", "ticket-1");
   mkdirSync(ticketDir, { recursive: true });
   mkdirSync(NodePath.join(ticketDir, "artifacts"), { recursive: true });
@@ -128,6 +137,7 @@ describe("artifacts subtree exclusion", () => {
 
   it("returns null for a missing artifacts directory and then excludes nothing", async () => {
     const base = mkdtempSync(NodePath.join(tmpdir(), "contained-bare-"));
+    TEMP_DIRS.push(base);
     assert.isNull(await resolveSubdirectoryRealpath(base, "artifacts"));
     assert.isFalse(isInsideRealDirectory(NodePath.join(base, "a.md"), null));
   });
@@ -154,8 +164,10 @@ describe("resolveTicketScratchRoot", () => {
     // containment inside the attacker's directory.
     const { base } = makeTree();
     const elsewhere = mkdtempSync(NodePath.join(tmpdir(), "elsewhere-"));
+    TEMP_DIRS.push(elsewhere);
     mkdirSync(NodePath.join(elsewhere, "ticket-2"), { recursive: true });
     const victim = mkdtempSync(NodePath.join(tmpdir(), "victim-"));
+    TEMP_DIRS.push(victim);
     mkdirSync(NodePath.join(victim, ".t3"), { recursive: true });
     // .t3/ticket -> /elsewhere
     symlinkSync(elsewhere, NodePath.join(victim, ".t3", "ticket"));
@@ -166,5 +178,52 @@ describe("resolveTicketScratchRoot", () => {
   it("refuses a missing ticket directory", async () => {
     const { base } = makeTree();
     assert.isNull(await resolveTicketScratchRoot(base, "no-such-ticket"));
+  });
+});
+
+describe("hard links (path containment cannot see them)", () => {
+  it("serves a hard link by default, and REFUSES it with rejectMultiplyLinked", async () => {
+    const { base, ticketDir } = makeTree();
+    // `ln <workspace>/secret.env <ticket>/notes.md` — the link IS a real
+    // directory entry inside the ticket dir, so lstat-regular, O_NOFOLLOW,
+    // realpath containment and the dev/ino recheck all pass.
+    linkSync(NodePath.join(base, "secret.env"), NodePath.join(ticketDir, "notes.md"));
+    const root = await Fs.realpath(ticketDir);
+    const target = NodePath.join(ticketDir, "notes.md");
+
+    const permissive = await openContained(target, root);
+    assert.isNotNull(permissive, "path containment alone does not stop a hard link");
+    await close(permissive);
+
+    // Scratch content is agent-written, so the scratch paths opt in.
+    assert.isNull(await openContained(target, root, { rejectMultiplyLinked: true }));
+  });
+
+  it("still opens an ordinary single-linked file under rejectMultiplyLinked", async () => {
+    const { ticketDir } = makeTree();
+    const root = await Fs.realpath(ticketDir);
+    const opened = await openContained(NodePath.join(ticketDir, "PLAN.md"), root, {
+      rejectMultiplyLinked: true,
+    });
+    assert.isNotNull(opened);
+    await close(opened);
+  });
+});
+
+describe("resolveTicketScratchRoot — inside-workspace pivots", () => {
+  it("refuses a ticket directory symlinked to ANOTHER directory in the same workspace", async () => {
+    // The subtler pivot: it never leaves the workspace, so a "descendant of the
+    // workspace root" test accepts it and the scratch list would enumerate and
+    // inline an unrelated directory.
+    const victim = mkdtempSync(NodePath.join(tmpdir(), "pivot-inside-"));
+    TEMP_DIRS.push(victim);
+    mkdirSync(NodePath.join(victim, ".t3", "ticket"), { recursive: true });
+    mkdirSync(NodePath.join(victim, ".secrets"), { recursive: true });
+    writeFileSync(NodePath.join(victim, ".secrets", "creds.md"), "TOKEN=1");
+    symlinkSync(
+      NodePath.join(victim, ".secrets"),
+      NodePath.join(victim, ".t3", "ticket", "ticket-9"),
+    );
+    assert.isNull(await resolveTicketScratchRoot(victim, "ticket-9"));
   });
 });

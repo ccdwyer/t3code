@@ -416,6 +416,12 @@ export const listDurableArtifacts = (
   });
 
 const MAX_TICKET_ARTIFACTS = 20;
+/**
+ * Ceiling on candidates INSPECTED per listing. The 20-row cap counts emitted
+ * rows so skips cannot starve real files, which alone leaves the work per RPC
+ * bounded only by the directory size.
+ */
+const MAX_TICKET_ARTIFACT_CANDIDATES = 200;
 const MAX_TICKET_ARTIFACT_CHARS = 64_000;
 // Hard byte ceiling for a single artifact read. Generous enough (UTF-8 worst
 // case 4 bytes/char) to still yield > MAX_TICKET_ARTIFACT_CHARS chars so the
@@ -3481,11 +3487,16 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               : yield* Effect.promise(() =>
                   resolveSubdirectoryRealpath(ticketDirReal, "artifacts"),
                 );
+          let inspected = 0;
           for (const name of scratchNames) {
             // The cap counts EMITTED rows, not candidates: skipped entries
             // (symlinks, artifacts aliases) must not starve the real files out
-            // of the listing.
+            // of the listing. But candidates still need their own ceiling, or a
+            // directory full of skipped entries makes one RPC perform an
+            // unbounded number of filesystem operations.
             if (scratch.length >= MAX_TICKET_ARTIFACTS) break;
+            if (inspected >= MAX_TICKET_ARTIFACT_CANDIDATES) break;
+            inspected += 1;
             if (ticketDirReal === null) break;
             const detected = detectArtifactKind(name);
             const relativePath = `${scratchDir}/${name}`;
@@ -3500,7 +3511,11 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               Effect.gen(function* () {
                 const opened = yield* Effect.acquireRelease(
                   Effect.promise(() =>
-                    openContained(NodePath.join(worktree.cwd, relativePath), ticketDirReal),
+                    // Scratch content is agent-written: refuse hard links,
+                    // which path containment cannot see.
+                    openContained(NodePath.join(worktree.cwd, relativePath), ticketDirReal, {
+                      rejectMultiplyLinked: true,
+                    }),
                   ),
                   (handle) =>
                     handle === null

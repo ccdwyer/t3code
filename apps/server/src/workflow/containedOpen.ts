@@ -27,6 +27,19 @@ import * as NodePath from "node:path";
 export const openContained = async (
   absolutePath: string,
   containRootRealpath: string,
+  options?: {
+    /**
+     * Refuse a file with more than one directory entry (`nlink !== 1`).
+     *
+     * Path containment cannot see hard links: `ln ../../.env notes.md` inside
+     * the contained directory satisfies lstat-regular, O_NOFOLLOW, realpath
+     * containment, AND the dev/ino recheck, because the link IS a real
+     * directory entry there. Scratch content is agent-written and therefore
+     * untrusted, so the scratch paths opt in. The durable store does not:
+     * it writes its own blobs, and changing its behavior is out of scope.
+     */
+    readonly rejectMultiplyLinked?: boolean;
+  },
 ): Promise<{
   readonly handle: Fs.FileHandle;
   readonly size: number;
@@ -41,6 +54,10 @@ export const openContained = async (
     handle = await Fs.open(absolutePath, FsConstants.O_RDONLY | FsConstants.O_NOFOLLOW);
     const stat = await handle.stat();
     if (!stat.isFile()) {
+      await handle.close();
+      return null;
+    }
+    if (options?.rejectMultiplyLinked === true && stat.nlink !== 1) {
       await handle.close();
       return null;
     }
@@ -107,10 +124,15 @@ export const resolveTicketScratchRoot = async (
 ): Promise<string | null> => {
   try {
     const workspaceReal = await Fs.realpath(workspaceRoot);
-    const ticketDirReal = await Fs.realpath(
-      NodePath.join(workspaceReal, ".t3", "ticket", ticketId),
-    );
-    if (!ticketDirReal.startsWith(workspaceReal + NodePath.sep)) return null;
+    const expected = NodePath.join(workspaceReal, ".t3", "ticket", ticketId);
+    const ticketDirReal = await Fs.realpath(expected);
+    // STRICT identity, not merely "somewhere under the workspace". A
+    // `.t3/ticket/<id> -> <workspace>/.secrets` symlink stays inside the
+    // workspace and would otherwise be accepted, letting the scratch list
+    // enumerate and inline an unrelated directory. Any symlinked component
+    // makes the realpath differ from the expected path, so equality rejects
+    // the whole class.
+    if (ticketDirReal !== expected) return null;
     return ticketDirReal;
   } catch {
     return null;

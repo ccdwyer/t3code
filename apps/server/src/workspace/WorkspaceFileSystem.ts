@@ -741,7 +741,14 @@ export const make = Effect.gen(function* () {
           }
         });
       yield* walk("", realTarget);
-      return results.sort((left, right) => left.localeCompare(right));
+      // The final ordering must match the traversal's: a locale re-sort here
+      // would silently override the byte-ordered emission (and its
+      // truncation guarantee).
+      return results.sort((left, right) =>
+        input.order === "bytes"
+          ? Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+          : left.localeCompare(right),
+      );
     });
 
   const writeFile: WorkspaceFileSystem["Service"]["writeFile"] = Effect.fn(

@@ -443,6 +443,9 @@ const make = Effect.gen(function* () {
     // Phase-A staging (before the tx-scoped handlers exist) must still remove
     // promoted blobs; after commit the adopted set protects referenced blobs.
     const promotedBlobPaths: Array<string> = [];
+    // Temps are tracked from CREATION: an interrupt or rename failure between
+    // a successful stage and promotion must still reclaim the .tmp file.
+    const pendingTmpPaths = new Set<string>();
     const adoptedBlobIds = new Set<string>();
     return Effect.gen(function* () {
       const ticketId = String(input.ticketId);
@@ -564,9 +567,11 @@ const make = Effect.gen(function* () {
         const cap = ARTIFACT_FILE_CAPS[candidate.kind];
         const blobId = randomUUID();
         const tmpPath = NodePath.join(dir, `.tmp-${randomUUID()}`);
+        pendingTmpPaths.add(tmpPath);
         const result = yield* Effect.promise(() => stageBounded(preOpen, cap, tmpPath));
         yield* Effect.promise(() => preOpen.handle.close().catch(() => undefined));
         if (!result.ok) {
+          pendingTmpPaths.delete(tmpPath);
           allSkips.push({ name: candidate.rawName, reason: result.reason });
           continue;
         }
@@ -574,6 +579,7 @@ const make = Effect.gen(function* () {
           try: () => Fs.rename(tmpPath, NodePath.join(dir, blobId)),
           catch: toStoreError("TicketArtifactStore.ingest:promote"),
         });
+        pendingTmpPaths.delete(tmpPath);
         promotedBlobPaths.push(NodePath.join(dir, blobId));
         staged.push({
           candidate,
@@ -742,10 +748,21 @@ const make = Effect.gen(function* () {
           // empty and every staged blob goes.
           Effect.onError(() => removeStagedExcept(adoptedBlobIds)),
           Effect.onInterrupt(() => removeStagedExcept(adoptedBlobIds)),
+          // Uninterruptible THROUGH the adoption merge below: an interrupt
+          // arriving after SQLite commits but before adoptedBlobIds fills
+          // would let the outer cleanup delete blobs committed rows reference.
+          (effect) =>
+            Effect.uninterruptible(
+              effect.pipe(
+                Effect.map((result) => {
+                  for (const blobId of txAdopted) {
+                    adoptedBlobIds.add(blobId);
+                  }
+                  return result;
+                }),
+              ),
+            ),
         );
-      for (const blobId of txAdopted) {
-        adoptedBlobIds.add(blobId);
-      }
 
       if (txResult.ticketMissing) {
         // Whole batch no-ops: remove everything we staged.
@@ -788,6 +805,9 @@ const make = Effect.gen(function* () {
           if (!adoptedBlobIds.has(NodePath.basename(path))) {
             await Fs.rm(path, { force: true }).catch(() => undefined);
           }
+        }
+        for (const tmpPath of pendingTmpPaths) {
+          await Fs.rm(tmpPath, { force: true }).catch(() => undefined);
         }
       });
     }

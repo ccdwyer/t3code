@@ -380,6 +380,10 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
         yield* writeTextFile(cwd, "artifacts/a!.md", "x\n");
         yield* writeTextFile(cwd, "artifacts/a/z.md", "y\n");
         yield* writeTextFile(cwd, "artifacts/b.md", "z\n");
+        // Locale order would put Z.md AFTER a.md-family names; byte order
+        // (0x5A < 0x61) puts it FIRST — this vector catches any locale
+        // re-sort sneaking back in.
+        yield* writeTextFile(cwd, "artifacts/Z.md", "w\n");
 
         const names = yield* workspaceFileSystem.listFilesRecursive!({
           cwd,
@@ -387,7 +391,7 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
           order: "bytes",
         });
 
-        expect([...names]).toEqual(["a!.md", "a/z.md", "b.md"]);
+        expect([...names]).toEqual(["Z.md", "a!.md", "a/z.md", "b.md"]);
       }),
     );
 

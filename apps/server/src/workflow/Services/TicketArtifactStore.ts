@@ -71,6 +71,11 @@ export interface IngestBatchInput {
 export interface VerifiedBlob {
   /** Node file handle opened O_RDONLY|O_NOFOLLOW and fully verified. */
   readonly read: (maxBytes: number) => Effect.Effect<Uint8Array, WorkflowEventStoreError>;
+  /** Positioned read of [start, end] (inclusive) for Range serving. */
+  readonly readRange: (
+    start: number,
+    end: number,
+  ) => Effect.Effect<Uint8Array, WorkflowEventStoreError>;
   readonly stream: () => NodeJS.ReadableStream;
   readonly close: () => Effect.Effect<void>;
   readonly size: number;

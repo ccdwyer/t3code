@@ -46,6 +46,9 @@ export const ASSET_ROUTE_PREFIX = "/api/assets";
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
+// Ticket artifacts get a longer bucket (spec §Serving): <video> fetches
+// ranges lazily and a 60-min URL would die mid-watch/mid-seek.
+const TICKET_ARTIFACT_TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
 const PROJECT_FAVICON_VERSION_PREFIX = "v";
 const PREVIEW_ASSET_EXTENSIONS = new Set([
@@ -77,6 +80,13 @@ const AssetClaimsSchema = Schema.Union([
   }),
   Schema.Struct({
     version: Schema.Literal(1),
+    kind: Schema.Literal("ticket-artifact"),
+    ticketId: Schema.String,
+    artifactId: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
     expiresAt: Schema.Number,
@@ -95,7 +105,15 @@ const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
-export type ResolvedAsset = { readonly kind: "file"; readonly path: string };
+export type ResolvedAsset =
+  | { readonly kind: "file"; readonly path: string }
+  | {
+      // Ticket artifact: the row was resolved DB-authoritatively and the blob
+      // must be opened via the store's verified-fd primitive by the route.
+      readonly kind: "ticket-artifact";
+      readonly ticketId: string;
+      readonly artifactId: string;
+    };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -256,6 +274,20 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       fileName = path.basename(resolved.relativePath);
       break;
     }
+    case "ticket-artifact": {
+      // DB-authoritative pair; existence is verified at serve time via the
+      // store's verified-open. The 6h bucket overrides the default TTL.
+      expiresAt = (yield* Clock.currentTimeMillis) + TICKET_ARTIFACT_TOKEN_TTL_MS;
+      claims = {
+        version: 1,
+        kind: "ticket-artifact",
+        ticketId: input.resource.ticketId,
+        artifactId: input.resource.artifactId,
+        expiresAt,
+      };
+      fileName = input.resource.fileName.slice(input.resource.fileName.lastIndexOf("/") + 1);
+      break;
+    }
     case "attachment": {
       const config = yield* ServerConfig.ServerConfig;
       const attachmentPath = resolveAttachmentPathById({
@@ -399,6 +431,17 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   const claims = decodeClaims(encodedPayload);
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
+
+  if (claims.kind === "ticket-artifact") {
+    // Resolution + verified open happen in the route via TicketArtifactStore
+    // (ticket-bound getRow + openVerifiedBlob); this layer only proves the
+    // signature and TTL.
+    return {
+      kind: "ticket-artifact",
+      ticketId: claims.ticketId,
+      artifactId: claims.artifactId,
+    } satisfies ResolvedAsset;
+  }
 
   if (claims.kind === "attachment") {
     const config = yield* ServerConfig.ServerConfig;

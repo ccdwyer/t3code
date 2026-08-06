@@ -27,7 +27,11 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
+import { TicketId } from "@t3tools/contracts";
+
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
+import { artifactHeaders, decideRange } from "./assets/artifactServing.ts";
+import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
@@ -182,38 +186,151 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
   ),
 );
 
+// Base headers for artifact-adjacent 404s (spec: no resolved row/kind → base
+// set only; the HTML CSP is moot without a resolved kind).
+const ARTIFACT_BASE_404_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Cache-Control": "private, no-store",
+  "Referrer-Policy": "no-referrer",
+} as const;
+
+/**
+ * Serve a resolved ticket-artifact claim (spec §Serving): DB-authoritative
+ * row lookup (ticket-bound), the store's verified-fd open, the pinned Range
+ * decision table, and the pinned header set — identical for GET and HEAD
+ * (HEAD carries no body). Open-ended range responses are clamped to an 8 MiB
+ * window (RFC-legal; browsers follow up), bounding per-request memory.
+ */
+const ARTIFACT_RANGE_WINDOW_BYTES = 8 * 1024 * 1024;
+
+const serveTicketArtifact = (
+  asset: { readonly ticketId: string; readonly artifactId: string },
+  request: HttpServerRequest.HttpServerRequest,
+) =>
+  Effect.gen(function* () {
+    const storeOption = yield* Effect.serviceOption(TicketArtifactStore);
+    if (Option.isNone(storeOption)) {
+      return HttpServerResponse.text("Not Found", {
+        status: 404,
+        headers: ARTIFACT_BASE_404_HEADERS,
+      });
+    }
+    const store = storeOption.value;
+    const row = yield* store
+      .getRow(TicketId.make(asset.ticketId), asset.artifactId)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (row === null) {
+      return HttpServerResponse.text("Not Found", {
+        status: 404,
+        headers: ARTIFACT_BASE_404_HEADERS,
+      });
+    }
+    const blob = yield* store.openVerifiedBlob(row).pipe(Effect.orElseSucceed(() => null));
+    if (blob === null) {
+      return HttpServerResponse.text("Not Found", {
+        status: 404,
+        headers: ARTIFACT_BASE_404_HEADERS,
+      });
+    }
+
+    return yield* Effect.gen(function* () {
+      const headers = artifactHeaders({
+        mime: row.mime,
+        displayName: row.name,
+        isHtml: row.kind === "html",
+      });
+      const isHead = request.method === "HEAD";
+      const rangeHeader = request.headers["range"];
+      const decision = decideRange(rangeHeader, blob.size);
+
+      if (decision.kind === "unsatisfiable") {
+        return HttpServerResponse.text("Range Not Satisfiable", {
+          status: 416,
+          headers: { ...headers, "Content-Range": `bytes */${String(blob.size)}` },
+        });
+      }
+      if (decision.kind === "partial") {
+        const end = Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1);
+        const partialHeaders = {
+          ...headers,
+          "Content-Range": `bytes ${String(decision.start)}-${String(end)}/${String(blob.size)}`,
+          "Content-Length": String(end - decision.start + 1),
+        };
+        if (isHead) {
+          return HttpServerResponse.empty({ status: 206, headers: partialHeaders });
+        }
+        const body = yield* blob
+          .readRange(decision.start, end)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (body === null) {
+          return HttpServerResponse.text("Not Found", {
+            status: 404,
+            headers: ARTIFACT_BASE_404_HEADERS,
+          });
+        }
+        return HttpServerResponse.uint8Array(body, { status: 206, headers: partialHeaders });
+      }
+      const fullHeaders = { ...headers, "Content-Length": String(blob.size) };
+      if (isHead) {
+        return HttpServerResponse.empty({ status: 200, headers: fullHeaders });
+      }
+      const body = yield* blob.read(blob.size).pipe(Effect.orElseSucceed(() => null));
+      if (body === null) {
+        return HttpServerResponse.text("Not Found", {
+          status: 404,
+          headers: ARTIFACT_BASE_404_HEADERS,
+        });
+      }
+      return HttpServerResponse.uint8Array(body, { status: 200, headers: fullHeaders });
+    }).pipe(Effect.ensuring(blob.close()));
+  });
+
+const assetRouteHandler = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const url = HttpServerRequest.toURL(request);
+  if (Option.isNone(url)) {
+    return HttpServerResponse.text("Bad Request", { status: 400 });
+  }
+
+  const suffix = url.value.pathname.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+  const separatorIndex = suffix.indexOf("/");
+  if (separatorIndex <= 0) {
+    return HttpServerResponse.text("Not Found", { status: 404 });
+  }
+
+  const asset = yield* resolveAsset(
+    suffix.slice(0, separatorIndex),
+    suffix.slice(separatorIndex + 1),
+  );
+  if (!asset) {
+    return HttpServerResponse.text("Not Found", { status: 404 });
+  }
+  if (asset.kind === "ticket-artifact") {
+    return yield* serveTicketArtifact(asset, request);
+  }
+  return yield* HttpServerResponse.file(asset.path, {
+    status: 200,
+    headers: {
+      "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+    },
+  }).pipe(
+    Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
+  );
+});
+
+// "*" method match: the router has no HEAD verb, and HEAD parity is pinned
+// (spec §Serving) — the handler branches on request.method, answering GET and
+// HEAD and refusing everything else.
 export const assetRouteLayer = HttpRouter.add(
-  "GET",
+  "*",
   `${ASSET_ROUTE_PREFIX}/*`,
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const url = HttpServerRequest.toURL(request);
-    if (Option.isNone(url)) {
-      return HttpServerResponse.text("Bad Request", { status: 400 });
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return HttpServerResponse.text("Method Not Allowed", { status: 405 });
     }
-
-    const suffix = url.value.pathname.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-    const separatorIndex = suffix.indexOf("/");
-    if (separatorIndex <= 0) {
-      return HttpServerResponse.text("Not Found", { status: 404 });
-    }
-
-    const asset = yield* resolveAsset(
-      suffix.slice(0, separatorIndex),
-      suffix.slice(separatorIndex + 1),
-    );
-    if (!asset) {
-      return HttpServerResponse.text("Not Found", { status: 404 });
-    }
-    return yield* HttpServerResponse.file(asset.path, {
-      status: 200,
-      headers: {
-        "Cache-Control": "private, max-age=3600",
-        "X-Content-Type-Options": "nosniff",
-      },
-    }).pipe(
-      Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
-    );
+    return yield* assetRouteHandler;
   }),
 );
 

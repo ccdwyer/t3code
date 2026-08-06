@@ -348,6 +348,26 @@ const make = Effect.gen(function* () {
               },
               catch: toStoreError("TicketArtifactStore.readVerifiedBlob"),
             }),
+          readRange: (start, end) =>
+            Effect.tryPromise({
+              try: async () => {
+                const length = Math.max(0, end - start + 1);
+                const buffer = Buffer.alloc(length);
+                let readTotal = 0;
+                while (readTotal < length) {
+                  const { bytesRead } = await handle.read(
+                    buffer,
+                    readTotal,
+                    length - readTotal,
+                    start + readTotal,
+                  );
+                  if (bytesRead === 0) break;
+                  readTotal += bytesRead;
+                }
+                return new Uint8Array(buffer.subarray(0, readTotal));
+              },
+              catch: toStoreError("TicketArtifactStore.readRangeVerifiedBlob"),
+            }),
           stream: () => createReadStream(absolutePath, { fd: handle.fd, autoClose: false }),
           close: () => Effect.promise(() => handle.close().catch(() => undefined)),
         };

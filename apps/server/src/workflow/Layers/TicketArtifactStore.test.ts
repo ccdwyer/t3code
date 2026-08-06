@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import { TicketId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -515,6 +516,59 @@ storeLayer("TicketArtifactStore repair with drift", (it) => {
       const blob = yield* store.openVerifiedBlob(repaired);
       assert.isNotNull(blob);
       if (blob !== null) yield* blob.close();
+    }),
+  );
+});
+
+storeLayer("TicketArtifactStore interruption safety", (it) => {
+  it.effect("an interrupted ingest leaves no temps and only row-referenced blobs", () =>
+    Effect.gen(function* () {
+      const store = yield* TicketArtifactStore;
+      const paths = yield* TicketArtifactPaths;
+      const sql = yield* SqlClient.SqlClient;
+      const ticketId = freshTicketId();
+      yield* seedTicket(String(ticketId));
+      const src = yield* makeSourceDir();
+      const entries: Array<string> = [];
+      for (let index = 0; index < 8; index += 1) {
+        const name = `file-${String(index)}.md`;
+        yield* write(src, name, `payload ${String(index)}\n`.repeat(2048));
+        entries.push(name);
+      }
+
+      // Interrupt mid-batch. The exact landing point varies by scheduling;
+      // the EVERY-EXIT invariant below must hold at all of them, which is
+      // what makes this a deterministic regression despite the racy cut.
+      const fiber = yield* store
+        .ingestBatch({ ticketId, artifactsRootAbsolutePath: src, entries })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* Fiber.interrupt(fiber);
+
+      const dir = NodePath.join(paths.rootDir, String(ticketId));
+      const names = yield* Effect.promise(() => Fs.readdir(dir).catch(() => [] as Array<string>));
+      assert.lengthOf(
+        names.filter((name) => name.startsWith(".tmp-")),
+        0,
+        `stale temp files: ${names.join(", ")}`,
+      );
+      const rows = yield* sql<{ readonly blob_id: string }>`
+        SELECT blob_id FROM workflow_ticket_artifact WHERE ticket_id = ${String(ticketId)}
+      `;
+      const referenced = new Set(rows.map((row) => row.blob_id));
+      for (const name of names) {
+        assert.isTrue(referenced.has(name), `unreferenced blob left on disk: ${name}`);
+      }
+
+      // The batch is single-flight per ticket, so a rerun AFTER the interrupt
+      // must land everything cleanly.
+      const report = yield* store.ingestBatch({
+        ticketId,
+        artifactsRootAbsolutePath: src,
+        entries,
+      });
+      assert.lengthOf(report.ingested, 8);
+      assert.lengthOf(report.skips, 0);
     }),
   );
 });

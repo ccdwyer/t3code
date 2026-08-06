@@ -527,71 +527,85 @@ const make = Effect.gen(function* () {
         const sourceAbs = NodePath.join(input.artifactsRootAbsolutePath, candidate.rawName);
         const existing = existingRows.get(candidate.normalized);
 
-        // Phase-A short-circuit: size+mtime match AND healthy current blob →
-        // skip blob staging; still enters Phase B as an UnchangedCandidate.
-        const preOpen = yield* Effect.promise(() => openContained(sourceAbs, rootReal));
-        if (preOpen === null) {
-          allSkips.push({ name: candidate.rawName, reason: "unreadable" });
-          continue;
-        }
-        const observedMtime = toSourceMtimeMs(preOpen.mtimeMs);
-        let repairRequired = false;
-        if (
-          existing !== undefined &&
-          existing.byteSize === preOpen.size &&
-          existing.sourceMtimeMs === observedMtime
-        ) {
-          const healthy = yield* Effect.promise(() => blobHealthy(dir, existing));
-          if (healthy) {
-            yield* Effect.promise(() => preOpen.handle.close().catch(() => undefined));
+        // The whole open → stage → promote → bookkeeping section is ONE
+        // uninterruptible region: its promises cannot be cancelled, so an
+        // interrupt mid-region would let them finish AFTER the outer cleanup
+        // ran — creating a .tmp afterward, promoting a blob no tracking set
+        // knows about, or leaking the preOpen handle. Deferring interrupts to
+        // the region boundary keeps every-exit cleanup exact; each candidate
+        // is small (bounded copy), so deferral is short.
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            // Phase-A short-circuit: size+mtime match AND healthy current
+            // blob → skip blob staging; still enters Phase B as an
+            // UnchangedCandidate.
+            const preOpen = yield* Effect.promise(() => openContained(sourceAbs, rootReal));
+            if (preOpen === null) {
+              allSkips.push({ name: candidate.rawName, reason: "unreadable" });
+              return;
+            }
+            const observedMtime = toSourceMtimeMs(preOpen.mtimeMs);
+            let repairRequired = false;
+            if (
+              existing !== undefined &&
+              existing.byteSize === preOpen.size &&
+              existing.sourceMtimeMs === observedMtime
+            ) {
+              const healthy = yield* Effect.promise(() => blobHealthy(dir, existing));
+              if (healthy) {
+                yield* Effect.promise(() => preOpen.handle.close().catch(() => undefined));
+                staged.push({
+                  candidate,
+                  description,
+                  sidecarPresent,
+                  mode: "unchanged",
+                  mtimeMs: observedMtime,
+                  repairRequired: false,
+                });
+                return;
+              }
+              repairRequired = true;
+            }
+
+            // Repair detection must not depend on the short-circuit firing: a
+            // missing/unhealthy current blob with a drifted mtime still needs
+            // the staged bytes ADOPTED even when the sha matches (spec
+            // Phase-B pin).
+            if (existing !== undefined && !repairRequired) {
+              const healthy = yield* Effect.promise(() => blobHealthy(dir, existing));
+              repairRequired = !healthy;
+            }
+            const cap = ARTIFACT_FILE_CAPS[candidate.kind];
+            const blobId = randomUUID();
+            const tmpPath = NodePath.join(dir, `.tmp-${randomUUID()}`);
+            pendingTmpPaths.add(tmpPath);
+            const result = yield* Effect.promise(() => stageBounded(preOpen, cap, tmpPath)).pipe(
+              Effect.ensuring(Effect.promise(() => preOpen.handle.close().catch(() => undefined))),
+            );
+            if (!result.ok) {
+              pendingTmpPaths.delete(tmpPath);
+              allSkips.push({ name: candidate.rawName, reason: result.reason });
+              return;
+            }
+            yield* Effect.tryPromise({
+              try: () => Fs.rename(tmpPath, NodePath.join(dir, blobId)),
+              catch: toStoreError("TicketArtifactStore.ingest:promote"),
+            });
+            pendingTmpPaths.delete(tmpPath);
+            promotedBlobPaths.push(NodePath.join(dir, blobId));
             staged.push({
               candidate,
               description,
               sidecarPresent,
-              mode: "unchanged",
-              mtimeMs: observedMtime,
-              repairRequired: false,
+              mode: "staged",
+              blobId,
+              sha256: result.sha256,
+              size: result.size,
+              mtimeMs: toSourceMtimeMs(result.mtimeMs),
+              repairRequired,
             });
-            continue;
-          }
-          repairRequired = true;
-        }
-
-        // Repair detection must not depend on the short-circuit firing: a
-        // missing/unhealthy current blob with a drifted mtime still needs the
-        // staged bytes ADOPTED even when the sha matches (spec Phase-B pin).
-        if (existing !== undefined && !repairRequired) {
-          const healthy = yield* Effect.promise(() => blobHealthy(dir, existing));
-          repairRequired = !healthy;
-        }
-        const cap = ARTIFACT_FILE_CAPS[candidate.kind];
-        const blobId = randomUUID();
-        const tmpPath = NodePath.join(dir, `.tmp-${randomUUID()}`);
-        pendingTmpPaths.add(tmpPath);
-        const result = yield* Effect.promise(() => stageBounded(preOpen, cap, tmpPath));
-        yield* Effect.promise(() => preOpen.handle.close().catch(() => undefined));
-        if (!result.ok) {
-          pendingTmpPaths.delete(tmpPath);
-          allSkips.push({ name: candidate.rawName, reason: result.reason });
-          continue;
-        }
-        yield* Effect.tryPromise({
-          try: () => Fs.rename(tmpPath, NodePath.join(dir, blobId)),
-          catch: toStoreError("TicketArtifactStore.ingest:promote"),
-        });
-        pendingTmpPaths.delete(tmpPath);
-        promotedBlobPaths.push(NodePath.join(dir, blobId));
-        staged.push({
-          candidate,
-          description,
-          sidecarPresent,
-          mode: "staged",
-          blobId,
-          sha256: result.sha256,
-          size: result.size,
-          mtimeMs: toSourceMtimeMs(result.mtimeMs),
-          repairRequired,
-        });
+          }),
+        );
       }
 
       // Phase B — one short write transaction with liveness + caps + the four

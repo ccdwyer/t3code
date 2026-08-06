@@ -7,6 +7,9 @@ import {
   formatBytes,
   needsFetchOnExpand,
   rendererForKind,
+  scratchIsExpandable,
+  scratchNeedsUrl,
+  scratchRendererForKind,
 } from "./artifactView";
 
 const view = (overrides: Partial<WorkflowTicketArtifactView> = {}): WorkflowTicketArtifactView =>
@@ -122,5 +125,36 @@ describe("formatBytes", () => {
     expect(formatBytes(-1)).toBe("—");
     expect(formatBytes(Number.NaN)).toBe("—");
     expect(formatBytes(Number.POSITIVE_INFINITY)).toBe("—");
+  });
+});
+
+describe("scratch view model", () => {
+  it("maps every scratch kind to a renderer, including the binary fallback", () => {
+    expect(scratchRendererForKind("markdown")).toBe("markdown");
+    expect(scratchRendererForKind("text")).toBe("text");
+    expect(scratchRendererForKind("html")).toBe("html-link");
+    expect(scratchRendererForKind("image")).toBe("image");
+    expect(scratchRendererForKind("video")).toBe("video");
+    expect(scratchRendererForKind("binary")).toBe("binary");
+  });
+
+  it("requires a signed url for exactly the kinds that cannot render without one", () => {
+    expect(scratchNeedsUrl("html")).toBe(true);
+    expect(scratchNeedsUrl("image")).toBe(true);
+    expect(scratchNeedsUrl("video")).toBe(true);
+    // Text-like rows carry inline content; binary renders no body at all.
+    expect(scratchNeedsUrl("markdown")).toBe(false);
+    expect(scratchNeedsUrl("text")).toBe(false);
+    expect(scratchNeedsUrl("binary")).toBe(false);
+  });
+
+  it("expands only the kinds with a body to show", () => {
+    expect(scratchIsExpandable("markdown")).toBe(true);
+    expect(scratchIsExpandable("text")).toBe(true);
+    expect(scratchIsExpandable("image")).toBe(true);
+    expect(scratchIsExpandable("video")).toBe(true);
+    // html links out (durable pattern); binary has nothing to reveal.
+    expect(scratchIsExpandable("html")).toBe(false);
+    expect(scratchIsExpandable("binary")).toBe(false);
   });
 });

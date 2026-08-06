@@ -151,6 +151,7 @@ describe("TicketArtifactFinalizer", () => {
         await Fs.mkdir(artifactsDir, { recursive: true });
         await Fs.writeFile(NodePath.join(artifactsDir, "PLAN.md"), "# plan");
         await Fs.writeFile(NodePath.join(artifactsDir, "diagram.svg"), "<svg/>");
+        await Fs.writeFile(NodePath.join(artifactsDir, "report.pdf"), "%PDF-1.4");
       });
 
       const finalizer = yield* TicketArtifactFinalizer;
@@ -166,17 +167,22 @@ describe("TicketArtifactFinalizer", () => {
       assert.isTrue(result.ok);
 
       const rows = yield* store.list(ticketId);
+      // SVG ingests as an image since the 2026-08-06 spec widened the kind
+      // table; the PDF is now the unsupported-extension case.
       assert.deepEqual(
         rows.map((row) => row.name),
-        ["PLAN.md"],
+        ["PLAN.md", "diagram.svg"],
       );
+      assert.equal(rows.find((row) => row.name === "diagram.svg")?.kind, "image");
+      assert.equal(rows.find((row) => row.name === "diagram.svg")?.mime, "image/svg+xml");
 
-      // The svg skip produced ONE aggregated agent note.
+      // The pdf skip produced ONE aggregated agent note.
       assert.lengthOf(committed, 1);
       const note = committed[0];
       assert.equal(note?.type, "TicketMessagePosted");
-      assert.include(String(note?.payload["body"]), "diagram.svg");
+      assert.include(String(note?.payload["body"]), "report.pdf");
       assert.include(String(note?.payload["body"]), "unsupported extension");
+      assert.notInclude(String(note?.payload["body"]), "diagram.svg");
     }).pipe(Effect.provide(finalizerHarness(pathBox, committed))) as never;
   });
 

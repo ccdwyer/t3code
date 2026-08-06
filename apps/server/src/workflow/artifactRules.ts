@@ -46,6 +46,7 @@ const KIND_BY_EXTENSION: ReadonlyMap<string, KindEntry> = new Map([
   [".html", { kind: "html", mime: "text/html; charset=utf-8" }],
   [".htm", { kind: "html", mime: "text/html; charset=utf-8" }],
   [".png", { kind: "image", mime: "image/png" }],
+  [".svg", { kind: "image", mime: "image/svg+xml" }],
   [".jpg", { kind: "image", mime: "image/jpeg" }],
   [".jpeg", { kind: "image", mime: "image/jpeg" }],
   [".webp", { kind: "image", mime: "image/webp" }],
@@ -75,6 +76,19 @@ export const detectArtifactKind = (name: string): KindEntry | null =>
 /** Kinds whose bytes are UTF-8 decodable for inline/read paths. */
 export const isTextLikeKind = (kind: WorkflowTicketArtifactKind): boolean =>
   kind === "markdown" || kind === "text";
+
+/**
+ * Active-content class of a served artifact, keyed on MIME alone — the DB row
+ * (durable) or the signed claim (scratch) is authoritative, and extensions are
+ * never consulted at serve time.
+ *
+ * SVG is active content: served as `image/svg+xml` at top level, an embedded
+ * `<script>` would execute in this origin. Keying on mime rather than kind is
+ * what makes that unmissable — an SVG is `kind: "image"`, so a kind-keyed test
+ * would silently leave it unsandboxed.
+ */
+export const activeContentFor = (mime: string): "html" | "svg" | null =>
+  mime.startsWith("text/html") ? "html" : mime.startsWith("image/svg+xml") ? "svg" : null;
 
 // ─── Name validation + normalization (spec §Name rules) ──────────────────────
 

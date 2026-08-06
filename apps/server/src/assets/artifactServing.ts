@@ -89,13 +89,19 @@ export const contentDispositionInline = (displayName: string): string => {
 
 /**
  * Pinned header set — applied to 200, 206, 416, and HEAD responses alike.
- * The HTML CSP (opaque-origin sandbox, scripts allowed, allow-same-origin
- * FORBIDDEN forever) applies only when the resolved artifact kind is html.
+ *
+ * The sandbox CSP applies to ACTIVE CONTENT, classified from the response mime
+ * by `activeContentFor` (see `workflow/artifactRules.ts`) rather than from the
+ * artifact kind — an SVG is `kind: "image"`, so kind-based gating would leave
+ * it unsandboxed:
+ * - html → `sandbox allow-scripts` (opaque origin, scripts permitted)
+ * - svg  → `sandbox` (opaque origin, scripts BLOCKED — an image needs none)
+ * `allow-same-origin` is FORBIDDEN forever for both.
  */
 export const artifactHeaders = (input: {
   readonly mime: string;
   readonly displayName: string;
-  readonly isHtml: boolean;
+  readonly activeContent: "html" | "svg" | null;
 }): Record<string, string> => ({
   "Content-Type": input.mime,
   "X-Content-Type-Options": "nosniff",
@@ -103,5 +109,9 @@ export const artifactHeaders = (input: {
   "Referrer-Policy": "no-referrer",
   "Accept-Ranges": "bytes",
   "Content-Disposition": contentDispositionInline(input.displayName),
-  ...(input.isHtml ? { "Content-Security-Policy": "sandbox allow-scripts" } : {}),
+  ...(input.activeContent === "html"
+    ? { "Content-Security-Policy": "sandbox allow-scripts" }
+    : input.activeContent === "svg"
+      ? { "Content-Security-Policy": "sandbox" }
+      : {}),
 });

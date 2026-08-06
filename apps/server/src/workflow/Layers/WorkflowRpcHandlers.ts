@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import type {
   BoardListEntry,
   BoardSnapshot,
@@ -83,16 +86,25 @@ import * as Stream from "effect/Stream";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { WorkspaceFileSystem } from "../../workspace/WorkspaceFileSystem.ts";
-import type { WorkflowTicketArtifactView } from "@t3tools/contracts";
+import type { WorkflowTicketArtifactView, WorkflowTicketScratchKind } from "@t3tools/contracts";
 import type { TicketArtifactStoreShape } from "../Services/TicketArtifactStore.ts";
 import {
+  ARTIFACT_FILE_CAPS,
   ARTIFACT_INLINE_FILE_CAP_BYTES,
   ARTIFACT_INLINE_LIST_BUDGET_BYTES,
   ARTIFACT_READ_CAP_BYTES,
   decodedByteLength,
+  decodeUtf8Replacing,
+  detectArtifactKind,
   isTextLikeKind,
   truncateDecodedToBytes,
 } from "../artifactRules.ts";
+import {
+  isInsideRealDirectory,
+  openContained,
+  resolveSubdirectoryRealpath,
+  resolveTicketScratchRoot,
+} from "../containedOpen.ts";
 import { slugifyBoardName, uniqueBoardSlug } from "../boardSlug.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "../boardTemplates.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
@@ -251,6 +263,18 @@ interface WorkflowRpcHandlerDeps {
     readonly ticketId: string;
     readonly artifactId: string;
     readonly fileName: string;
+  }) => Effect.Effect<{ readonly relativeUrl: string }, WorkflowRpcError>;
+  /**
+   * Signs a ticket-SCRATCH asset URL (ws.ts wraps
+   * AssetAccess.issueTicketScratchUrl). Optional like `issueArtifactUrl`, so
+   * handler tests that omit it still compile — rows then carry no `url`, the
+   * same degradation as a signing failure.
+   */
+  readonly issueScratchUrl?: (input: {
+    readonly workspaceRoot: string;
+    readonly ticketId: string;
+    readonly relativePath: string;
+    readonly mime: string;
   }) => Effect.Effect<{ readonly relativeUrl: string }, WorkflowRpcError>;
   readonly artifactStore?: Pick<
     TicketArtifactStoreShape,
@@ -3428,34 +3452,107 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
           ).pipe(Effect.mapError(toWorkflowRpcError("Failed to list ticket artifacts")));
           // Excluded DURING traversal, before the 20-file cap: the durable
           // list is the only view of artifacts/**.
-          const scratchNames = names.filter(
-            (name) => name !== "artifacts" && !name.startsWith("artifacts/"),
-          );
+          // Cheap first pass, kept BEFORE the cap so the common case never
+          // opens an artifacts file at all. Case-insensitive on the first
+          // segment because a case-insensitive volume happily serves
+          // `ARTIFACTS/x.md`. This is a COST filter, not a security control —
+          // the canonical containment check below is the security control.
+          const scratchNames = names.filter((name) => {
+            const first = (name.split("/")[0] ?? "").toLowerCase();
+            return first !== "artifacts";
+          });
           const scratch: Array<{
             readonly name: string;
-            readonly content: string;
+            readonly kind: WorkflowTicketScratchKind;
+            readonly byteSize: number;
+            readonly content?: string;
             readonly truncated?: boolean;
+            readonly url?: string;
           }> = [];
-          for (const name of scratchNames.slice(0, MAX_TICKET_ARTIFACTS)) {
+          // Anchored to the canonical worktree root (see resolveTicketScratchRoot):
+          // O_NOFOLLOW guards only the final component, so the contain-root
+          // itself has to be proven or a symlinked ancestor pivots it.
+          const ticketDirReal = yield* Effect.promise(() =>
+            resolveTicketScratchRoot(worktree.cwd, String(input.ticketId)),
+          );
+          const artifactsReal =
+            ticketDirReal === null
+              ? null
+              : yield* Effect.promise(() =>
+                  resolveSubdirectoryRealpath(ticketDirReal, "artifacts"),
+                );
+          for (const name of scratchNames) {
+            // The cap counts EMITTED rows, not candidates: skipped entries
+            // (symlinks, artifacts aliases) must not starve the real files out
+            // of the listing.
+            if (scratch.length >= MAX_TICKET_ARTIFACTS) break;
+            if (ticketDirReal === null) break;
+            const detected = detectArtifactKind(name);
             const relativePath = `${scratchDir}/${name}`;
-            // Bound the read so a large artifact can't force a full-memory read
-            // over this RPC. Fall back to the unbounded read only when the capped
-            // method is unavailable (lightweight mocks).
-            const cappedRead = deps.workspaceFileSystem.readFileStringCapped;
-            const content = yield* (
-              cappedRead
-                ? cappedRead({
-                    cwd: worktree.cwd,
-                    relativePath,
-                    maxBytes: MAX_TICKET_ARTIFACT_READ_BYTES,
-                  })
-                : deps.workspaceFileSystem.readFileString({ cwd: worktree.cwd, relativePath })
-            ).pipe(Effect.mapError(toWorkflowRpcError("Failed to read ticket artifact")));
-            scratch.push({
-              name,
-              content: content.slice(0, MAX_TICKET_ARTIFACT_CHARS),
-              ...(content.length > MAX_TICKET_ARTIFACT_CHARS ? { truncated: true } : {}),
-            });
+            // ONE contained open per row: it is the containment check (refuses
+            // symlinked finals, escapes, non-regular files) AND the source of
+            // both the size and the bytes. A path-based stat + read would be a
+            // TOCTOU window.
+            const opened = yield* Effect.promise(() =>
+              openContained(NodePath.join(worktree.cwd, relativePath), ticketDirReal),
+            );
+            if (opened === null) continue;
+            const row = yield* Effect.gen(function* () {
+              // A symlink or case alias can still land inside the durable
+              // artifacts subtree; that is the durable list's territory.
+              if (isInsideRealDirectory(opened.realPath, artifactsReal)) return null;
+              const byteSize = opened.size;
+              const kind: WorkflowTicketScratchKind = detected?.kind ?? "binary";
+              if (detected !== null && isTextLikeKind(detected.kind)) {
+                const decoded = yield* Effect.promise(async () => {
+                  const buffer = Buffer.alloc(
+                    Math.min(byteSize, MAX_TICKET_ARTIFACT_READ_BYTES + 1),
+                  );
+                  let readTotal = 0;
+                  while (readTotal < buffer.length) {
+                    const { bytesRead } = await opened.handle.read(
+                      buffer,
+                      readTotal,
+                      buffer.length - readTotal,
+                      readTotal,
+                    );
+                    if (bytesRead === 0) break;
+                    readTotal += bytesRead;
+                  }
+                  return buffer.subarray(0, readTotal);
+                }).pipe(Effect.orElseSucceed(() => null));
+                // A read failure isolates to THIS row: no content, and the
+                // client renders the unavailable notice.
+                if (decoded === null) return { name, kind, byteSize };
+                const content = decodeUtf8Replacing(decoded);
+                return {
+                  name,
+                  kind,
+                  byteSize,
+                  content: content.slice(0, MAX_TICKET_ARTIFACT_CHARS),
+                  ...(content.length > MAX_TICKET_ARTIFACT_CHARS ? { truncated: true } : {}),
+                };
+              }
+              // Binary rows get no URL: there is no signed claim for an
+              // unrecognized extension, and minting one would be an
+              // arbitrary-worktree-file read primitive.
+              if (detected === null) return { name, kind, byteSize };
+              if (byteSize > ARTIFACT_FILE_CAPS[detected.kind]) return { name, kind, byteSize };
+              const issueScratchUrl = deps.issueScratchUrl;
+              if (issueScratchUrl === undefined) return { name, kind, byteSize };
+              const issued = yield* issueScratchUrl({
+                workspaceRoot: worktree.cwd,
+                ticketId: input.ticketId,
+                relativePath,
+                mime: detected.mime,
+              }).pipe(Effect.orElseSucceed(() => null));
+              return issued === null
+                ? { name, kind, byteSize }
+                : { name, kind, byteSize, url: issued.relativeUrl };
+            }).pipe(
+              Effect.ensuring(Effect.promise(() => opened.handle.close().catch(() => undefined))),
+            );
+            if (row !== null) scratch.push(row);
           }
           return { artifacts: durable, scratch };
         }),

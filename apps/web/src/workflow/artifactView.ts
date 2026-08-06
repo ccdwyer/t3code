@@ -2,6 +2,7 @@ import type {
   WorkflowTicketArtifactKind,
   WorkflowTicketArtifactView,
   WorkflowTicketArtifactsResult,
+  WorkflowTicketScratchKind,
 } from "@t3tools/contracts";
 
 /**
@@ -35,6 +36,46 @@ export const rendererForKind = (kind: WorkflowTicketArtifactKind): ArtifactRende
     case "video":
       return "video";
   }
+};
+
+/**
+ * Which viewer widget a SCRATCH row expands into (spec
+ * 2026-08-06-scratch-artifact-viewer §E). Deliberately a separate union from
+ * `ArtifactRenderer`: scratch adds `binary`, and widening the durable one
+ * would silently lose exhaustiveness on the durable kind.
+ */
+export type ScratchRenderer = ArtifactRenderer | "binary";
+
+export const scratchRendererForKind = (kind: WorkflowTicketScratchKind): ScratchRenderer => {
+  switch (kind) {
+    case "markdown":
+      return "markdown";
+    case "text":
+      return "text";
+    case "html":
+      return "html-link";
+    case "image":
+      return "image";
+    case "video":
+      return "video";
+    case "binary":
+      return "binary";
+  }
+};
+
+/** True when the row's viewer cannot draw anything without a signed `url`. */
+export const scratchNeedsUrl = (kind: WorkflowTicketScratchKind): boolean => {
+  const renderer = scratchRendererForKind(kind);
+  return renderer === "html-link" || renderer === "image" || renderer === "video";
+};
+
+/**
+ * True when the row gets a `<details>` body at all. `html-link` renders its
+ * anchor inline (matching the durable row) and `binary` has nothing to show.
+ */
+export const scratchIsExpandable = (kind: WorkflowTicketScratchKind): boolean => {
+  const renderer = scratchRendererForKind(kind);
+  return renderer !== "html-link" && renderer !== "binary";
 };
 
 /**

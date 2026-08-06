@@ -32,6 +32,7 @@ import {
   toSourceMtimeMs,
   validateArtifactName,
 } from "../artifactRules.ts";
+import { openContained } from "../containedOpen.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import {
   TicketArtifactPaths,
@@ -87,58 +88,6 @@ const toRow = (raw: RawRow): TicketArtifactRow => ({
   createdAt: raw.created_at,
   updatedAt: raw.updated_at,
 });
-
-/**
- * The pinned safe-open sequence (spec §Ingest pipeline step 1 / §Serve-time
- * open): lstat regular → open O_NOFOLLOW → fstat regular → realpath
- * component-boundary containment → re-lstat dev/ino === fstat dev/ino.
- * Returns null on ANY violation. POSIX-only by contract.
- */
-const openContained = async (
-  absolutePath: string,
-  containRootRealpath: string,
-): Promise<{
-  readonly handle: Fs.FileHandle;
-  readonly size: number;
-  readonly mtimeMs: number;
-} | null> => {
-  let handle: Fs.FileHandle | null = null;
-  try {
-    const pre = await Fs.lstat(absolutePath);
-    if (!pre.isFile()) return null;
-    handle = await Fs.open(absolutePath, FsConstants.O_RDONLY | FsConstants.O_NOFOLLOW);
-    const stat = await handle.stat();
-    if (!stat.isFile()) {
-      await handle.close();
-      return null;
-    }
-    const real = await Fs.realpath(absolutePath);
-    if (real !== containRootRealpath && !real.startsWith(containRootRealpath + NodePath.sep)) {
-      await handle.close();
-      return null;
-    }
-    if (real === containRootRealpath) {
-      // The target must be a CHILD of the root, never the root itself.
-      await handle.close();
-      return null;
-    }
-    const post = await Fs.lstat(absolutePath);
-    if (post.dev !== stat.dev || post.ino !== stat.ino) {
-      await handle.close();
-      return null;
-    }
-    return { handle, size: stat.size, mtimeMs: stat.mtimeMs };
-  } catch {
-    if (handle !== null) {
-      try {
-        await handle.close();
-      } catch {
-        // already closed
-      }
-    }
-    return null;
-  }
-};
 
 /**
  * Blob health for repair detection — the same no-follow/verified posture as

@@ -98,7 +98,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
-import { issueAssetUrl } from "./assets/AssetAccess.ts";
+import { issueAssetUrl, issueTicketScratchUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -1221,6 +1221,20 @@ const makeWsRpcLayer = (
             Effect.mapError(
               (cause) =>
                 new WorkflowRpcError({ message: "Failed to sign ticket artifact URL", cause }),
+            ),
+            Effect.provide(assetSigningContext),
+          ),
+        issueScratchUrl: (input) =>
+          issueTicketScratchUrl({
+            _tag: "ticket-scratch",
+            workspaceRoot: input.workspaceRoot,
+            ticketId: input.ticketId,
+            relativePath: input.relativePath,
+            mime: input.mime,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowRpcError({ message: "Failed to sign ticket scratch URL", cause }),
             ),
             Effect.provide(assetSigningContext),
           ),

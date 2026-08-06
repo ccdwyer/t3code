@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  activeContentFor,
   ARTIFACT_ALLOWED_EXTENSIONS,
   ARTIFACT_CAPTION_MAX_CHARS,
   ARTIFACT_FILE_CAPS,
@@ -48,14 +49,30 @@ describe("artifactRules", () => {
       });
     });
 
+    it("recognizes SVG as an image kind", () => {
+      assert.deepEqual(detectArtifactKind("design/diagram.SVG"), {
+        kind: "image",
+        mime: "image/svg+xml",
+      });
+      assert.include(ARTIFACT_ALLOWED_EXTENSIONS, ".svg");
+    });
+
     it("returns null for unknown extensions (skip-with-reason path)", () => {
-      assert.isNull(detectArtifactKind("diagram.svg"));
       assert.isNull(detectArtifactKind("report.pdf"));
       assert.isNull(detectArtifactKind("noextension"));
       assert.isNull(detectArtifactKind(".gitignore"));
       assert.include(ARTIFACT_ALLOWED_EXTENSIONS, ".md");
       assert.include(ARTIFACT_ALLOWED_EXTENSIONS, ".webm");
-      assert.notInclude(ARTIFACT_ALLOWED_EXTENSIONS, ".svg");
+    });
+
+    it("classifies active content from MIME, never from kind", () => {
+      assert.equal(activeContentFor("text/html; charset=utf-8"), "html");
+      // The whole point: an SVG is kind "image", so a kind-keyed test would
+      // leave it unsandboxed.
+      assert.equal(activeContentFor("image/svg+xml"), "svg");
+      assert.isNull(activeContentFor("image/png"));
+      assert.isNull(activeContentFor("text/markdown; charset=utf-8"));
+      assert.isNull(activeContentFor("video/mp4"));
     });
 
     it("pins caps in binary units and text-like kinds", () => {

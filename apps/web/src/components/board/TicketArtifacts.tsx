@@ -5,6 +5,7 @@ import {
   type WorkflowTicketArtifactKind,
   type WorkflowTicketArtifactView,
   type WorkflowTicketArtifactsResult,
+  type WorkflowTicketScratchKind,
 } from "@t3tools/contracts";
 import {
   ExternalLinkIcon,
@@ -22,6 +23,9 @@ import {
   formatBytes,
   needsFetchOnExpand,
   rendererForKind,
+  scratchIsExpandable,
+  scratchNeedsUrl,
+  scratchRendererForKind,
 } from "~/workflow/artifactView";
 import { useNowTick } from "~/workflow/useNowTick";
 
@@ -103,50 +107,150 @@ function ArtifactCaption({ description }: { readonly description: string | undef
   return <figcaption className="mt-1 text-[11px] text-muted-foreground">{description}</figcaption>;
 }
 
-/** Lazy bounded thumbnail; click opens the full asset in a new tab. */
+/**
+ * Lazy bounded thumbnail; click opens the full asset in a new tab.
+ *
+ * Takes the fields rather than a `WorkflowTicketArtifactView` so the durable
+ * and scratch lists share one implementation — scratch rows have no
+ * artifactId/updatedAt to fake.
+ */
 export function ArtifactImageViewer({
-  artifact,
+  url,
+  name,
+  description,
 }: {
-  readonly artifact: WorkflowTicketArtifactView;
+  readonly url: string;
+  readonly name: string;
+  readonly description?: string | undefined;
 }) {
   return (
     <figure className="m-0">
-      <a href={artifact.url} target="_blank" rel="noopener noreferrer">
+      <a href={url} target="_blank" rel="noopener noreferrer">
         <img
-          src={artifact.url}
-          alt={artifact.description ?? artifact.name}
+          src={url}
+          alt={description ?? name}
           loading="lazy"
           className="max-h-64 max-w-full rounded-sm border border-border/60"
         />
       </a>
-      <ArtifactCaption description={artifact.description} />
+      <ArtifactCaption description={description} />
     </figure>
   );
 }
 
 export function ArtifactVideoViewer({
-  artifact,
+  url,
+  description,
 }: {
-  readonly artifact: WorkflowTicketArtifactView;
+  readonly url: string;
+  readonly description?: string | undefined;
 }) {
   return (
     <figure className="m-0">
       {/* eslint-disable-next-line jsx-a11y/media-has-caption -- pipeline recordings have no track files */}
       <video
-        src={artifact.url}
+        src={url}
         controls
         preload="metadata"
         className="max-h-64 max-w-full rounded-sm border border-border/60"
       />
-      <ArtifactCaption description={artifact.description} />
+      <ArtifactCaption description={description} />
     </figure>
+  );
+}
+
+/**
+ * Rendered markdown with a Rendered/Raw toggle. Lifted out of the durable
+ * textual row so the scratch list gets the identical widget rather than a
+ * second implementation that drifts.
+ */
+export function MarkdownWithRawToggle({
+  content,
+  cwd,
+}: {
+  readonly content: string;
+  readonly cwd?: string | undefined;
+}) {
+  const [showRaw, setShowRaw] = useState(false);
+  return (
+    <>
+      <div className="flex justify-end px-2 pt-1.5">
+        <button
+          type="button"
+          className="cursor-pointer rounded-sm border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground"
+          onClick={() => setShowRaw((previous) => !previous)}
+        >
+          {showRaw ? "Rendered" : "Raw"}
+        </button>
+      </div>
+      {showRaw ? (
+        <pre className={PRE_CLASS}>{content}</pre>
+      ) : (
+        <div className="p-2">
+          <ChatMarkdown text={content} cwd={cwd} className="text-sm leading-5" />
+        </div>
+      )}
+    </>
   );
 }
 
 const PRE_CLASS =
   "max-h-72 overflow-auto p-2 text-[11px] leading-4 whitespace-pre-wrap text-muted-foreground";
 
-/** The legacy scratch listing (old <pre> viewer), unchanged styling. */
+const SCRATCH_KIND_ICONS: Record<
+  WorkflowTicketScratchKind,
+  React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>
+> = { ...KIND_ICONS, binary: FileIcon };
+
+/** Name, truncated marker, and size — scratch has no updatedAt, so no age. */
+function ScratchRowHeader({ file }: { readonly file: WorkflowTicketArtifact }) {
+  const Icon = SCRATCH_KIND_ICONS[file.kind];
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+        {file.name}
+        {file.truncated === true ? (
+          <span className="ml-2 font-normal text-muted-foreground">(truncated)</span>
+        ) : null}
+      </span>
+      <span className="shrink-0 font-mono text-[10px] font-normal text-muted-foreground">
+        {formatBytes(file.byteSize)}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The body of one scratch row, by kind. Every predicate here tests
+ * `=== undefined` rather than truthiness: an empty PLAN.md arrives as
+ * `content: ""` and is a valid empty document, not an unavailable one.
+ */
+function ScratchRowBody({ file }: { readonly file: WorkflowTicketArtifact }) {
+  const renderer = scratchRendererForKind(file.kind);
+  if (scratchNeedsUrl(file.kind) && file.url === undefined) {
+    return <ArtifactUnavailableNotice />;
+  }
+  if (renderer === "image") {
+    return <ArtifactImageViewer url={file.url ?? ""} name={file.name} description={undefined} />;
+  }
+  if (renderer === "video") {
+    return <ArtifactVideoViewer url={file.url ?? ""} description={undefined} />;
+  }
+  if (file.content === undefined) {
+    return <ArtifactUnavailableNotice />;
+  }
+  if (renderer === "markdown") {
+    return <MarkdownWithRawToggle content={file.content} cwd={undefined} />;
+  }
+  return <pre className={PRE_CLASS}>{file.content}</pre>;
+}
+
+/**
+ * The worktree scratch listing. Kind-aware since the 2026-08-06 spec: the
+ * server no longer string-reads binaries, so each row gets the same viewer the
+ * durable list uses instead of one undifferentiated <pre>.
+ */
 export function ScratchFileList({
   files,
 }: {
@@ -157,17 +261,32 @@ export function ScratchFileList({
   }
   return (
     <div className="space-y-2">
-      {files.map((file) => (
-        <details key={file.name} className="rounded-md border border-border/60 bg-background/70">
-          <summary className="cursor-pointer px-2 py-1.5 text-xs font-medium text-foreground select-none">
-            {file.name}
-            {file.truncated === true ? (
-              <span className="ml-2 font-normal text-muted-foreground">(truncated)</span>
-            ) : null}
-          </summary>
-          <pre className={`border-t border-border/60 ${PRE_CLASS}`}>{file.content}</pre>
-        </details>
-      ))}
+      {files.map((file) =>
+        scratchIsExpandable(file.kind) ? (
+          <details key={file.name} className="rounded-md border border-border/60 bg-background/70">
+            <summary className="flex cursor-pointer items-center px-2 py-1.5 select-none">
+              <ScratchRowHeader file={file} />
+            </summary>
+            <div className="border-t border-border/60">
+              <ScratchRowBody file={file} />
+            </div>
+          </details>
+        ) : (
+          <div
+            key={file.name}
+            className="flex items-center gap-2 rounded-md border border-border/60 bg-background/70 px-2 py-1.5"
+          >
+            <ScratchRowHeader file={file} />
+            {file.kind === "html" && file.url !== undefined ? (
+              <ArtifactOpenInBrowser url={file.url} />
+            ) : file.kind === "html" ? (
+              <ArtifactUnavailableNotice />
+            ) : (
+              <span className="shrink-0 text-[11px] text-muted-foreground italic">binary file</span>
+            )}
+          </div>
+        ),
+      )}
     </div>
   );
 }
@@ -195,7 +314,6 @@ function TextualArtifactRow({
   readonly now: number;
 }) {
   const [fetched, setFetched] = useState<ArtifactFetchState>({ status: "idle" });
-  const [showRaw, setShowRaw] = useState(false);
   const contentState = contentStateFor(artifact);
   const isMarkdown = rendererForKind(artifact.kind) === "markdown";
 
@@ -243,17 +361,6 @@ function TextualArtifactRow({
         <ArtifactRowHeader artifact={artifact} now={now} />
       </summary>
       <div className="border-t border-border/60">
-        {isMarkdown ? (
-          <div className="flex justify-end px-2 pt-1.5">
-            <button
-              type="button"
-              className="cursor-pointer rounded-sm border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground"
-              onClick={() => setShowRaw((previous) => !previous)}
-            >
-              {showRaw ? "Rendered" : "Raw"}
-            </button>
-          </div>
-        ) : null}
         {fetched.status === "loading" ? (
           <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading…</p>
         ) : null}
@@ -263,10 +370,8 @@ function TextualArtifactRow({
           </p>
         ) : null}
         {content !== undefined ? (
-          isMarkdown && !showRaw ? (
-            <div className="p-2">
-              <ChatMarkdown text={content} cwd={undefined} className="text-sm leading-5" />
-            </div>
+          isMarkdown ? (
+            <MarkdownWithRawToggle content={content} cwd={undefined} />
           ) : (
             <pre className={PRE_CLASS}>{content}</pre>
           )
@@ -324,9 +429,13 @@ function ArtifactRow({
         </summary>
         <div className="border-t border-border/60 p-2">
           {renderer === "image" ? (
-            <ArtifactImageViewer artifact={artifact} />
+            <ArtifactImageViewer
+              url={artifact.url}
+              name={artifact.name}
+              description={artifact.description}
+            />
           ) : (
-            <ArtifactVideoViewer artifact={artifact} />
+            <ArtifactVideoViewer url={artifact.url} description={artifact.description} />
           )}
         </div>
       </details>
@@ -341,24 +450,27 @@ function ArtifactRow({
  * the collapsed header renders no ages and should not re-render on a
  * timer. (Same pattern as NeedsYouTicketList.)
  */
-function ArtifactList({
+/**
+ * Owns the minute tick, and is mounted ONLY when there are durable rows to
+ * show ages for. A scratch-only panel — the common case — then runs no timer.
+ *
+ * This must stay a separate component rather than a conditional
+ * `useNowTick` call: `artifacts.length` changes across renders (the panel
+ * refetches on every open), so gating the hook inline would be a hook-order
+ * violation on the 0→N transition.
+ */
+function DurableArtifactRows({
   api,
   ticketId,
-  result,
+  artifacts,
 }: {
   readonly api: EnvironmentApi;
   readonly ticketId: string;
-  readonly result: WorkflowTicketArtifactsResult;
+  readonly artifacts: ReadonlyArray<WorkflowTicketArtifactView>;
 }) {
   const now = useNowTick(60_000);
-  const artifacts = artifactsInServerOrder(result);
   return (
     <>
-      {artifacts.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          No artifacts yet — pipeline steps write plans and reviews here.
-        </p>
-      ) : null}
       {artifacts.map((artifact) => (
         <ArtifactRow
           key={`${artifact.artifactId}:${artifact.updatedAt}`}
@@ -368,6 +480,29 @@ function ArtifactList({
           now={now}
         />
       ))}
+    </>
+  );
+}
+
+function ArtifactList({
+  api,
+  ticketId,
+  result,
+}: {
+  readonly api: EnvironmentApi;
+  readonly ticketId: string;
+  readonly result: WorkflowTicketArtifactsResult;
+}) {
+  const artifacts = artifactsInServerOrder(result);
+  return (
+    <>
+      {artifacts.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No artifacts yet — pipeline steps write plans and reviews here.
+        </p>
+      ) : (
+        <DurableArtifactRows api={api} ticketId={ticketId} artifacts={artifacts} />
+      )}
       {result.scratch.length > 0 ? (
         <details className="rounded-md border border-border/60 bg-background/70">
           <summary className="cursor-pointer px-2 py-1.5 text-xs font-medium text-foreground select-none">

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import Mime from "@effect/platform-node/Mime";
 import {
   AuthOrchestrationOperateScope,
@@ -31,6 +34,18 @@ import { TicketId } from "@t3tools/contracts";
 
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
 import { artifactHeaders, decideRange } from "./assets/artifactServing.ts";
+import {
+  activeContentFor,
+  ARTIFACT_FILE_CAPS,
+  detectArtifactKind,
+  isTextLikeKind,
+} from "./workflow/artifactRules.ts";
+import {
+  isInsideRealDirectory,
+  openContained,
+  resolveSubdirectoryRealpath,
+  resolveTicketScratchRoot,
+} from "./workflow/containedOpen.ts";
 import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -228,7 +243,7 @@ const serveTicketArtifact = (
     const rowHeaders = artifactHeaders({
       mime: row.mime,
       displayName: row.name,
-      isHtml: row.kind === "html",
+      activeContent: activeContentFor(row.mime),
     });
     const blob = yield* store.openVerifiedBlob(row).pipe(Effect.orElseSucceed(() => null));
     if (blob === null) {
@@ -288,6 +303,122 @@ const serveTicketArtifact = (
     }).pipe(Effect.ensuring(blob.close()));
   });
 
+/**
+ * Serve a resolved ticket-scratch claim (spec 2026-08-06-scratch-artifact-viewer
+ * §C). Structurally `serveTicketArtifact` minus the DB lookup, and with the
+ * same verified-handle discipline: ONE `openContained` rooted at the canonical
+ * ticket directory, and every subsequent decision — size, Range math, bytes —
+ * taken from that handle's fstat and positional reads. Nothing is re-derived
+ * from a path, so there is no stat-then-open window.
+ */
+const serveTicketScratch = (
+  asset: {
+    readonly workspaceRoot: string;
+    readonly ticketId: string;
+    readonly relativePath: string;
+    readonly mime: string;
+    readonly displayName: string;
+  },
+  request: HttpServerRequest.HttpServerRequest,
+) =>
+  Effect.gen(function* () {
+    const notFound = HttpServerResponse.text("Not Found", {
+      status: 404,
+      headers: ARTIFACT_BASE_404_HEADERS,
+    });
+
+    // Anchored to the canonical workspace root: a symlinked `.t3`/`ticket`/
+    // `<id>` ancestor would otherwise pivot the contain-root and every later
+    // check would enforce containment inside the attacker's directory.
+    const ticketDirReal = yield* Effect.promise(() =>
+      resolveTicketScratchRoot(asset.workspaceRoot, asset.ticketId),
+    );
+    if (ticketDirReal === null) return notFound;
+
+    const absolutePath = NodePath.join(asset.workspaceRoot, asset.relativePath);
+    const opened = yield* Effect.promise(() => openContained(absolutePath, ticketDirReal));
+    if (opened === null) return notFound;
+
+    return yield* Effect.gen(function* () {
+      // The ticket's artifacts/ subtree is the durable list's territory, and a
+      // symlink or case alias could still land there. Decided on canonical
+      // paths, never on the claim's spelling.
+      const artifactsReal = yield* Effect.promise(() =>
+        resolveSubdirectoryRealpath(ticketDirReal, "artifacts"),
+      );
+      if (isInsideRealDirectory(opened.realPath, artifactsReal)) return notFound;
+
+      // The claim carries no artifact kind (only the ticket-scratch tag), so
+      // the cap's kind is re-derived from the signed relativePath — the same
+      // table the mime was resolved from at issue.
+      const detected = detectArtifactKind(asset.relativePath);
+      if (detected === null) return notFound;
+      // A text-like row is served inline in the RPC and never gets a URL, so a
+      // text-like claim should not exist. Refuse rather than serve one.
+      if (isTextLikeKind(detected.kind)) return notFound;
+      // Re-apply the size cap to the CURRENT size: the claim carries no size
+      // baseline (a worktree file legitimately changes), so a file that was
+      // small when signed could otherwise grow and force a full-body read.
+      if (opened.size > ARTIFACT_FILE_CAPS[detected.kind]) return notFound;
+
+      const headers = artifactHeaders({
+        mime: asset.mime,
+        displayName: asset.displayName,
+        activeContent: activeContentFor(asset.mime),
+      });
+      const isHead = request.method === "HEAD";
+      const decision = decideRange(request.headers["range"], opened.size);
+
+      if (decision.kind === "unsatisfiable") {
+        return HttpServerResponse.empty({
+          status: 416,
+          headers: { ...headers, "Content-Range": `bytes */${String(opened.size)}` },
+        });
+      }
+
+      const readExactly = (start: number, length: number) =>
+        Effect.promise(async () => {
+          const buffer = Buffer.alloc(length);
+          let readTotal = 0;
+          while (readTotal < length) {
+            const { bytesRead } = await opened.handle.read(
+              buffer,
+              readTotal,
+              length - readTotal,
+              start + readTotal,
+            );
+            if (bytesRead === 0) break;
+            readTotal += bytesRead;
+          }
+          // A truncation between the fstat and the read would otherwise send a
+          // body shorter than the Content-Length we already promised.
+          return readTotal === length ? new Uint8Array(buffer) : null;
+        });
+
+      if (decision.kind === "partial") {
+        const end = decision.openEnded
+          ? Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1)
+          : decision.end;
+        const length = end - decision.start + 1;
+        const partialHeaders = {
+          ...headers,
+          "Content-Range": `bytes ${String(decision.start)}-${String(end)}/${String(opened.size)}`,
+          "Content-Length": String(length),
+        };
+        if (isHead) return HttpServerResponse.empty({ status: 206, headers: partialHeaders });
+        const body = yield* readExactly(decision.start, length);
+        if (body === null) return notFound;
+        return HttpServerResponse.uint8Array(body, { status: 206, headers: partialHeaders });
+      }
+
+      const fullHeaders = { ...headers, "Content-Length": String(opened.size) };
+      if (isHead) return HttpServerResponse.empty({ status: 200, headers: fullHeaders });
+      const body = yield* readExactly(0, opened.size);
+      if (body === null) return notFound;
+      return HttpServerResponse.uint8Array(body, { status: 200, headers: fullHeaders });
+    }).pipe(Effect.ensuring(Effect.promise(() => opened.handle.close().catch(() => undefined))));
+  });
+
 const assetRouteHandler = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const url = HttpServerRequest.toURL(request);
@@ -306,10 +437,19 @@ const assetRouteHandler = Effect.gen(function* () {
     suffix.slice(separatorIndex + 1),
   );
   if (!asset) {
-    return HttpServerResponse.text("Not Found", { status: 404 });
+    // Safe headers on EVERY asset 404 — an unresolved claim (bad signature,
+    // expired, segment mismatch) must not answer more loosely than a resolved
+    // one that then failed.
+    return HttpServerResponse.text("Not Found", {
+      status: 404,
+      headers: ARTIFACT_BASE_404_HEADERS,
+    });
   }
   if (asset.kind === "ticket-artifact") {
     return yield* serveTicketArtifact(asset, request);
+  }
+  if (asset.kind === "scratch-file") {
+    return yield* serveTicketScratch(asset, request);
   }
   return yield* HttpServerResponse.file(asset.path, {
     status: 200,

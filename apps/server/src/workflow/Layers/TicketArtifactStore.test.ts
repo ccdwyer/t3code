@@ -68,18 +68,21 @@ describe("classifyEntries", () => {
       "after.png.caption.MD",
       "lonely.png.caption.md",
       "diagram.svg",
+      "report.pdf",
       "notes.md",
     ]);
+    // diagram.svg is a CANDIDATE since the 2026-08-06 spec widened the kind
+    // table; report.pdf remains the unknown-extension case.
     assert.deepEqual(
       result.candidates.map((candidate) => candidate.rawName),
-      ["after.png", "notes.md"],
+      ["after.png", "diagram.svg", "notes.md"],
     );
     assert.equal(result.sidecarByBase.get("after.png"), "after.png.caption.MD");
     assert.isFalse(result.sidecarByBase.has("lonely.png"));
     assert.deepEqual(result.skips.map((skip) => `${skip.reason}:${skip.name}`).sort(), [
       "name-collision:after.png.caption.md",
       "orphan-sidecar:lonely.png.caption.md",
-      "unknown-extension:diagram.svg",
+      "unknown-extension:report.pdf",
     ]);
   });
 

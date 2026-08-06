@@ -1844,13 +1844,47 @@ export type WorkflowIntakeResult = typeof WorkflowIntakeResult.Type;
 export const WorkflowIntakeBraindump = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 export type WorkflowIntakeBraindump = typeof WorkflowIntakeBraindump.Type;
 
-// A scratch file from .t3/ticket/<id>/ in the ticket's worktree — the
-// ticket's LEGACY case file view (working files that have not been ingested
-// into the durable artifact store; excludes artifacts/**).
+/**
+ * Row kinds for scratch files. The durable `WorkflowTicketArtifactKind` is
+ * pinned to a DB column and must NOT be widened, so scratch carries its own
+ * literal — identical plus `binary`, the row for an extension the shared kind
+ * table does not recognize.
+ */
+export const WorkflowTicketScratchKind = Schema.Literals([
+  "markdown",
+  "html",
+  "image",
+  "video",
+  "text",
+  "binary",
+]);
+export type WorkflowTicketScratchKind = typeof WorkflowTicketScratchKind.Type;
+
+/**
+ * A scratch file from .t3/ticket/<id>/ in the ticket's worktree — the
+ * ticket's LEGACY case file view (working files that have not been ingested
+ * into the durable artifact store; excludes artifacts/**).
+ *
+ * Invariants the RPC guarantees (spec 2026-08-06-scratch-artifact-viewer §B),
+ * asserted in tests rather than encoded in the schema. They are CONDITIONAL —
+ * a row can legitimately lack the field its kind would normally carry, because
+ * per-row failures degrade instead of failing the whole listing:
+ * - markdown/text: never `url`; `content` only when the handle read succeeded
+ * - html/image/video: never `content`; `url` only when the file is under
+ *   `ARTIFACT_FILE_CAPS` and signing succeeded
+ * - binary: neither, always
+ * `byteSize` is always present: it comes from the same verified handle the row
+ * was opened through, and any open failure skips the row entirely.
+ */
 export const WorkflowTicketArtifact = Schema.Struct({
   name: TrimmedNonEmptyString,
-  content: Schema.String,
+  kind: WorkflowTicketScratchKind,
+  byteSize: NonNegativeInt,
+  /** Present only for markdown/text. Empty string is a VALID empty document. */
+  content: Schema.optional(Schema.String),
   truncated: Schema.optional(Schema.Boolean),
+  /** Signed scratch asset URL; html/image/video only, never binary. */
+  url: Schema.optional(Schema.String),
 });
 export type WorkflowTicketArtifact = typeof WorkflowTicketArtifact.Type;
 
@@ -1903,8 +1937,7 @@ export type WorkflowTicketArtifactsResult = typeof WorkflowTicketArtifactsResult
 export const WorkflowReadTicketArtifactResult = Schema.Struct({
   content: Schema.String,
 });
-export type WorkflowReadTicketArtifactResult =
-  typeof WorkflowReadTicketArtifactResult.Type;
+export type WorkflowReadTicketArtifactResult = typeof WorkflowReadTicketArtifactResult.Type;
 
 /**
  * Stable message fragments for artifact read refusals — single source of

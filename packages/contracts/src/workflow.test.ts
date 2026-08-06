@@ -51,6 +51,7 @@ import {
   WorkflowRevertBoardProposalResult,
   WorkflowTicketMessageView,
   WorkflowTicketArtifactKind,
+  WorkflowTicketScratchKind,
   WorkflowTicketArtifactView,
   WorkflowTicketArtifactsResult,
   TICKET_ARTIFACT_ERROR_MESSAGES,
@@ -2878,11 +2879,7 @@ describe("Workflow park sub-states (WorkflowRouteTarget)", () => {
 
 describe("ticket no-worktree message", () => {
   it("matches the exact fragment the server emits", () => {
-    assert.isTrue(
-      isTicketNoWorktreeMessage(
-        `Workflow ticket abc ${TICKET_NO_WORKTREE_MESSAGE}`,
-      ),
-    );
+    assert.isTrue(isTicketNoWorktreeMessage(`Workflow ticket abc ${TICKET_NO_WORKTREE_MESSAGE}`));
     assert.isFalse(isTicketNoWorktreeMessage("Failed to resolve workflow ticket worktree refs"));
     assert.isFalse(isTicketNoWorktreeMessage(""));
   });
@@ -2930,17 +2927,26 @@ describe("ticket artifact contracts", () => {
       const decode = Schema.decodeUnknownEffect(WorkflowTicketArtifactsResult);
       const result = yield* decode({
         artifacts: [],
-        scratch: [{ name: "NOTES.md", content: "wip" }],
+        scratch: [
+          { name: "NOTES.md", kind: "markdown", byteSize: 3, content: "wip" },
+          { name: "shot.png", kind: "image", byteSize: 2048, url: "/api/assets/tok/shot.png" },
+          { name: "notes.zip", kind: "binary", byteSize: 10 },
+        ],
       });
       assert.lengthOf(result.artifacts, 0);
       assert.equal(result.scratch[0]?.name, "NOTES.md");
+      // Kind-aware since the 2026-08-06 spec: media rows carry a signed URL and
+      // no content; binary rows carry neither.
+      assert.equal(result.scratch[1]?.kind, "image");
+      assert.isUndefined(result.scratch[1]?.content);
+      assert.isDefined(result.scratch[1]?.url);
+      assert.isUndefined(result.scratch[2]?.content);
+      assert.isUndefined(result.scratch[2]?.url);
     }),
   );
 
   it("artifact-unavailable predicate matches the shared fragment", () => {
-    assert.isTrue(
-      isTicketArtifactUnavailableMessage(TICKET_ARTIFACT_ERROR_MESSAGES.unavailable),
-    );
+    assert.isTrue(isTicketArtifactUnavailableMessage(TICKET_ARTIFACT_ERROR_MESSAGES.unavailable));
     assert.isTrue(
       isTicketArtifactUnavailableMessage(
         `workflow error: ${TICKET_ARTIFACT_ERROR_MESSAGES.unavailable} (artifact x)`,
@@ -2952,5 +2958,9 @@ describe("ticket artifact contracts", () => {
   it("rejects an unknown artifact kind", () => {
     assert.isFalse(Schema.is(WorkflowTicketArtifactKind)("pdf"));
     assert.isTrue(Schema.is(WorkflowTicketArtifactKind)("video"));
+    // "binary" is a SCRATCH-only row kind; the durable kind is DB-pinned and
+    // must never gain it.
+    assert.isFalse(Schema.is(WorkflowTicketArtifactKind)("binary"));
+    assert.isTrue(Schema.is(WorkflowTicketScratchKind)("binary"));
   });
 });

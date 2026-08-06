@@ -96,7 +96,11 @@ describe("contentDispositionInline", () => {
 
 describe("artifactHeaders", () => {
   it("pins the base set and gates CSP on html", () => {
-    const base = artifactHeaders({ mime: "image/png", displayName: "a.png", isHtml: false });
+    const base = artifactHeaders({
+      mime: "image/png",
+      displayName: "a.png",
+      activeContent: null,
+    });
     assert.equal(base["X-Content-Type-Options"], "nosniff");
     assert.equal(base["Cache-Control"], "private, no-store");
     assert.equal(base["Referrer-Policy"], "no-referrer");
@@ -106,11 +110,23 @@ describe("artifactHeaders", () => {
     const html = artifactHeaders({
       mime: "text/html; charset=utf-8",
       displayName: "report.html",
-      isHtml: true,
+      activeContent: "html",
     });
     // Token-set equality: exactly sandbox + allow-scripts; allow-same-origin
     // is forbidden forever.
     const tokens = (html["Content-Security-Policy"] ?? "").split(/\s+/).sort();
     assert.deepEqual(tokens, ["allow-scripts", "sandbox"]);
+  });
+
+  it("sandboxes SVG WITHOUT allow-scripts", () => {
+    const svg = artifactHeaders({
+      mime: "image/svg+xml",
+      displayName: "diagram.svg",
+      activeContent: "svg",
+    });
+    // An <img>-loaded SVG never runs scripts, but a top-level open would —
+    // bare `sandbox` gives it an opaque origin AND blocks script execution.
+    assert.deepEqual((svg["Content-Security-Policy"] ?? "").split(/\s+/).sort(), ["sandbox"]);
+    assert.equal(svg["X-Content-Type-Options"], "nosniff");
   });
 });

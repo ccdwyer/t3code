@@ -83,7 +83,16 @@ import * as Stream from "effect/Stream";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { WorkspaceFileSystem } from "../../workspace/WorkspaceFileSystem.ts";
+import type { WorkflowTicketArtifactView } from "@t3tools/contracts";
 import type { TicketArtifactStoreShape } from "../Services/TicketArtifactStore.ts";
+import {
+  ARTIFACT_INLINE_FILE_CAP_BYTES,
+  ARTIFACT_INLINE_LIST_BUDGET_BYTES,
+  ARTIFACT_READ_CAP_BYTES,
+  decodedByteLength,
+  isTextLikeKind,
+  truncateDecodedToBytes,
+} from "../artifactRules.ts";
 import { slugifyBoardName, uniqueBoardSlug } from "../boardSlug.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "../boardTemplates.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
@@ -237,9 +246,20 @@ interface WorkflowRpcHandlerDeps {
   readonly boardEvents: WorkflowBoardEventsShape;
   readonly saveLocks?: WorkflowBoardSaveLocksShape;
   readonly versionStore: WorkflowBoardVersionStoreShape;
+  /** Signs a ticket-artifact asset URL (ws.ts wraps AssetAccess.issueAssetUrl). */
+  readonly issueArtifactUrl?: (input: {
+    readonly ticketId: string;
+    readonly artifactId: string;
+    readonly fileName: string;
+  }) => Effect.Effect<{ readonly relativeUrl: string }, WorkflowRpcError>;
   readonly artifactStore?: Pick<
     TicketArtifactStoreShape,
-    "deleteRowsForBoard" | "deleteRowsForTickets" | "removeDisk"
+    | "deleteRowsForBoard"
+    | "deleteRowsForTickets"
+    | "removeDisk"
+    | "list"
+    | "getRow"
+    | "readInlineText"
   >;
   readonly worktreeJanitor?: Pick<
     WorkflowWorktreeJanitorShape,
@@ -291,6 +311,80 @@ interface WorkflowRpcHandlerDeps {
     StreamContext | EffectContext
   >;
 }
+
+/**
+ * Durable-artifact listing (spec §RPC surface): server-canonical order,
+ * signed URLs via the AssetAccess machinery, and the decoded-slice inline
+ * budget — 64 KiB/file and 512 KiB/list of RETURNED decoded UTF-8 bytes,
+ * spent in canonical order with SKIP-AND-CONTINUE. contentTruncated = the
+ * decoded content was not fully included in the slice; contentOmitted = the
+ * aggregate budget excluded it from THIS response; contentUnavailable = the
+ * blob failed verified-open. Flags are orthogonal.
+ */
+export const listDurableArtifacts = (
+  deps: WorkflowRpcHandlerDeps,
+  ticketId: TicketId,
+): Effect.Effect<ReadonlyArray<WorkflowTicketArtifactView>, WorkflowRpcError> =>
+  Effect.gen(function* () {
+    const store = deps.artifactStore;
+    const issueUrl = deps.issueArtifactUrl;
+    if (store === undefined || issueUrl === undefined) {
+      return [];
+    }
+    const rows = yield* store
+      .list(ticketId)
+      .pipe(Effect.mapError(toWorkflowRpcError("Failed to list ticket artifacts")));
+    let budgetLeft = ARTIFACT_INLINE_LIST_BUDGET_BYTES;
+    const views: Array<WorkflowTicketArtifactView> = [];
+    for (const row of rows) {
+      const issued = yield* issueUrl({
+        ticketId: row.ticketId,
+        artifactId: row.artifactId,
+        fileName: row.name.slice(row.name.lastIndexOf("/") + 1),
+      }).pipe(Effect.mapError(toWorkflowRpcError("Failed to sign ticket artifact URL")));
+      const base: WorkflowTicketArtifactView = {
+        artifactId: row.artifactId,
+        name: row.name,
+        kind: row.kind,
+        mime: row.mime,
+        byteSize: row.byteSize,
+        ...(row.description === null ? {} : { description: row.description }),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        ...(row.stepRunId === null ? {} : { stepRunId: row.stepRunId as StepRunId }),
+        url: issued.relativeUrl,
+      };
+      if (!isTextLikeKind(row.kind)) {
+        views.push(base);
+        continue;
+      }
+      const decoded = yield* store
+        .readInlineText(ticketId, row.artifactId, ARTIFACT_READ_CAP_BYTES)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (decoded === null) {
+        views.push({ ...base, contentUnavailable: true });
+        continue;
+      }
+      const sliced = truncateDecodedToBytes(decoded, ARTIFACT_INLINE_FILE_CAP_BYTES);
+      const sliceBytes = decodedByteLength(sliced.slice);
+      if (sliceBytes > budgetLeft) {
+        // Skip-and-continue: later, smaller files may still fit.
+        views.push({
+          ...base,
+          contentOmitted: true,
+          ...(sliced.truncated ? { contentTruncated: true } : {}),
+        });
+        continue;
+      }
+      budgetLeft -= sliceBytes;
+      views.push({
+        ...base,
+        content: sliced.slice,
+        ...(sliced.truncated ? { contentTruncated: true } : {}),
+      });
+    }
+    return views;
+  });
 
 const MAX_TICKET_ARTIFACTS = 20;
 const MAX_TICKET_ARTIFACT_CHARS = 64_000;
@@ -3305,7 +3399,18 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.listTicketArtifacts,
         Effect.gen(function* () {
-          const worktree = yield* deps.ticketWorktrees.resolveForTicket(input.ticketId);
+          // Durable artifacts (spec 2026-08-05 §RPC surface): canonical-order
+          // rows, signed URLs, and the decoded-slice inline budget.
+          const durable = yield* listDurableArtifacts(deps, input.ticketId);
+          // Legacy worktree scratch rides along for LIVE worktrees only — a
+          // merged/removed worktree must not fail the durable listing.
+          const worktreeOrNull = yield* deps.ticketWorktrees
+            .resolveForTicket(input.ticketId)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (worktreeOrNull === null) {
+            return { artifacts: durable, scratch: [] };
+          }
+          const worktree = worktreeOrNull;
           const scratchDir = `.t3/ticket/${input.ticketId}`;
           // Recurse so nested scratch (design/SPEC.md, handoff/x.md) is visible,
           // not just direct files. Fall back to the flat listing when a
@@ -3316,12 +3421,17 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               ? listRecursive({ cwd: worktree.cwd, relativePath: scratchDir })
               : deps.workspaceFileSystem.listFiles({ cwd: worktree.cwd, relativePath: scratchDir })
           ).pipe(Effect.mapError(toWorkflowRpcError("Failed to list ticket artifacts")));
+          // Excluded DURING traversal, before the 20-file cap: the durable
+          // list is the only view of artifacts/**.
+          const scratchNames = names.filter(
+            (name) => name !== "artifacts" && !name.startsWith("artifacts/"),
+          );
           const scratch: Array<{
             readonly name: string;
             readonly content: string;
             readonly truncated?: boolean;
           }> = [];
-          for (const name of names.slice(0, MAX_TICKET_ARTIFACTS)) {
+          for (const name of scratchNames.slice(0, MAX_TICKET_ARTIFACTS)) {
             const relativePath = `${scratchDir}/${name}`;
             // Bound the read so a large artifact can't force a full-memory read
             // over this RPC. Fall back to the unbounded read only when the capped
@@ -3342,23 +3452,50 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               ...(content.length > MAX_TICKET_ARTIFACT_CHARS ? { truncated: true } : {}),
             });
           }
-          // Durable artifacts arrive with the TicketArtifactStore (plan task
-          // A8); until then the durable list is empty and only the legacy
-          // worktree scratch rides along.
-          return { artifacts: [], scratch };
+          return { artifacts: durable, scratch };
         }),
         { "rpc.aggregate": "workflow" },
       ),
 
-    [WORKFLOW_WS_METHODS.readTicketArtifact]: (_input: {
+    [WORKFLOW_WS_METHODS.readTicketArtifact]: (input: {
       readonly ticketId: TicketId;
       readonly artifactId: string;
     }) =>
       deps.observeRpcEffect(
         WORKFLOW_WS_METHODS.readTicketArtifact,
-        // No durable store exists until plan task A8 lands, so every read is
-        // honestly unavailable (shared message fragment, PARK_ACTION idiom).
-        Effect.fail(new WorkflowRpcError({ message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable })),
+        Effect.gen(function* () {
+          const store = deps.artifactStore;
+          if (store === undefined) {
+            return yield* new WorkflowRpcError({
+              message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable,
+            });
+          }
+          const row = yield* store
+            .getRow(input.ticketId, input.artifactId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to read ticket artifact")));
+          if (row === null) {
+            return yield* new WorkflowRpcError({
+              message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable,
+            });
+          }
+          // Kind gate (spec): markdown/text only — html/image/video refuse.
+          if (!isTextLikeKind(row.kind)) {
+            return yield* new WorkflowRpcError({
+              message: TICKET_ARTIFACT_ERROR_MESSAGES.kindNotReadable,
+            });
+          }
+          // Cap applies to STORED raw bytes (= the ingest cap, so the full
+          // file always fits); the decoded string may exceed it (U+FFFD).
+          const content = yield* store
+            .readInlineText(input.ticketId, input.artifactId, ARTIFACT_READ_CAP_BYTES)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to read ticket artifact")));
+          if (content === null) {
+            return yield* new WorkflowRpcError({
+              message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable,
+            });
+          }
+          return { content };
+        }),
         { "rpc.aggregate": "workflow" },
       ),
 

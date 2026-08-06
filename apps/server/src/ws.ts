@@ -1,5 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as Path from "effect/Path";
+import * as FileSystem from "effect/FileSystem";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -70,6 +72,8 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
+import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import {
@@ -469,6 +473,18 @@ const makeWsRpcLayer = (
         (yield* Effect.context<never>()) as Context.Context<TicketArtifactStore>,
         TicketArtifactStore,
       );
+      // Captured once so the workflow handlers' URL-signing dep can run with
+      // the asset services without leaking them into the handler types (the
+      // surrounding getOption calls use the same as-cast idiom on Context).
+      const assetSigningContext = (yield* Effect.context<never>()) as Context.Context<
+        | Crypto.Crypto
+        | FileSystem.FileSystem
+        | Path.Path
+        | ProjectFaviconResolver.ProjectFaviconResolver
+        | ServerConfig.ServerConfig
+        | ServerSecretStore.ServerSecretStore
+        | WorkspacePaths.WorkspacePaths
+      >;
       const workflowIntake = Context.getOption(
         (yield* Effect.context<never>()) as Context.Context<WorkflowIntakeService>,
         WorkflowIntakeService,
@@ -1193,6 +1209,21 @@ const makeWsRpcLayer = (
         ...(Option.isSome(workflowArtifactStore)
           ? { artifactStore: workflowArtifactStore.value }
           : {}),
+        issueArtifactUrl: (input) =>
+          issueAssetUrl({
+            resource: {
+              _tag: "ticket-artifact",
+              ticketId: input.ticketId as never,
+              artifactId: input.artifactId as never,
+              fileName: input.fileName as never,
+            },
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowRpcError({ message: "Failed to sign ticket artifact URL", cause }),
+            ),
+            Effect.provide(assetSigningContext),
+          ),
         ...(Option.isSome(workflowIntake) ? { intake: workflowIntake.value } : {}),
         ...(Option.isSome(workflowThreadJanitor)
           ? { threadJanitor: workflowThreadJanitor.value }

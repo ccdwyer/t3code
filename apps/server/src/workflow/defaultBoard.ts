@@ -2,6 +2,8 @@ import type { ProviderOptionSelection } from "@t3tools/contracts";
 import { WorkflowDefinition } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { TICKET_ARTIFACTS_INSTRUCTION } from "./instructionTemplate.ts";
+
 export interface DefaultBoardAgent {
   readonly instance: string;
   readonly model: string;
@@ -16,34 +18,42 @@ Ticket description:
 {{ticket.description}}
 
 Investigate the codebase and write a short, concrete implementation plan to a
-file named .t3/ticket/{{ticket.id}}/PLAN.md at the repo root of this worktree: the goal, the files you
+file named .t3/ticket/{{ticket.id}}/artifacts/PLAN.md at the repo root of this worktree: the goal, the files you
 expect to touch, the approach, and the main risks. Do not implement anything
-yet. Keep the plan under a page.`;
+yet. Keep the plan under a page.
 
-const SPEC_INSTRUCTION = `Turn the plan in .t3/ticket/{{ticket.id}}/PLAN.md for ticket "{{ticket.title}}" into a concrete spec.
+${TICKET_ARTIFACTS_INSTRUCTION}`;
 
-Write .t3/ticket/{{ticket.id}}/SPEC.md at the repo root of this worktree containing: the exact behavior
+const SPEC_INSTRUCTION = `Turn the plan in .t3/ticket/{{ticket.id}}/artifacts/PLAN.md for ticket "{{ticket.title}}" into a concrete spec.
+
+Write .t3/ticket/{{ticket.id}}/artifacts/SPEC.md at the repo root of this worktree containing: the exact behavior
 to build, edge cases to handle, and a checklist of verifiable acceptance
-criteria (including which tests or checks must pass). Adjust .t3/ticket/{{ticket.id}}/PLAN.md if your
-investigation contradicts it. Do not implement anything yet.`;
+criteria (including which tests or checks must pass). Adjust .t3/ticket/{{ticket.id}}/artifacts/PLAN.md if your
+investigation contradicts it. Do not implement anything yet.
 
-const IMPLEMENT_INSTRUCTION = `Implement ticket "{{ticket.title}}" in this worktree according to .t3/ticket/{{ticket.id}}/SPEC.md.
+${TICKET_ARTIFACTS_INSTRUCTION}`;
 
-If a .t3/ticket/{{ticket.id}}/REVIEW.md file exists at the repo root, a previous review requested
-changes: address every issue listed there first, then delete .t3/ticket/{{ticket.id}}/REVIEW.md.
+const IMPLEMENT_INSTRUCTION = `Implement ticket "{{ticket.title}}" in this worktree according to .t3/ticket/{{ticket.id}}/artifacts/SPEC.md.
 
-Satisfy each acceptance criterion in .t3/ticket/{{ticket.id}}/SPEC.md, run the relevant tests/checks,
-and fix what you break. Keep the change focused on the ticket.`;
+If a .t3/ticket/{{ticket.id}}/artifacts/REVIEW.md file exists at the repo root, a previous review requested
+changes: address every issue listed there first, then delete .t3/ticket/{{ticket.id}}/artifacts/REVIEW.md.
+
+Satisfy each acceptance criterion in .t3/ticket/{{ticket.id}}/artifacts/SPEC.md, run the relevant tests/checks,
+and fix what you break. Keep the change focused on the ticket.
+
+${TICKET_ARTIFACTS_INSTRUCTION}`;
 
 const REVIEW_INSTRUCTION = `Review the accumulated work for ticket "{{ticket.title}}".
 
-Diff the worktree against {{ticket.baseRef}} and judge it against .t3/ticket/{{ticket.id}}/SPEC.md.
+Diff the worktree against {{ticket.baseRef}} and judge it against .t3/ticket/{{ticket.id}}/artifacts/SPEC.md.
 Look for blocking correctness, reliability, or integration issues and unmet
 acceptance criteria — ignore style nits.
 
-If changes are required, write the specific, actionable issues to .t3/ticket/{{ticket.id}}/REVIEW.md at
+If changes are required, write the specific, actionable issues to .t3/ticket/{{ticket.id}}/artifacts/REVIEW.md at
 the repo root (overwrite it) so the next implementation pass can address them.
-If the work is ready, make sure no .t3/ticket/{{ticket.id}}/REVIEW.md file remains.`;
+If the work is ready, make sure no .t3/ticket/{{ticket.id}}/artifacts/REVIEW.md file remains.
+
+${TICKET_ARTIFACTS_INSTRUCTION}`;
 
 const REVIEW_OUTPUT_HINT = `Your result object must be {"verdict": "approve"} or {"verdict": "revise"}.`;
 

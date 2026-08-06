@@ -3,6 +3,7 @@ import { WorkflowDefinition as WorkflowDefinitionSchema } from "@t3tools/contrac
 import * as Schema from "effect/Schema";
 
 import { defaultBoardDefinition } from "./defaultBoard.ts";
+import { TICKET_ARTIFACTS_INSTRUCTION } from "./instructionTemplate.ts";
 
 const decodeWorkflowDefinition = Schema.decodeUnknownSync(WorkflowDefinitionSchema);
 
@@ -11,10 +12,12 @@ const IMPLEMENT_INSTRUCTION = `Implement ticket "{{ticket.title}}" in this workt
 Ticket {{ticket.id}} description:
 {{ticket.description}}
 
-If a .t3/ticket/{{ticket.id}}/REVIEW.md file exists at the repo root, a previous
+If a .t3/ticket/{{ticket.id}}/artifacts/REVIEW.md file exists at the repo root, a previous
 review requested changes: address every issue listed there first, then delete
-.t3/ticket/{{ticket.id}}/REVIEW.md. Run the relevant tests/checks and fix what you
-break. Keep the change focused on the ticket.`;
+.t3/ticket/{{ticket.id}}/artifacts/REVIEW.md. Run the relevant tests/checks and fix what you
+break. Keep the change focused on the ticket.
+
+${TICKET_ARTIFACTS_INSTRUCTION}`;
 
 const REVIEW_INSTRUCTION = `Review the accumulated work for ticket "{{ticket.title}}".
 
@@ -23,13 +26,15 @@ implements the ticket. Look for blocking correctness, reliability, or
 integration issues — ignore style nits.
 
 If changes are required, write the specific, actionable issues to
-.t3/ticket/{{ticket.id}}/REVIEW.md at the repo root (overwrite it) so the next
+.t3/ticket/{{ticket.id}}/artifacts/REVIEW.md at the repo root (overwrite it) so the next
 implementation pass can address them. If the work is ready, make sure no
-.t3/ticket/{{ticket.id}}/REVIEW.md file remains.`;
+.t3/ticket/{{ticket.id}}/artifacts/REVIEW.md file remains.
+
+${TICKET_ARTIFACTS_INSTRUCTION}`;
 
 const REVIEW_OUTPUT_HINT = `Your result object must be {"verdict": "approve"} or {"verdict": "revise"}.`;
 
-const DESIGN_DIR = ".t3/ticket/{{ticket.id}}/design";
+const DESIGN_DIR = ".t3/ticket/{{ticket.id}}/artifacts/design";
 
 const BRAINSTORM_INSTRUCTION = `You are brainstorming the design for ticket "{{ticket.title}}".
 
@@ -184,7 +189,7 @@ const liteAgentLoopDefinition = (input: {
  * Design board: Idea → Brainstorm → spec gate → Plan → plan gate → Build → Done,
  * encoding the brainstorm → review → plan → review → build → review loop using
  * only existing engine primitives. Artifacts flow through files in the per-ticket
- * worktree (`.t3/ticket/<id>/design/SPEC.md` → `PLAN.md` → diff). AI review steps
+ * worktree (`.t3/ticket/<id>/artifacts/design/SPEC.md` → `PLAN.md` → diff). AI review steps
  * are spliced into the producer pipelines only when `withAiReview` is set.
  */
 const designBoardDefinition = (input: {
@@ -201,14 +206,14 @@ const designBoardDefinition = (input: {
     key,
     type: "agent",
     agent,
-    instruction: `${instruction}\n\n${REVIEW_OUTPUT_HINT}`,
+    instruction: `${instruction}\n\n${TICKET_ARTIFACTS_INSTRUCTION}\n\n${REVIEW_OUTPUT_HINT}`,
     captureOutput: true,
   });
   const producer = (key: string, instruction: string) => ({
     key,
     type: "agent",
     agent,
-    instruction,
+    instruction: `${instruction}\n\n${TICKET_ARTIFACTS_INSTRUCTION}`,
     captureOutput: true,
     retry: { maxAttempts: 2 },
   });

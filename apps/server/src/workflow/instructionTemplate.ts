@@ -6,6 +6,8 @@
  * handlebars-style examples. Unknown `ticket.*` fields are left literal at
  * runtime and surfaced as lint errors at save time.
  */
+import { ARTIFACT_ALLOWED_EXTENSIONS } from "./artifactRules.ts";
+
 export const TICKET_TEMPLATE_FIELDS = [
   "title",
   "description",
@@ -182,6 +184,18 @@ export const safeStepKey = (stepKey: string): string =>
 /** Render a handoff output value as text for inlining or spilling. */
 export const stringifyHandoffOutput = (output: unknown): string =>
   typeof output === "string" ? output : JSON.stringify(output);
+
+/**
+ * Prompt scaffolding appended to agent step instructions that work inside a
+ * ticket worktree: teaches the durable-artifact convention (spec
+ * docs/superpowers/specs/2026-08-05-ticket-artifacts-design.md §Prompts).
+ * Documentation-only — ingestion itself is wired at the engine's settle
+ * chokepoint, not here. Uses the `{{ticket.id}}` placeholder, so it must be
+ * embedded in an instruction BEFORE templating runs.
+ */
+export const TICKET_ARTIFACTS_INSTRUCTION = `## Artifacts
+
+Files you write under .t3/ticket/{{ticket.id}}/artifacts/ become durable ticket artifacts: they appear in the ticket's Artifacts panel in the UI and survive the merge. To caption an artifact, add a sidecar file literally named <file>.caption.md next to it (report.md.caption.md captions report.md). Allowed extensions: ${ARTIFACT_ALLOWED_EXTENSIONS}. Caps: 1 MiB per markdown/html/text file, 10 MiB per image, 100 MiB per video, 100 files per ticket. An HTML artifact must be a SINGLE self-contained file — references to sibling files will not resolve. For UI-affecting work, capturing before/after screenshots — and, where playwright or argent tooling is available, a short screen recording — as artifacts is encouraged.`;
 
 const PATH_SAFE_TICKET_ID = /^[A-Za-z0-9_-]+$/;
 

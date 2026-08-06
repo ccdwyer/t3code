@@ -11,6 +11,10 @@ import type { WorkflowEngineShape } from "./Services/WorkflowEngine.ts";
 import type { WorkflowEventStoreError } from "./Services/Errors.ts";
 import type { WorkflowEventStoreShape } from "./Services/WorkflowEventStore.ts";
 import type { WorkflowReadModelShape } from "./Services/WorkflowReadModel.ts";
+import type {
+  DiskRef as TicketArtifactDiskRef,
+  TicketArtifactStoreShape,
+} from "./Services/TicketArtifactStore.ts";
 import type { WorkflowThreadJanitorShape } from "./Services/WorkflowThreadJanitor.ts";
 import type { WorkflowWebhookShape } from "./Services/WorkflowWebhook.ts";
 import type { WorkflowWorktreeJanitorShape } from "./Services/WorkflowWorktreeJanitor.ts";
@@ -34,10 +38,15 @@ export interface WorkflowBoardOwnedStateDeletionDeps {
   // `stopSession` is a live side effect that runs after the commit, best-effort.
   readonly agentSessions?: Pick<WorkflowAgentSessionStoreShape, "listByBoard" | "deleteByBoard">;
   readonly provider?: Pick<ProviderServiceShape, "stopSession">;
+  // Durable ticket artifacts (spec 2026-08-05): rows delete INSIDE the
+  // cascade transaction; blob removal is best-effort post-commit (the boot
+  // reconciler backstops failures).
+  readonly artifactStore?: Pick<TicketArtifactStoreShape, "deleteRowsForBoard" | "removeDisk">;
 }
 
 export interface WorkflowBoardTicketStateDeletionDeps {
   readonly saveLocks: Pick<WorkflowBoardSaveLocksShape, "withSaveLock">;
+  readonly artifactStore?: Pick<TicketArtifactStoreShape, "deleteRowsForTickets" | "removeDisk">;
   readonly engine: Pick<WorkflowEngineShape, "cancelTicketPipelines">;
   readonly eventStore: Pick<WorkflowEventStoreShape, "deleteForTicket">;
   readonly readModel: Pick<WorkflowReadModelShape, "deleteTicketState">;
@@ -64,6 +73,7 @@ export interface WorkflowBoardTicketStateDeletionDeps {
 }
 
 const noCleanup = Effect.succeed(null);
+const noArtifactRefs: Effect.Effect<ReadonlyArray<TicketArtifactDiskRef>> = Effect.succeed([]);
 const noThreads = Effect.succeed([] as ReadonlyArray<string>);
 
 export const deleteWorkflowBoardOwnedState = (
@@ -82,6 +92,7 @@ export const deleteWorkflowBoardOwnedState = (
         ? []
         : yield* deps.agentSessions.listByBoard(boardId).pipe(Effect.orElseSucceed(() => []));
     yield* deps.engine.cancelBoardPipelines(boardId);
+    let artifactRefs: ReadonlyArray<TicketArtifactDiskRef> = [];
     // The DB cascade runs in one transaction so a mid-cascade SQL/IO failure
     // (or SQLITE_BUSY) rolls back instead of leaving orphaned event-store rows
     // whose backing projection_ticket rows are gone — mirroring the per-ticket
@@ -95,6 +106,7 @@ export const deleteWorkflowBoardOwnedState = (
         // projection_ticket rows the IN-subquery resolves against.
         yield* deps.agentSessions?.deleteByBoard(boardId) ?? Effect.void;
         yield* deps.eventStore.deleteForBoard(boardId);
+        artifactRefs = yield* deps.artifactStore?.deleteRowsForBoard(boardId) ?? noArtifactRefs;
         yield* deps.readModel.deleteBoardTicketState(boardId);
         yield* deps.readModel.deleteBoard(boardId);
       }),
@@ -119,6 +131,7 @@ export const deleteWorkflowBoardOwnedState = (
     }
     yield* deps.worktreeJanitor?.run(cleanupPlan) ?? Effect.void;
     yield* deps.threadJanitor?.deleteThreads(threadIds) ?? Effect.void;
+    yield* deps.artifactStore?.removeDisk(artifactRefs) ?? Effect.void;
   });
 
 export const deleteWorkflowBoardTicketOwnedStateWhen = <E, R>(
@@ -132,6 +145,7 @@ export const deleteWorkflowBoardTicketOwnedStateWhen = <E, R>(
       boardId,
       Effect.gen(function* () {
         const cleanupPlan = yield* deps.worktreeJanitor?.collectTicketPlan(ticketId) ?? noCleanup;
+        let artifactRefs: ReadonlyArray<TicketArtifactDiskRef> = [];
         const threadIds = yield* deps.threadJanitor?.collectTicketThreads(ticketId) ?? noThreads;
         // Collected before the cascade so the threads survive deleteByTicket and
         // can be stopped after the commit. Best-effort: never block the delete.
@@ -151,6 +165,9 @@ export const deleteWorkflowBoardTicketOwnedStateWhen = <E, R>(
                 Effect.void
             );
             yield* deps.eventStore.deleteForTicket(ticketId);
+            artifactRefs = yield* (
+              deps.artifactStore?.deleteRowsForTickets([ticketId as string]) ?? noArtifactRefs
+            );
             yield* deps.readModel.deleteTicketState(ticketId);
             return true;
           }),
@@ -174,6 +191,7 @@ export const deleteWorkflowBoardTicketOwnedStateWhen = <E, R>(
             }
             yield* deps.worktreeJanitor?.run(cleanupPlan) ?? Effect.void;
             yield* deps.threadJanitor?.deleteThreads(threadIds) ?? Effect.void;
+            yield* deps.artifactStore?.removeDisk(artifactRefs) ?? Effect.void;
           });
           yield* deps.scheduleCleanup?.(cleanup) ?? cleanup;
         }

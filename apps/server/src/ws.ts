@@ -143,6 +143,7 @@ import { WorkflowThreadJanitor } from "./workflow/Services/WorkflowThreadJanitor
 import { PredicateEvaluator } from "./workflow/Services/PredicateEvaluator.ts";
 import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
 import { WorkflowWorktreeJanitor } from "./workflow/Services/WorkflowWorktreeJanitor.ts";
+import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
 import { WorkflowFileLoader } from "./workflow/Services/WorkflowFileLoader.ts";
 import { WorkflowReadModel } from "./workflow/Services/WorkflowReadModel.ts";
 import { TextGeneration } from "./textGeneration/TextGeneration.ts";
@@ -463,6 +464,10 @@ const makeWsRpcLayer = (
       const workflowWorktreeJanitor = Context.getOption(
         (yield* Effect.context<never>()) as Context.Context<WorkflowWorktreeJanitor>,
         WorkflowWorktreeJanitor,
+      );
+      const workflowArtifactStore = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<TicketArtifactStore>,
+        TicketArtifactStore,
       );
       const workflowIntake = Context.getOption(
         (yield* Effect.context<never>()) as Context.Context<WorkflowIntakeService>,
@@ -1184,6 +1189,9 @@ const makeWsRpcLayer = (
         versionStore: workflowBoardVersions,
         ...(Option.isSome(workflowWorktreeJanitor)
           ? { worktreeJanitor: workflowWorktreeJanitor.value }
+          : {}),
+        ...(Option.isSome(workflowArtifactStore)
+          ? { artifactStore: workflowArtifactStore.value }
           : {}),
         ...(Option.isSome(workflowIntake) ? { intake: workflowIntake.value } : {}),
         ...(Option.isSome(workflowThreadJanitor)

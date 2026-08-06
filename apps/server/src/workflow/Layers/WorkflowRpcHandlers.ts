@@ -83,6 +83,7 @@ import * as Stream from "effect/Stream";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import type { WorkspaceFileSystem } from "../../workspace/WorkspaceFileSystem.ts";
+import type { TicketArtifactStoreShape } from "../Services/TicketArtifactStore.ts";
 import { slugifyBoardName, uniqueBoardSlug } from "../boardSlug.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "../boardTemplates.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
@@ -236,6 +237,10 @@ interface WorkflowRpcHandlerDeps {
   readonly boardEvents: WorkflowBoardEventsShape;
   readonly saveLocks?: WorkflowBoardSaveLocksShape;
   readonly versionStore: WorkflowBoardVersionStoreShape;
+  readonly artifactStore?: Pick<
+    TicketArtifactStoreShape,
+    "deleteRowsForBoard" | "deleteRowsForTickets" | "removeDisk"
+  >;
   readonly worktreeJanitor?: Pick<
     WorkflowWorktreeJanitorShape,
     "collectBoardPlan" | "collectTicketPlan" | "run"
@@ -1238,6 +1243,7 @@ const deleteBoard = (
     | "projectWorkspaceResolver"
     | "workspaceFileSystem"
     | "worktreeJanitor"
+    | "artifactStore"
     | "threadJanitor"
     | "webhook"
     | "agentSessions"
@@ -1281,6 +1287,7 @@ const deleteBoard = (
           readModel: deps.readModel,
           versionStore: deps.versionStore,
           ...(deps.worktreeJanitor === undefined ? {} : { worktreeJanitor: deps.worktreeJanitor }),
+          ...(deps.artifactStore === undefined ? {} : { artifactStore: deps.artifactStore }),
           ...(deps.threadJanitor === undefined ? {} : { threadJanitor: deps.threadJanitor }),
           ...(deps.webhook === undefined ? {} : { webhook: deps.webhook }),
           ...(deps.agentSessions === undefined ? {} : { agentSessions: deps.agentSessions }),
@@ -1310,6 +1317,7 @@ const deleteTicket = (
     | "eventStore"
     | "saveLocks"
     | "worktreeJanitor"
+    | "artifactStore"
     | "threadJanitor"
     | "agentSessions"
     | "provider"
@@ -1337,6 +1345,7 @@ const deleteTicket = (
         eventStore: deps.eventStore ?? { deleteForTicket: () => Effect.void },
         readModel: deps.readModel,
         sql: deps.sql ?? { withTransaction: (effect) => effect },
+        ...(deps.artifactStore === undefined ? {} : { artifactStore: deps.artifactStore }),
         ...(deps.worktreeJanitor === undefined
           ? {}
           : {
@@ -3349,9 +3358,7 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
         WORKFLOW_WS_METHODS.readTicketArtifact,
         // No durable store exists until plan task A8 lands, so every read is
         // honestly unavailable (shared message fragment, PARK_ACTION idiom).
-        Effect.fail(
-          new WorkflowRpcError({ message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable }),
-        ),
+        Effect.fail(new WorkflowRpcError({ message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable })),
         { "rpc.aggregate": "workflow" },
       ),
 

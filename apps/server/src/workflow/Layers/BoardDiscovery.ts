@@ -28,6 +28,7 @@ import { WorkflowAgentSessionStore } from "../Services/WorkflowAgentSessionStore
 import { WorkflowThreadJanitor } from "../Services/WorkflowThreadJanitor.ts";
 import { WorkflowWebhook } from "../Services/WorkflowWebhook.ts";
 import { WorkflowWorktreeJanitor } from "../Services/WorkflowWorktreeJanitor.ts";
+import { TicketArtifactStore } from "../Services/TicketArtifactStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { deleteWorkflowBoardOwnedState } from "../boardDeletion.ts";
 
@@ -77,6 +78,10 @@ const make = Effect.gen(function* () {
   const worktreeJanitor = Context.getOption(
     (yield* Effect.context<never>()) as Context.Context<WorkflowWorktreeJanitor>,
     WorkflowWorktreeJanitor,
+  );
+  const artifactStore = Context.getOption(
+    (yield* Effect.context<never>()) as Context.Context<TicketArtifactStore>,
+    TicketArtifactStore,
   );
   // Resolved optionally so leaner test stacks (and any layer wired without the
   // janitor) still build; when present, board-file GC reclaims the hidden
@@ -247,6 +252,7 @@ const make = Effect.gen(function* () {
                     readModel,
                     versionStore,
                     sql,
+                    ...(Option.isSome(artifactStore) ? { artifactStore: artifactStore.value } : {}),
                     ...(Option.isSome(worktreeJanitor)
                       ? { worktreeJanitor: worktreeJanitor.value }
                       : {}),

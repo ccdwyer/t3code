@@ -631,3 +631,42 @@ it.effect("rolls back the board DB cascade when a delete fails mid-transaction",
     assert.equal(yield* ticketOwnedRowCount(ticketId), 10);
   }).pipe(Effect.provide(deletionLayer)),
 );
+
+it.effect("ticket cascade deletes artifact rows in-tx and removes disk after commit", () =>
+  Effect.gen(function* () {
+    const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+    const sql = yield* SqlClient.SqlClient;
+    const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
+    const refs = [
+      { ticketId: "ticket-artifact-cascade", blobId: "0f2c7b1e-9d4a-4c1b-8e6f-1a2b3c4d5e6f" },
+    ];
+
+    yield* deleteWorkflowBoardTicketOwnedState(
+      {
+        saveLocks: { withSaveLock: (_boardId, effect) => effect },
+        engine: { cancelTicketPipelines: (ticketId) => record(`cancel:${ticketId}`) },
+        eventStore: { deleteForTicket: (ticketId) => record(`events:${ticketId}`) },
+        readModel: { deleteTicketState: (ticketId) => record(`read:${ticketId}`) },
+        sql,
+        artifactStore: {
+          deleteRowsForTickets: (ids) =>
+            record(`artifact-rows:${ids.join(",")}`).pipe(Effect.as(refs)),
+          removeDisk: (received) =>
+            record(`artifact-disk:${received.map((ref) => ref.blobId).join(",")}`),
+        },
+      },
+      "board-ticket-cascade" as never,
+      "ticket-artifact-cascade" as never,
+    );
+
+    // Rows delete INSIDE the cascade (between events and read-model), disk
+    // removal comes after the transaction with the collected refs.
+    assert.deepEqual(yield* Ref.get(calls), [
+      "cancel:ticket-artifact-cascade",
+      "events:ticket-artifact-cascade",
+      "artifact-rows:ticket-artifact-cascade",
+      "read:ticket-artifact-cascade",
+      "artifact-disk:0f2c7b1e-9d4a-4c1b-8e6f-1a2b3c4d5e6f",
+    ]);
+  }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);

@@ -44,6 +44,7 @@ import { GitHubPort } from "../Services/GitHubPort.ts";
 import type { RecoveredStepResult } from "../Services/WorkflowEngine.ts";
 import { WorktreeLeaseService } from "../Services/WorktreeLeaseService.ts";
 import { WorkflowWorktreeJanitor } from "../Services/WorkflowWorktreeJanitor.ts";
+import { TicketArtifactStore } from "../Services/TicketArtifactStore.ts";
 import { WorkflowAgentSessionStore } from "../Services/WorkflowAgentSessionStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { deleteWorkflowBoardOwnedState } from "../boardDeletion.ts";
@@ -200,6 +201,10 @@ const make = Effect.gen(function* () {
   const worktreeJanitor = Context.getOption(
     (yield* Effect.context<never>()) as Context.Context<WorkflowWorktreeJanitor>,
     WorkflowWorktreeJanitor,
+  );
+  const artifactStore = Context.getOption(
+    (yield* Effect.context<never>()) as Context.Context<TicketArtifactStore>,
+    TicketArtifactStore,
   );
   const mergeGit = Context.getOption(
     (yield* Effect.context<never>()) as Context.Context<MergeGitPort>,
@@ -1174,6 +1179,7 @@ const make = Effect.gen(function* () {
                   readModel,
                   versionStore,
                   sql,
+                  ...(Option.isSome(artifactStore) ? { artifactStore: artifactStore.value } : {}),
                   ...(Option.isSome(worktreeJanitor)
                     ? { worktreeJanitor: worktreeJanitor.value }
                     : {}),
@@ -1204,6 +1210,9 @@ const make = Effect.gen(function* () {
                           readModel,
                           versionStore,
                           sql,
+                          ...(Option.isSome(artifactStore)
+                            ? { artifactStore: artifactStore.value }
+                            : {}),
                           ...(Option.isSome(worktreeJanitor)
                             ? { worktreeJanitor: worktreeJanitor.value }
                             : {}),

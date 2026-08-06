@@ -23,6 +23,7 @@ import {
 } from "../Services/WorkflowTerminalRetentionSweeper.ts";
 import { WorkflowThreadJanitor } from "../Services/WorkflowThreadJanitor.ts";
 import { WorkflowWorktreeJanitor } from "../Services/WorkflowWorktreeJanitor.ts";
+import { TicketArtifactStore } from "../Services/TicketArtifactStore.ts";
 import { deleteWorkflowBoardTicketOwnedStateWhen } from "../boardDeletion.ts";
 
 const DEFAULT_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
@@ -66,6 +67,10 @@ const makeWorkflowTerminalRetentionSweeper = (
     const worktreeJanitor = Context.getOption(
       (yield* Effect.context<never>()) as Context.Context<WorkflowWorktreeJanitor>,
       WorkflowWorktreeJanitor,
+    );
+    const artifactStore = Context.getOption(
+      (yield* Effect.context<never>()) as Context.Context<TicketArtifactStore>,
+      TicketArtifactStore,
     );
     const threadJanitor = Context.getOption(
       (yield* Effect.context<never>()) as Context.Context<WorkflowThreadJanitor>,
@@ -264,6 +269,7 @@ const makeWorkflowTerminalRetentionSweeper = (
                 eventStore,
                 readModel: { deleteTicketState },
                 sql,
+                ...(Option.isSome(artifactStore) ? { artifactStore: artifactStore.value } : {}),
                 ...(Option.isSome(worktreeJanitor)
                   ? { worktreeJanitor: worktreeJanitor.value }
                   : {}),

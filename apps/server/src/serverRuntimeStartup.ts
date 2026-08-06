@@ -36,6 +36,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import { WorkflowBoardNotificationDispatcher } from "./workflow/Services/WorkflowBoardNotificationDispatcher.ts";
+import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
 import { WorkflowSourceSyncer } from "./workflow/Services/WorkflowSourceSyncer.ts";
 import { WorkflowOutboundDispatcher } from "./workflow/Services/WorkflowOutboundDispatcher.ts";
 import { WorkflowGitHubPoller } from "./workflow/Services/WorkflowGitHubPoller.ts";
@@ -385,6 +386,23 @@ export const make = Effect.gen(function* () {
         yield* workflowWebhook.start().pipe(Scope.provide(reactorScope));
       }),
     );
+
+    // Durable-artifact orphan reconciliation runs strictly BEFORE the
+    // workflow engine starts any recovery finalizations (spec 2026-08-05
+    // reconcileOrphans contract): never concurrent with ingestion. Best-effort.
+    const artifactStoreOption = yield* Effect.serviceOption(TicketArtifactStore);
+    if (Option.isSome(artifactStoreOption)) {
+      yield* runStartupPhase(
+        "workflow.artifact-reconcile",
+        artifactStoreOption.value
+          .reconcileOrphans()
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("ticket-artifact orphan reconciliation failed", { cause }),
+            ),
+          ),
+      );
+    }
 
     yield* Effect.logDebug("startup phase: recovering workflow runtime");
     // Recovery is non-fatal for the rest of startup (the server must still

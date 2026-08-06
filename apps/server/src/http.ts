@@ -45,10 +45,11 @@ import {
   isTextLikeKind,
 } from "./workflow/artifactRules.ts";
 import {
-  isInsideRealDirectory,
+  decideScratchServe,
   openContained,
   resolveSubdirectoryRealpath,
   resolveTicketScratchRoot,
+  SCRATCH_OPEN_OPTIONS,
 } from "./workflow/containedOpen.ts";
 import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
@@ -347,35 +348,40 @@ const serveTicketScratch = (
     return yield* Effect.scoped(
       Effect.gen(function* () {
         const opened = yield* Effect.acquireRelease(
-          Effect.promise(() => openContained(absolutePath, ticketDirReal)),
+          Effect.promise(() =>
+            // SCRATCH_OPEN_OPTIONS, same as the listing: without the hard-link
+            // refusal here, a path listed as a normal file can be swapped for a
+            // hard link to a secret between issuance and this GET.
+            openContained(absolutePath, ticketDirReal, SCRATCH_OPEN_OPTIONS),
+          ),
           (handle) =>
             handle === null
               ? Effect.void
               : Effect.promise(() => handle.handle.close().catch(() => undefined)),
         );
         if (opened === null) return notFound;
-        // The ticket's artifacts/ subtree is the durable list's territory, and a
-        // symlink or case alias could still land there. Decided on canonical
-        // paths, never on the claim's spelling.
         const artifactsReal = yield* Effect.promise(() =>
           resolveSubdirectoryRealpath(ticketDirReal, "artifacts"),
         );
-        if (isInsideRealDirectory(opened.realPath, artifactsReal)) return notFound;
-
-        // The claim carries no artifact kind (only the ticket-scratch tag), so
-        // re-derive it — from the SAME scan-relative tail the issuer and the
+        // Kind is re-derived from the SAME scan-relative tail the issuer and the
         // claim validator use, not the full `.t3/...` path, so the three cannot
         // diverge if the kind rules ever grow name-based checks.
         const tail = ticketScratchRelativeTail(asset.relativePath, asset.ticketId);
         const detected = tail === null ? null : detectArtifactKind(tail);
-        if (detected === null) return notFound;
-        // A text-like row is served inline in the RPC and never gets a URL, so a
-        // text-like claim should not exist. Refuse rather than serve one.
-        if (isTextLikeKind(detected.kind)) return notFound;
-        // Re-apply the size cap to the CURRENT size: the claim carries no size
-        // baseline (a worktree file legitimately changes), so a file that was
-        // small when signed could otherwise grow and force a full-body read.
-        if (opened.size > ARTIFACT_FILE_CAPS[detected.kind]) return notFound;
+        // The decision sequence lives in `decideScratchServe` so it is testable
+        // without HTTP plumbing: every branch answers 404, and a regression in
+        // any of them would otherwise be silent.
+        if (
+          decideScratchServe({
+            realPath: opened.realPath,
+            artifactsRealPath: artifactsReal,
+            kind: detected?.kind ?? null,
+            size: opened.size,
+            capForKind: detected === null ? null : ARTIFACT_FILE_CAPS[detected.kind],
+          }) !== "serve"
+        ) {
+          return notFound;
+        }
 
         const headers = artifactHeaders({
           mime: asset.mime,

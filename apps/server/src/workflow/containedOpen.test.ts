@@ -11,6 +11,8 @@ import {
   openContained,
   resolveSubdirectoryRealpath,
   resolveTicketScratchRoot,
+  SCRATCH_OPEN_OPTIONS,
+  decideScratchServe,
 } from "./containedOpen.ts";
 
 /**
@@ -225,5 +227,65 @@ describe("resolveTicketScratchRoot — inside-workspace pivots", () => {
       NodePath.join(victim, ".t3", "ticket", "ticket-9"),
     );
     assert.isNull(await resolveTicketScratchRoot(victim, "ticket-9"));
+  });
+});
+
+describe("SCRATCH_OPEN_OPTIONS", () => {
+  it("rejects hard links, so list and serve cannot drift apart", async () => {
+    // The drift this guards: when only the LIST path rejected hard links, a
+    // normal file could be listed to mint a signed URL and then replaced with a
+    // hard link to a secret before the GET — the serve open would return it.
+    // Both scratch paths must use this constant.
+    assert.isTrue(SCRATCH_OPEN_OPTIONS.rejectMultiplyLinked);
+
+    const { base, ticketDir } = makeTree();
+    linkSync(NodePath.join(base, "secret.env"), NodePath.join(ticketDir, "swapped.md"));
+    const root = await Fs.realpath(ticketDir);
+    assert.isNull(
+      await openContained(NodePath.join(ticketDir, "swapped.md"), root, SCRATCH_OPEN_OPTIONS),
+    );
+  });
+});
+
+describe("decideScratchServe", () => {
+  const base = {
+    realPath: "/wt/.t3/ticket/t1/shot.png",
+    artifactsRealPath: "/wt/.t3/ticket/t1/artifacts",
+    kind: "image" as const,
+    size: 1024,
+    capForKind: 10 * 1024 * 1024,
+  };
+
+  it("serves a recognized, in-bounds media file", () => {
+    assert.equal(decideScratchServe(base), "serve");
+  });
+
+  it("refuses anything resolving into the durable artifacts subtree", () => {
+    // A symlink or case alias can land here even when the claim's spelling did
+    // not — which is why this is decided on the CANONICAL path.
+    assert.equal(
+      decideScratchServe({ ...base, realPath: "/wt/.t3/ticket/t1/artifacts/kept.png" }),
+      "in-artifacts",
+    );
+  });
+
+  it("refuses an unknown kind", () => {
+    assert.equal(decideScratchServe({ ...base, kind: null, capForKind: null }), "unknown-kind");
+  });
+
+  it("refuses text-like kinds, which are inlined and never get a URL", () => {
+    assert.equal(decideScratchServe({ ...base, kind: "markdown" }), "text-like");
+    assert.equal(decideScratchServe({ ...base, kind: "text" }), "text-like");
+  });
+
+  it("refuses a file that grew past its cap after signing", () => {
+    // The claim carries no size baseline, so this is the only thing standing
+    // between a signed URL and a full-body read of an arbitrarily large file.
+    assert.equal(decideScratchServe({ ...base, size: base.capForKind + 1 }), "over-cap");
+    assert.equal(decideScratchServe({ ...base, size: base.capForKind }), "serve");
+  });
+
+  it("still serves when the ticket has no artifacts directory at all", () => {
+    assert.equal(decideScratchServe({ ...base, artifactsRealPath: null }), "serve");
   });
 });

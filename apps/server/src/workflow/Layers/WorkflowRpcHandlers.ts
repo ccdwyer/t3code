@@ -97,6 +97,7 @@ import {
   decodeUtf8Replacing,
   detectArtifactKind,
   isTextLikeKind,
+  isValidTicketDirKey,
   truncateDecodedToBytes,
 } from "../artifactRules.ts";
 import {
@@ -104,6 +105,7 @@ import {
   openContained,
   resolveSubdirectoryRealpath,
   resolveTicketScratchRoot,
+  SCRATCH_OPEN_OPTIONS,
 } from "../containedOpen.ts";
 import { slugifyBoardName, uniqueBoardSlug } from "../boardSlug.ts";
 import { BOARD_TEMPLATES, listBoardTemplateSummaries } from "../boardTemplates.ts";
@@ -3475,6 +3477,14 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
             readonly truncated?: boolean;
             readonly url?: string;
           }> = [];
+          // Fail closed on the ticketId here too, independent of the contract
+          // layer. `NodePath.join` NORMALIZES, so a `..`-laden id could satisfy
+          // the strict-equality root check against a real directory elsewhere,
+          // and text rows are inlined without needing a claim. Defense in
+          // depth: every other gate in this feature is duplicated per layer.
+          if (!isValidTicketDirKey(String(input.ticketId))) {
+            return { artifacts: durable, scratch: [] };
+          }
           // Anchored to the canonical worktree root (see resolveTicketScratchRoot):
           // O_NOFOLLOW guards only the final component, so the contain-root
           // itself has to be proven or a symlinked ancestor pivots it.
@@ -3513,9 +3523,11 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
                   Effect.promise(() =>
                     // Scratch content is agent-written: refuse hard links,
                     // which path containment cannot see.
-                    openContained(NodePath.join(worktree.cwd, relativePath), ticketDirReal, {
-                      rejectMultiplyLinked: true,
-                    }),
+                    openContained(
+                      NodePath.join(worktree.cwd, relativePath),
+                      ticketDirReal,
+                      SCRATCH_OPEN_OPTIONS,
+                    ),
                   ),
                   (handle) =>
                     handle === null
@@ -3529,7 +3541,11 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
                 const byteSize = opened.size;
                 const kind: WorkflowTicketScratchKind = detected?.kind ?? "binary";
                 if (detected !== null && isTextLikeKind(detected.kind)) {
-                  const decoded = yield* Effect.promise(async () => {
+                  // tryPromise, not promise: `Effect.promise` turns a rejection
+                  // into a DEFECT, which `orElseSucceed` does not recover — so an
+                  // EIO mid-listing would fail the whole RPC despite the
+                  // per-row isolation this block claims.
+                  const decoded = yield* Effect.tryPromise(async () => {
                     const buffer = Buffer.alloc(
                       Math.min(byteSize, MAX_TICKET_ARTIFACT_READ_BYTES + 1),
                     );

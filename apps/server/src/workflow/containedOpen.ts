@@ -90,6 +90,53 @@ export const openContained = async (
 };
 
 /**
+ * The open options EVERY ticket-scratch path must use — list and serve alike.
+ *
+ * A shared constant rather than two literals: when only the list path rejected
+ * hard links, an attacker could list a normal file to mint a signed URL, then
+ * replace the path with a hard link to a secret before the GET. The serve open
+ * would happily return it. One constant makes that divergence impossible.
+ */
+export const SCRATCH_OPEN_OPTIONS = { rejectMultiplyLinked: true } as const;
+
+/**
+ * Whether an opened scratch file may be SERVED, given what the open revealed.
+ *
+ * Pulled out of the route so the decision sequence is testable without HTTP
+ * plumbing: every branch here answers 404, and a regression in any of them is
+ * otherwise silent. The route keeps the IO; this keeps the rules.
+ */
+export type ScratchServeDecision =
+  | "serve"
+  | "in-artifacts"
+  | "unknown-kind"
+  | "text-like"
+  | "over-cap";
+
+export const decideScratchServe = (input: {
+  /** Canonical path of the OPENED file. */
+  readonly realPath: string;
+  /** Canonical ticket-root artifacts dir, or null when absent. */
+  readonly artifactsRealPath: string | null;
+  /** Kind re-derived from the claim's scan-relative tail, null if unknown. */
+  readonly kind: "markdown" | "html" | "image" | "video" | "text" | null;
+  readonly size: number;
+  readonly capForKind: number | null;
+}): ScratchServeDecision => {
+  // The durable list owns artifacts/**, and a symlink or case alias can still
+  // land there even though the claim's spelling did not.
+  if (isInsideRealDirectory(input.realPath, input.artifactsRealPath)) return "in-artifacts";
+  if (input.kind === null || input.capForKind === null) return "unknown-kind";
+  // Text-like rows are inlined by the RPC and never get a URL, so a text-like
+  // claim should not exist. Refuse rather than serve one.
+  if (input.kind === "markdown" || input.kind === "text") return "text-like";
+  // Re-checked against the CURRENT size: the claim carries no size baseline, so
+  // a file small at signing time could otherwise grow and force a full read.
+  if (input.size > input.capForKind) return "over-cap";
+  return "serve";
+};
+
+/**
  * Canonical path of `<containRootRealpath>/<subdirectory>`, or null when it
  * does not exist. Resolved through `realpath` rather than string-joined: on a
  * case-insensitive volume the directory may be spelled `ARTIFACTS` on disk, and

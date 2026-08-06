@@ -68,6 +68,11 @@ import { makeWorkflowOutboundDispatcherLive } from "./Layers/WorkflowOutboundDis
 import { WorktreeLeaseServiceLive } from "./Layers/WorktreeLeaseService.ts";
 import { WorktreeCoordinatorLive } from "./Layers/WorktreeCoordinator.ts";
 import { ForkJoinCoordinatorLive } from "./Layers/ForkJoinCoordinator.ts";
+import {
+  TicketArtifactFinalizerLive,
+  TicketWorktreeLocatorLive,
+} from "./Layers/TicketArtifactFinalizer.ts";
+import { TicketArtifactPathsLive, TicketArtifactStoreLive } from "./Layers/TicketArtifactStore.ts";
 import { WorkflowFoundationLive } from "./WorkflowFoundationLive.ts";
 
 // PR steps run through the GitHub port. GitHubPortLive leaks GitHubCli +
@@ -142,6 +147,18 @@ export const WorkflowRuntimeLive = WorkflowRuntimeCoreLive.pipe(
   ),
   Layer.provideMerge(TicketCheckpointServiceLive),
   Layer.provideMerge(MergeGitPortLive),
+  // Durable ticket artifacts (spec 2026-08-05): finalizer over the store; sits
+  // with the other git-leaking ports so WorkflowRuntimeCoreLive stays git-free
+  // for its integration tests. provideMerge feeds the Core layers, so the
+  // engine's + merge/PR services' serviceOption(TicketArtifactFinalizer)
+  // resolve it. Grouped as ONE pipe argument (20-arg overload limit).
+  Layer.provideMerge(
+    TicketArtifactFinalizerLive.pipe(
+      Layer.provideMerge(TicketWorktreeLocatorLive),
+      Layer.provideMerge(TicketArtifactStoreLive),
+      Layer.provideMerge(TicketArtifactPathsLive),
+    ),
+  ),
   Layer.provideMerge(WorktreePortLive),
   Layer.provideMerge(ProviderResponsePortLive),
 );

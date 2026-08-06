@@ -94,6 +94,7 @@ import { resolveParkActions } from "../parkActions.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import { MAX_TICKET_MESSAGE_BODY_LENGTH, truncateTicketMessageBody } from "../ticketMessageBody.ts";
 import { isParallelismHoldReason } from "../worktreeOverlap.ts";
+import { TicketArtifactFinalizer } from "../Services/TicketArtifactFinalizer.ts";
 import { ForkJoinCoordinator } from "../Services/ForkJoinCoordinator.ts";
 import {
   exceedsForkDepth,
@@ -422,6 +423,7 @@ const make = Effect.gen(function* () {
   const registry = yield* BoardRegistry;
   const routingContextBuilder = yield* WorkflowRoutingContextBuilder;
   const forkJoinOption = yield* Effect.serviceOption(ForkJoinCoordinator);
+  const artifactFinalizerOption = yield* Effect.serviceOption(TicketArtifactFinalizer);
   const worktreeCoordOption = yield* Effect.serviceOption(WorktreeCoordinator);
   // Optional: a runtime without it simply routes without handoff packs, which is
   // what every engine test layer that predates the feature expects.
@@ -1161,6 +1163,47 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<StepRunOutcome, WorkflowEventStoreError> =>
     Effect.gen(function* () {
       const stepRunId = yield* ids.stepRunId();
+      // Artifact finalization invariant (spec 2026-08-05 §Ingestion trigger):
+      // ensuring runs on completed/failed/blocked AND on interruption (a
+      // park/manual-move Fiber.interrupt AWAITS ensuring finalizers), so
+      // evidence written by this step is ingested before any lifecycle action
+      // that follows the interrupt can proceed. The finalizer never fails and
+      // never blocks the outcome (evidence, not a gate).
+      return yield* runStepWithId(
+        ticketId,
+        boardId,
+        pipelineRunId,
+        step,
+        laneEntryToken,
+        laneKey,
+        laneStepKeys,
+        attempt,
+        isFirstAgentStep,
+        stepRunId,
+      ).pipe(
+        Effect.ensuring(
+          Option.isNone(artifactFinalizerOption)
+            ? Effect.void
+            : artifactFinalizerOption.value
+                .finalizeStep({ ticketId, stepRunId: stepRunId as string })
+                .pipe(Effect.asVoid),
+        ),
+      );
+    });
+
+  const runStepWithId = (
+    ticketId: TicketId,
+    boardId: BoardId,
+    pipelineRunId: PipelineRunId,
+    step: WorkflowStep,
+    laneEntryToken: LaneEntryToken,
+    laneKey: LaneKey,
+    laneStepKeys: ReadonlyArray<StepKey>,
+    attempt: number,
+    isFirstAgentStep: boolean,
+    stepRunId: StepRunId,
+  ): Effect.Effect<StepRunOutcome, WorkflowEventStoreError> =>
+    Effect.gen(function* () {
       yield* commit({
         type: "StepStarted",
         ticketId,

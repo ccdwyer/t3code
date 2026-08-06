@@ -1,6 +1,7 @@
 import type { StepOutcome } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 
 import { applyInstructionTemplate, type TicketTemplateVars } from "../instructionTemplate.ts";
@@ -15,6 +16,7 @@ import { WorkflowEventCommitter } from "../Services/WorkflowEventCommitter.ts";
 import type { WorkflowEventInput } from "../Services/WorkflowEventStore.ts";
 import { WorkflowIds } from "../Services/WorkflowIds.ts";
 import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { TicketArtifactFinalizer } from "../Services/TicketArtifactFinalizer.ts";
 import { cleanupTicketScratch } from "./ticketScratchCleanup.ts";
 
 const blocked = (reason: string): StepOutcome => ({ _tag: "blocked", reason });
@@ -22,6 +24,7 @@ const blocked = (reason: string): StepOutcome => ({ _tag: "blocked", reason });
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
 const make = Effect.gen(function* () {
+  const artifactFinalizerOption = yield* Effect.serviceOption(TicketArtifactFinalizer);
   const github = yield* GitHubPort;
   const git = yield* MergeGitPort;
   const read = yield* WorkflowReadModel;
@@ -64,6 +67,21 @@ const make = Effect.gen(function* () {
       // read, so the status reflects post-cleanup reality and the `git add -A`
       // snapshot never stages pipeline scratch (DESCRIPTION.md, handoff/, design/)
       // into the PR. (TicketMergeService already does this before its snapshot.)
+      // Last-chance artifact ingestion (spec §Ingestion trigger): scratch is
+      // about to be purged, so the finalizer MUST drain first. Persistent
+      // failure is surfaced as a step-level warning and the merge proceeds —
+      // the documented merge-time residual.
+      if (Option.isSome(artifactFinalizerOption)) {
+        const finalized = yield* artifactFinalizerOption.value.finalizeStep({
+          ticketId: input.ticketId,
+        });
+        if (!finalized.ok) {
+          yield* Effect.logWarning(
+            "ticket-artifact ingestion failed before scratch cleanup — artifacts from this worktree may be lost",
+            { ticketId: input.ticketId },
+          );
+        }
+      }
       yield* cleanupTicketScratch(git, input.worktreePath, input.ticketId as string);
       const worktreeStatus = yield* git.run({
         cwd: input.worktreePath,

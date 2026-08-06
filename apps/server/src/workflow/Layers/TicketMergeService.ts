@@ -1,5 +1,6 @@
 import type { StepOutcome } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 
 import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
@@ -11,6 +12,7 @@ import {
   type TicketMergeServiceShape,
 } from "../Services/TicketMergeService.ts";
 import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { TicketArtifactFinalizer } from "../Services/TicketArtifactFinalizer.ts";
 import { cleanupTicketScratch } from "./ticketScratchCleanup.ts";
 
 const blocked = (reason: string): StepOutcome => ({ _tag: "blocked", reason });
@@ -32,6 +34,7 @@ const conflictSummary = (output: string) => {
 };
 
 const make = Effect.gen(function* () {
+  const artifactFinalizerOption = yield* Effect.serviceOption(TicketArtifactFinalizer);
   const git = yield* MergeGitPort;
   const read = yield* WorkflowReadModel;
 
@@ -48,6 +51,21 @@ const make = Effect.gen(function* () {
       // design/) is pipeline scratch written by the executor — never a deliverable.
       // Purge it UNCONDITIONALLY — independent of `step.cleanupPaths` — so it never
       // reaches the snapshot commit, the merged branch, or the PR diff.
+      // Last-chance artifact ingestion (spec §Ingestion trigger): scratch is
+      // about to be purged, so the finalizer MUST drain first. Persistent
+      // failure is surfaced as a step-level warning and the merge proceeds —
+      // the documented merge-time residual.
+      if (Option.isSome(artifactFinalizerOption)) {
+        const finalized = yield* artifactFinalizerOption.value.finalizeStep({
+          ticketId: input.ticketId,
+        });
+        if (!finalized.ok) {
+          yield* Effect.logWarning(
+            "ticket-artifact ingestion failed before scratch cleanup — artifacts from this worktree may be lost",
+            { ticketId: input.ticketId },
+          );
+        }
+      }
       yield* cleanupTicketScratch(git, input.worktreePath, input.ticketId as string);
 
       // Working files like PLAN.md / REVIEW.md are pipeline scratch space —

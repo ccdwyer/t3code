@@ -9,6 +9,7 @@ import { TicketId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -568,9 +569,15 @@ storeLayer("TicketArtifactStore interruption safety", (it) => {
         const fiber = yield* hooked.pipe(Effect.forkScoped);
         const firstStaged = yield* Deferred.await(reached);
         assert.isString(firstStaged);
-        const interrupting = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+        // `interruptUnsafe` marks the fiber SYNCHRONOUSLY on this fiber, so
+        // the interrupt is established before `release` is signalled. Forking
+        // `Fiber.interrupt` instead would only schedule the interrupt, which
+        // could land after staging already finished and silently weaken this
+        // regression to a no-op.
+        fiber.interruptUnsafe();
         yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(interrupting);
+        const exit = yield* Fiber.await(fiber);
+        assert.isTrue(Exit.hasInterrupts(exit), "the ingest fiber was not interrupted");
 
         // The every-exit invariant must hold with the interrupt delivered
         // mid-staging: no temps, nothing on disk a committed row doesn't own.

@@ -138,14 +138,14 @@ export const decideScratchServe = (input: {
   /** Kind re-derived from the claim's scan-relative tail, null if unknown. */
   readonly kind: "markdown" | "html" | "image" | "video" | "text" | null;
   readonly size: number;
-  readonly capForKind: number | null;
+  readonly capForKind: number | null | undefined;
 }): ScratchServeDecision => {
   // The durable list owns artifacts/**, and a symlink or case alias can still
   // land there even though the claim's spelling did not.
   if (isInsideRealDirectory(input.realPath, input.artifactsRealPath)) return "in-artifacts";
-  // `== null` and a type check, not `=== null`: a missing cap entry would be
+  // A type check rather than `=== null`: a missing cap entry would be
   // `undefined`, and `size > undefined` is false — which would fall through to
-  // "serve" for an uncapped kind.
+  // "serve" for an uncapped kind. `typeof !== "number"` covers both.
   if (input.kind === null || typeof input.capForKind !== "number") return "unknown-kind";
   // Text-like rows are inlined by the RPC and never get a URL, so a text-like
   // claim should not exist. Uses the SAME predicate as the list path rather

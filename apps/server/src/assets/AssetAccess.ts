@@ -21,6 +21,7 @@ import {
 } from "@t3tools/shared/filePreview";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import * as Clock from "effect/Clock";
+import * as Data from "effect/Data";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
@@ -252,7 +253,7 @@ export const ticketScratchRelativeTail = (
  * Canonical containment and the `artifacts/` exclusion are NOT here — those
  * need the filesystem and are enforced by the route's contained open.
  */
-const isValidTicketScratchClaim = (claims: {
+export const isValidTicketScratchClaim = (claims: {
   readonly ticketId: string;
   readonly relativePath: string;
   readonly mime: string;
@@ -265,6 +266,11 @@ const isValidTicketScratchClaim = (claims: {
   const detected = detectArtifactKind(rest);
   return detected !== null && detected.mime === claims.mime;
 };
+
+/** Refusal from the scratch signer: the path failed the shared lexical gate. */
+export class TicketScratchPathError extends Data.TaggedError("TicketScratchPathError")<{
+  readonly relativePath: string;
+}> {}
 
 export interface TicketScratchResource {
   readonly _tag: "ticket-scratch";
@@ -522,6 +528,12 @@ export const issueTicketScratchUrl = Effect.fn("AssetAccess.issueTicketScratchUr
   resource: TicketScratchResource,
 ) {
   const path = yield* Path.Path;
+  // Apply the SAME lexical gate the resolver will, so this private entry point
+  // cannot mint a claim that is guaranteed to 404 — or one whose mime
+  // disagrees with its extension, which is what picks the CSP class.
+  if (!isValidTicketScratchClaim(resource)) {
+    return yield* new TicketScratchPathError({ relativePath: resource.relativePath });
+  }
   const expiresAt = (yield* Clock.currentTimeMillis) + TICKET_ARTIFACT_TOKEN_TTL_MS;
   const claims: AssetClaims = {
     version: 1,

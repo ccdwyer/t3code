@@ -228,14 +228,17 @@ function ScratchRowHeader({ file }: { readonly file: WorkflowTicketArtifact }) {
  */
 function ScratchRowBody({ file }: { readonly file: WorkflowTicketArtifact }) {
   const renderer = scratchRendererForKind(file.kind);
-  if (scratchNeedsUrl(file.kind) && file.url === undefined) {
+  const url = file.url;
+  // An empty string is as unusable as a missing one — `<img src="">` refetches
+  // the current document. `content`, by contrast, is meaningfully empty.
+  if (scratchNeedsUrl(file.kind) && (url === undefined || url === "")) {
     return <ArtifactUnavailableNotice />;
   }
-  if (renderer === "image") {
-    return <ArtifactImageViewer url={file.url ?? ""} name={file.name} description={undefined} />;
+  if (renderer === "image" && url !== undefined) {
+    return <ArtifactImageViewer url={url} name={file.name} description={undefined} />;
   }
-  if (renderer === "video") {
-    return <ArtifactVideoViewer url={file.url ?? ""} description={undefined} />;
+  if (renderer === "video" && url !== undefined) {
+    return <ArtifactVideoViewer url={url} description={undefined} />;
   }
   if (file.content === undefined) {
     return <ArtifactUnavailableNotice />;
@@ -277,7 +280,7 @@ export function ScratchFileList({
             className="flex items-center gap-2 rounded-md border border-border/60 bg-background/70 px-2 py-1.5"
           >
             <ScratchRowHeader file={file} />
-            {file.kind === "html" && file.url !== undefined ? (
+            {file.kind === "html" && file.url !== undefined && file.url !== "" ? (
               <ArtifactOpenInBrowser url={file.url} />
             ) : file.kind === "html" ? (
               <ArtifactUnavailableNotice />

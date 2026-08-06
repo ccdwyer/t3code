@@ -3493,64 +3493,91 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
             // symlinked finals, escapes, non-regular files) AND the source of
             // both the size and the bytes. A path-based stat + read would be a
             // TOCTOU window.
-            const opened = yield* Effect.promise(() =>
-              openContained(NodePath.join(worktree.cwd, relativePath), ticketDirReal),
-            );
-            if (opened === null) continue;
-            const row = yield* Effect.gen(function* () {
-              // A symlink or case alias can still land inside the durable
-              // artifacts subtree; that is the durable list's territory.
-              if (isInsideRealDirectory(opened.realPath, artifactsReal)) return null;
-              const byteSize = opened.size;
-              const kind: WorkflowTicketScratchKind = detected?.kind ?? "binary";
-              if (detected !== null && isTextLikeKind(detected.kind)) {
-                const decoded = yield* Effect.promise(async () => {
-                  const buffer = Buffer.alloc(
-                    Math.min(byteSize, MAX_TICKET_ARTIFACT_READ_BYTES + 1),
-                  );
-                  let readTotal = 0;
-                  while (readTotal < buffer.length) {
-                    const { bytesRead } = await opened.handle.read(
-                      buffer,
-                      readTotal,
-                      buffer.length - readTotal,
-                      readTotal,
+            // acquireRelease inside a scope, not open-then-ensuring: an
+            // interrupt between a successful open and the finalizer would leak
+            // a descriptor, and this loop opens up to 20 per request.
+            const row = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const opened = yield* Effect.acquireRelease(
+                  Effect.promise(() =>
+                    openContained(NodePath.join(worktree.cwd, relativePath), ticketDirReal),
+                  ),
+                  (handle) =>
+                    handle === null
+                      ? Effect.void
+                      : Effect.promise(() => handle.handle.close().catch(() => undefined)),
+                );
+                if (opened === null) return null;
+                // A symlink or case alias can still land inside the durable
+                // artifacts subtree; that is the durable list's territory.
+                if (isInsideRealDirectory(opened.realPath, artifactsReal)) return null;
+                const byteSize = opened.size;
+                const kind: WorkflowTicketScratchKind = detected?.kind ?? "binary";
+                if (detected !== null && isTextLikeKind(detected.kind)) {
+                  const decoded = yield* Effect.promise(async () => {
+                    const buffer = Buffer.alloc(
+                      Math.min(byteSize, MAX_TICKET_ARTIFACT_READ_BYTES + 1),
                     );
-                    if (bytesRead === 0) break;
-                    readTotal += bytesRead;
-                  }
-                  return buffer.subarray(0, readTotal);
-                }).pipe(Effect.orElseSucceed(() => null));
-                // A read failure isolates to THIS row: no content, and the
-                // client renders the unavailable notice.
-                if (decoded === null) return { name, kind, byteSize };
-                const content = decodeUtf8Replacing(decoded);
-                return {
-                  name,
-                  kind,
-                  byteSize,
-                  content: content.slice(0, MAX_TICKET_ARTIFACT_CHARS),
-                  ...(content.length > MAX_TICKET_ARTIFACT_CHARS ? { truncated: true } : {}),
-                };
-              }
-              // Binary rows get no URL: there is no signed claim for an
-              // unrecognized extension, and minting one would be an
-              // arbitrary-worktree-file read primitive.
-              if (detected === null) return { name, kind, byteSize };
-              if (byteSize > ARTIFACT_FILE_CAPS[detected.kind]) return { name, kind, byteSize };
-              const issueScratchUrl = deps.issueScratchUrl;
-              if (issueScratchUrl === undefined) return { name, kind, byteSize };
-              const issued = yield* issueScratchUrl({
-                workspaceRoot: worktree.cwd,
-                ticketId: input.ticketId,
-                relativePath,
-                mime: detected.mime,
-              }).pipe(Effect.orElseSucceed(() => null));
-              return issued === null
-                ? { name, kind, byteSize }
-                : { name, kind, byteSize, url: issued.relativeUrl };
-            }).pipe(
-              Effect.ensuring(Effect.promise(() => opened.handle.close().catch(() => undefined))),
+                    let readTotal = 0;
+                    while (readTotal < buffer.length) {
+                      const { bytesRead } = await opened.handle.read(
+                        buffer,
+                        readTotal,
+                        buffer.length - readTotal,
+                        readTotal,
+                      );
+                      if (bytesRead === 0) break;
+                      readTotal += bytesRead;
+                    }
+                    return buffer.subarray(0, readTotal);
+                  }).pipe(Effect.orElseSucceed(() => null));
+                  // A read failure isolates to THIS row: no content, and the
+                  // client renders the unavailable notice.
+                  if (decoded === null) return { name, kind, byteSize };
+                  const content = decodeUtf8Replacing(decoded);
+                  // Truncated if EITHER bound cut the document: the char slice, or
+                  // the byte read. Testing only the char length silently reports
+                  // "complete" for a multi-byte file whose byte-capped read
+                  // decodes to fewer than MAX_TICKET_ARTIFACT_CHARS characters.
+                  const truncated =
+                    content.length > MAX_TICKET_ARTIFACT_CHARS || decoded.length < byteSize;
+                  return {
+                    name,
+                    kind,
+                    byteSize,
+                    content: content.slice(0, MAX_TICKET_ARTIFACT_CHARS),
+                    ...(truncated ? { truncated: true } : {}),
+                  };
+                }
+                // Binary rows get no URL: there is no signed claim for an
+                // unrecognized extension, and minting one would be an
+                // arbitrary-worktree-file read primitive.
+                if (detected === null) return { name, kind, byteSize };
+                if (byteSize > ARTIFACT_FILE_CAPS[detected.kind]) return { name, kind, byteSize };
+                const issueScratchUrl = deps.issueScratchUrl;
+                if (issueScratchUrl === undefined) return { name, kind, byteSize };
+                const issued = yield* issueScratchUrl({
+                  workspaceRoot: worktree.cwd,
+                  ticketId: input.ticketId,
+                  relativePath,
+                  mime: detected.mime,
+                }).pipe(
+                  // Isolate the row, but do NOT swallow silently: a broken
+                  // signing secret turns every media row into "unavailable", and
+                  // without a log there is nothing to diagnose from.
+                  Effect.tapError((cause) =>
+                    Effect.logWarning("Failed to sign a ticket scratch URL.", {
+                      ticketId: String(input.ticketId),
+                      relativePath,
+                      cause,
+                    }),
+                  ),
+                  Effect.orElseSucceed(() => null),
+                );
+                return issued === null
+                  ? { name, kind, byteSize }
+                  : { name, kind, byteSize, url: issued.relativeUrl };
+              }),
             );
             if (row !== null) scratch.push(row);
           }

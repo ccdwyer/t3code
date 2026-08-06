@@ -32,7 +32,11 @@ import { OtlpTracer } from "effect/unstable/observability";
 import * as ServerConfig from "./config.ts";
 import { TicketId } from "@t3tools/contracts";
 
-import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  resolveAsset,
+  ticketScratchRelativeTail,
+} from "./assets/AssetAccess.ts";
 import { artifactHeaders, decideRange } from "./assets/artifactServing.ts";
 import {
   activeContentFor,
@@ -336,87 +340,100 @@ const serveTicketScratch = (
     if (ticketDirReal === null) return notFound;
 
     const absolutePath = NodePath.join(asset.workspaceRoot, asset.relativePath);
-    const opened = yield* Effect.promise(() => openContained(absolutePath, ticketDirReal));
-    if (opened === null) return notFound;
 
-    return yield* Effect.gen(function* () {
-      // The ticket's artifacts/ subtree is the durable list's territory, and a
-      // symlink or case alias could still land there. Decided on canonical
-      // paths, never on the claim's spelling.
-      const artifactsReal = yield* Effect.promise(() =>
-        resolveSubdirectoryRealpath(ticketDirReal, "artifacts"),
-      );
-      if (isInsideRealDirectory(opened.realPath, artifactsReal)) return notFound;
+    // acquireRelease, not open-then-ensuring: an interrupt landing between a
+    // successful open and the installation of the finalizer would leak the
+    // descriptor. The scope owns the handle from the moment it exists.
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const opened = yield* Effect.acquireRelease(
+          Effect.promise(() => openContained(absolutePath, ticketDirReal)),
+          (handle) =>
+            handle === null
+              ? Effect.void
+              : Effect.promise(() => handle.handle.close().catch(() => undefined)),
+        );
+        if (opened === null) return notFound;
+        // The ticket's artifacts/ subtree is the durable list's territory, and a
+        // symlink or case alias could still land there. Decided on canonical
+        // paths, never on the claim's spelling.
+        const artifactsReal = yield* Effect.promise(() =>
+          resolveSubdirectoryRealpath(ticketDirReal, "artifacts"),
+        );
+        if (isInsideRealDirectory(opened.realPath, artifactsReal)) return notFound;
 
-      // The claim carries no artifact kind (only the ticket-scratch tag), so
-      // the cap's kind is re-derived from the signed relativePath — the same
-      // table the mime was resolved from at issue.
-      const detected = detectArtifactKind(asset.relativePath);
-      if (detected === null) return notFound;
-      // A text-like row is served inline in the RPC and never gets a URL, so a
-      // text-like claim should not exist. Refuse rather than serve one.
-      if (isTextLikeKind(detected.kind)) return notFound;
-      // Re-apply the size cap to the CURRENT size: the claim carries no size
-      // baseline (a worktree file legitimately changes), so a file that was
-      // small when signed could otherwise grow and force a full-body read.
-      if (opened.size > ARTIFACT_FILE_CAPS[detected.kind]) return notFound;
+        // The claim carries no artifact kind (only the ticket-scratch tag), so
+        // re-derive it — from the SAME scan-relative tail the issuer and the
+        // claim validator use, not the full `.t3/...` path, so the three cannot
+        // diverge if the kind rules ever grow name-based checks.
+        const tail = ticketScratchRelativeTail(asset.relativePath, asset.ticketId);
+        const detected = tail === null ? null : detectArtifactKind(tail);
+        if (detected === null) return notFound;
+        // A text-like row is served inline in the RPC and never gets a URL, so a
+        // text-like claim should not exist. Refuse rather than serve one.
+        if (isTextLikeKind(detected.kind)) return notFound;
+        // Re-apply the size cap to the CURRENT size: the claim carries no size
+        // baseline (a worktree file legitimately changes), so a file that was
+        // small when signed could otherwise grow and force a full-body read.
+        if (opened.size > ARTIFACT_FILE_CAPS[detected.kind]) return notFound;
 
-      const headers = artifactHeaders({
-        mime: asset.mime,
-        displayName: asset.displayName,
-        activeContent: activeContentFor(asset.mime),
-      });
-      const isHead = request.method === "HEAD";
-      const decision = decideRange(request.headers["range"], opened.size);
-
-      if (decision.kind === "unsatisfiable") {
-        return HttpServerResponse.empty({
-          status: 416,
-          headers: { ...headers, "Content-Range": `bytes */${String(opened.size)}` },
+        const headers = artifactHeaders({
+          mime: asset.mime,
+          displayName: asset.displayName,
+          activeContent: activeContentFor(asset.mime),
         });
-      }
+        const isHead = request.method === "HEAD";
+        const decision = decideRange(request.headers["range"], opened.size);
 
-      const readExactly = (start: number, length: number) =>
-        Effect.promise(async () => {
-          const buffer = Buffer.alloc(length);
-          let readTotal = 0;
-          while (readTotal < length) {
-            const { bytesRead } = await opened.handle.read(
-              buffer,
-              readTotal,
-              length - readTotal,
-              start + readTotal,
-            );
-            if (bytesRead === 0) break;
-            readTotal += bytesRead;
-          }
-          // A truncation between the fstat and the read would otherwise send a
-          // body shorter than the Content-Length we already promised.
-          return readTotal === length ? new Uint8Array(buffer) : null;
-        });
+        if (decision.kind === "unsatisfiable") {
+          return HttpServerResponse.empty({
+            status: 416,
+            headers: { ...headers, "Content-Range": `bytes */${String(opened.size)}` },
+          });
+        }
 
-      if (decision.kind === "partial") {
-        const end = decision.openEnded
-          ? Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1)
-          : decision.end;
-        const length = end - decision.start + 1;
-        const partialHeaders = {
-          ...headers,
-          "Content-Range": `bytes ${String(decision.start)}-${String(end)}/${String(opened.size)}`,
-          "Content-Length": String(length),
-        };
-        if (isHead) return HttpServerResponse.empty({ status: 206, headers: partialHeaders });
-        const body = yield* readExactly(decision.start, length);
+        const readExactly = (start: number, length: number) =>
+          Effect.promise(async () => {
+            const buffer = Buffer.alloc(length);
+            let readTotal = 0;
+            while (readTotal < length) {
+              const { bytesRead } = await opened.handle.read(
+                buffer,
+                readTotal,
+                length - readTotal,
+                start + readTotal,
+              );
+              if (bytesRead === 0) break;
+              readTotal += bytesRead;
+            }
+            // A truncation between the fstat and the read would otherwise send a
+            // body shorter than the Content-Length we already promised.
+            return readTotal === length ? new Uint8Array(buffer) : null;
+          });
+
+        if (decision.kind === "partial") {
+          const end = decision.openEnded
+            ? Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1)
+            : decision.end;
+          const length = end - decision.start + 1;
+          const partialHeaders = {
+            ...headers,
+            "Content-Range": `bytes ${String(decision.start)}-${String(end)}/${String(opened.size)}`,
+            "Content-Length": String(length),
+          };
+          if (isHead) return HttpServerResponse.empty({ status: 206, headers: partialHeaders });
+          const body = yield* readExactly(decision.start, length);
+          if (body === null) return notFound;
+          return HttpServerResponse.uint8Array(body, { status: 206, headers: partialHeaders });
+        }
+
+        const fullHeaders = { ...headers, "Content-Length": String(opened.size) };
+        if (isHead) return HttpServerResponse.empty({ status: 200, headers: fullHeaders });
+        const body = yield* readExactly(0, opened.size);
         if (body === null) return notFound;
-        return HttpServerResponse.uint8Array(body, { status: 206, headers: partialHeaders });
-      }
-
-      const fullHeaders = { ...headers, "Content-Length": String(opened.size) };
-      if (isHead) return HttpServerResponse.empty({ status: 200, headers: fullHeaders });
-      const body = yield* readExactly(0, opened.size);
-      if (body === null) return notFound;
-      return HttpServerResponse.uint8Array(body, { status: 200, headers: fullHeaders });
-    }).pipe(Effect.ensuring(Effect.promise(() => opened.handle.close().catch(() => undefined))));
+        return HttpServerResponse.uint8Array(body, { status: 200, headers: fullHeaders });
+      }),
+    );
   });
 
 const assetRouteHandler = Effect.gen(function* () {

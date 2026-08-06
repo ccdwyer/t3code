@@ -87,8 +87,14 @@ export const isTextLikeKind = (kind: WorkflowTicketArtifactKind): boolean =>
  * what makes that unmissable — an SVG is `kind: "image"`, so a kind-keyed test
  * would silently leave it unsandboxed.
  */
-export const activeContentFor = (mime: string): "html" | "svg" | null =>
-  mime.startsWith("text/html") ? "html" : mime.startsWith("image/svg+xml") ? "svg" : null;
+export const activeContentFor = (mime: string): "html" | "svg" | null => {
+  // Match the media TYPE exactly, allowing only a parameter tail, so a
+  // hypothetical `text/html-ish` cannot inherit the HTML sandbox policy.
+  const type = (mime.split(";")[0] ?? "").trim().toLowerCase();
+  if (type === "text/html") return "html";
+  if (type === "image/svg+xml") return "svg";
+  return null;
+};
 
 // ─── Name validation + normalization (spec §Name rules) ──────────────────────
 

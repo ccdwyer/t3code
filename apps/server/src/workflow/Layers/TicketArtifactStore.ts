@@ -8,6 +8,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -35,6 +36,7 @@ import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import {
   TicketArtifactPaths,
   TicketArtifactStore,
+  TicketArtifactTestHooks,
   type DiskRef,
   type IngestBatchInput,
   type IngestReport,
@@ -494,48 +496,52 @@ const make = Effect.gen(function* () {
       });
 
       const staged: Array<Staged> = [];
+      const testHooksOption = yield* Effect.serviceOption(TicketArtifactTestHooks);
       for (const candidate of candidates) {
-        // Sidecar first (owned here per plan A4): containment-safe bounded read.
-        const sidecarRaw = sidecarByBase.get(candidate.rawName);
-        let description: string | undefined;
-        let sidecarPresent = false;
-        if (sidecarRaw !== undefined) {
-          const sidecarAbs = NodePath.join(input.artifactsRootAbsolutePath, sidecarRaw);
-          const opened = yield* Effect.promise(() => openContained(sidecarAbs, rootReal));
-          if (opened !== null) {
-            // A sidecar that opens but fails to READ is treated as ABSENT
-            // (existing description preserved) — a transient read error must
-            // not clear a caption. The handle always closes.
-            const bytes = yield* Effect.promise(async (): Promise<Buffer | null> => {
-              try {
-                const buffer = Buffer.alloc(Math.min(ARTIFACT_SIDECAR_READ_CAP_BYTES, opened.size));
-                const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, 0);
-                return buffer.subarray(0, bytesRead);
-              } catch {
-                return null;
-              } finally {
-                await opened.handle.close().catch(() => undefined);
-              }
-            });
-            if (bytes !== null) {
-              sidecarPresent = true;
-              description = normalizeCaption(decodeUtf8Replacing(bytes));
-            }
-          }
-        }
-
         const sourceAbs = NodePath.join(input.artifactsRootAbsolutePath, candidate.rawName);
         const existing = existingRows.get(candidate.normalized);
 
-        // The whole open → stage → promote → bookkeeping section is ONE
+        // The whole per-candidate section — sidecar open/read/close, then
+        // source open → stage → promote → bookkeeping — is ONE
         // uninterruptible region: its promises cannot be cancelled, so an
         // interrupt mid-region would let them finish AFTER the outer cleanup
-        // ran — creating a .tmp afterward, promoting a blob no tracking set
-        // knows about, or leaking the preOpen handle. Deferring interrupts to
-        // the region boundary keeps every-exit cleanup exact; each candidate
-        // is small (bounded copy), so deferral is short.
+        // ran — abandoning an open handle, creating a .tmp afterward, or
+        // promoting a blob no tracking set knows about. Deferring interrupts
+        // to the region boundary keeps every-exit cleanup exact; each
+        // candidate is small (bounded copy), so deferral is short.
         yield* Effect.uninterruptible(
           Effect.gen(function* () {
+            // Sidecar first (owned here per plan A4): containment-safe
+            // bounded read.
+            const sidecarRaw = sidecarByBase.get(candidate.rawName);
+            let description: string | undefined;
+            let sidecarPresent = false;
+            if (sidecarRaw !== undefined) {
+              const sidecarAbs = NodePath.join(input.artifactsRootAbsolutePath, sidecarRaw);
+              const opened = yield* Effect.promise(() => openContained(sidecarAbs, rootReal));
+              if (opened !== null) {
+                // A sidecar that opens but fails to READ is treated as ABSENT
+                // (existing description preserved) — a transient read error
+                // must not clear a caption. The handle always closes.
+                const bytes = yield* Effect.promise(async (): Promise<Buffer | null> => {
+                  try {
+                    const buffer = Buffer.alloc(
+                      Math.min(ARTIFACT_SIDECAR_READ_CAP_BYTES, opened.size),
+                    );
+                    const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, 0);
+                    return buffer.subarray(0, bytesRead);
+                  } catch {
+                    return null;
+                  } finally {
+                    await opened.handle.close().catch(() => undefined);
+                  }
+                });
+                if (bytes !== null) {
+                  sidecarPresent = true;
+                  description = normalizeCaption(decodeUtf8Replacing(bytes));
+                }
+              }
+            }
             // Phase-A short-circuit: size+mtime match AND healthy current
             // blob → skip blob staging; still enters Phase B as an
             // UnchangedCandidate.
@@ -578,6 +584,9 @@ const make = Effect.gen(function* () {
             const cap = ARTIFACT_FILE_CAPS[candidate.kind];
             const blobId = randomUUID();
             const tmpPath = NodePath.join(dir, `.tmp-${randomUUID()}`);
+            if (Option.isSome(testHooksOption)) {
+              yield* testHooksOption.value.onStageStart(candidate.rawName);
+            }
             pendingTmpPaths.add(tmpPath);
             const result = yield* Effect.promise(() => stageBounded(preOpen, cap, tmpPath)).pipe(
               Effect.ensuring(Effect.promise(() => preOpen.handle.close().catch(() => undefined))),

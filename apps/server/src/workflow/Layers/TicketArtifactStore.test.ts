@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 
 import { TicketId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -14,7 +15,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { TicketArtifactPaths, TicketArtifactStore } from "../Services/TicketArtifactStore.ts";
+import {
+  TicketArtifactPaths,
+  TicketArtifactStore,
+  TicketArtifactTestHooks,
+} from "../Services/TicketArtifactStore.ts";
 import { classifyEntries, TicketArtifactStoreLive } from "./TicketArtifactStore.ts";
 
 const testPathsLayer = Layer.effect(
@@ -521,54 +526,81 @@ storeLayer("TicketArtifactStore repair with drift", (it) => {
 });
 
 storeLayer("TicketArtifactStore interruption safety", (it) => {
-  it.effect("an interrupted ingest leaves no temps and only row-referenced blobs", () =>
-    Effect.gen(function* () {
-      const store = yield* TicketArtifactStore;
-      const paths = yield* TicketArtifactPaths;
-      const sql = yield* SqlClient.SqlClient;
-      const ticketId = freshTicketId();
-      yield* seedTicket(String(ticketId));
-      const src = yield* makeSourceDir();
-      const entries: Array<string> = [];
-      for (let index = 0; index < 8; index += 1) {
-        const name = `file-${String(index)}.md`;
-        yield* write(src, name, `payload ${String(index)}\n`.repeat(2048));
-        entries.push(name);
-      }
+  it.effect(
+    "an interrupt pending during staging leaves no temps and only row-referenced blobs",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* TicketArtifactStore;
+        const paths = yield* TicketArtifactPaths;
+        const sql = yield* SqlClient.SqlClient;
+        const ticketId = freshTicketId();
+        yield* seedTicket(String(ticketId));
+        const src = yield* makeSourceDir();
+        // A captioned candidate plus plain ones: the sidecar path is part of
+        // the protected region and must survive the interrupt too.
+        yield* write(src, "shot.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+        yield* write(src, "shot.png.caption.md", "before the fix");
+        const entries: Array<string> = ["shot.png", "shot.png.caption.md"];
+        for (let index = 0; index < 4; index += 1) {
+          const name = `file-${String(index)}.md`;
+          yield* write(src, name, `payload ${String(index)}\n`.repeat(2048));
+          entries.push(name);
+        }
 
-      // Interrupt mid-batch. The exact landing point varies by scheduling;
-      // the EVERY-EXIT invariant below must hold at all of them, which is
-      // what makes this a deterministic regression despite the racy cut.
-      const fiber = yield* store
-        .ingestBatch({ ticketId, artifactsRootAbsolutePath: src, entries })
-        .pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-      yield* Fiber.interrupt(fiber);
+        // Barrier pair: the store signals `reached` INSIDE the uninterruptible
+        // region right before staging IO, then waits for `release`. The test
+        // requests the interrupt while the fiber is parked there, so the
+        // interrupt is provably PENDING during staging/promotion — the exact
+        // window the former bug leaked in.
+        const reached = yield* Deferred.make<string, never>();
+        const release = yield* Deferred.make<void, never>();
+        const hooked = store
+          .ingestBatch({ ticketId, artifactsRootAbsolutePath: src, entries })
+          .pipe(
+            Effect.provideService(TicketArtifactTestHooks, {
+              onStageStart: (rawName) =>
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(reached, rawName);
+                  yield* Deferred.await(release);
+                }),
+            }),
+          );
+        const fiber = yield* hooked.pipe(Effect.forkScoped);
+        const firstStaged = yield* Deferred.await(reached);
+        assert.isString(firstStaged);
+        const interrupting = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(interrupting);
 
-      const dir = NodePath.join(paths.rootDir, String(ticketId));
-      const names = yield* Effect.promise(() => Fs.readdir(dir).catch(() => [] as Array<string>));
-      assert.lengthOf(
-        names.filter((name) => name.startsWith(".tmp-")),
-        0,
-        `stale temp files: ${names.join(", ")}`,
-      );
-      const rows = yield* sql<{ readonly blob_id: string }>`
+        // The every-exit invariant must hold with the interrupt delivered
+        // mid-staging: no temps, nothing on disk a committed row doesn't own.
+        const dir = NodePath.join(paths.rootDir, String(ticketId));
+        const names = yield* Effect.promise(() => Fs.readdir(dir).catch(() => [] as Array<string>));
+        assert.lengthOf(
+          names.filter((name) => name.startsWith(".tmp-")),
+          0,
+          `stale temp files: ${names.join(", ")}`,
+        );
+        const rows = yield* sql<{ readonly blob_id: string }>`
         SELECT blob_id FROM workflow_ticket_artifact WHERE ticket_id = ${String(ticketId)}
       `;
-      const referenced = new Set(rows.map((row) => row.blob_id));
-      for (const name of names) {
-        assert.isTrue(referenced.has(name), `unreferenced blob left on disk: ${name}`);
-      }
+        const referenced = new Set(rows.map((row) => row.blob_id));
+        for (const name of names) {
+          assert.isTrue(referenced.has(name), `unreferenced blob left on disk: ${name}`);
+        }
 
-      // The batch is single-flight per ticket, so a rerun AFTER the interrupt
-      // must land everything cleanly.
-      const report = yield* store.ingestBatch({
-        ticketId,
-        artifactsRootAbsolutePath: src,
-        entries,
-      });
-      assert.lengthOf(report.ingested, 8);
-      assert.lengthOf(report.skips, 0);
-    }),
+        // The batch is single-flight per ticket, so a rerun AFTER the interrupt
+        // must land everything cleanly — captions included.
+        const report = yield* store.ingestBatch({
+          ticketId,
+          artifactsRootAbsolutePath: src,
+          entries,
+        });
+        assert.lengthOf(report.ingested, 5);
+        assert.lengthOf(report.skips, 0);
+        const listed = yield* store.list(ticketId);
+        const image = listed.find((row) => row.name === "shot.png");
+        assert.equal(image?.description, "before the fix");
+      }),
   );
 });

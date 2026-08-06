@@ -154,3 +154,18 @@ export class TicketArtifactPaths extends Context.Service<
   TicketArtifactPaths,
   TicketArtifactPathsShape
 >()("t3/workflow/Services/TicketArtifactStore/TicketArtifactPaths") {}
+
+/**
+ * TEST-ONLY synchronization hooks (resolved via serviceOption; absent in
+ * production wiring). `onStageStart` fires INSIDE the per-candidate
+ * uninterruptible region, immediately before staging IO — interrupt tests
+ * use it as a barrier proving the interrupt was pending while the
+ * vulnerable section ran.
+ */
+export interface TicketArtifactTestHooksShape {
+  readonly onStageStart: (rawName: string) => Effect.Effect<void>;
+}
+export class TicketArtifactTestHooks extends Context.Service<
+  TicketArtifactTestHooks,
+  TicketArtifactTestHooksShape
+>()("t3/workflow/Services/TicketArtifactStore/TicketArtifactTestHooks") {}

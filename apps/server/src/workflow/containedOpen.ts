@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { isTextLikeKind } from "./artifactRules.ts";
 import { constants as FsConstants } from "node:fs";
 import * as Fs from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -113,6 +114,22 @@ export type ScratchServeDecision =
   | "text-like"
   | "over-cap";
 
+/**
+ * KNOWN RESIDUAL — the artifacts-subtree exclusion is not race-free.
+ * `artifactsRealPath` and `realPath` are path snapshots taken at different
+ * moments, so a writer who can rename `<ticket>/artifacts` to an allowed
+ * scratch name during the open and restore it afterwards can slip a durable
+ * file past this check.
+ *
+ * Deliberately accepted rather than closed: what that race exposes is the SAME
+ * ticket's durable artifacts, which the same viewer already reads through the
+ * durable list with its own signed URLs. This exclusion decides which list
+ * OWNS a file; it is not a confidentiality boundary. The controls that are
+ * confidentiality boundaries — ticket scoping, containment inside the ticket
+ * directory, symlink refusal, hard-link refusal — all ride the verified handle
+ * and are race-safe. Closing this properly needs directory-handle-relative
+ * lookups (openat/fstatat), which Node does not expose.
+ */
 export const decideScratchServe = (input: {
   /** Canonical path of the OPENED file. */
   readonly realPath: string;
@@ -126,10 +143,14 @@ export const decideScratchServe = (input: {
   // The durable list owns artifacts/**, and a symlink or case alias can still
   // land there even though the claim's spelling did not.
   if (isInsideRealDirectory(input.realPath, input.artifactsRealPath)) return "in-artifacts";
-  if (input.kind === null || input.capForKind === null) return "unknown-kind";
+  // `== null` and a type check, not `=== null`: a missing cap entry would be
+  // `undefined`, and `size > undefined` is false — which would fall through to
+  // "serve" for an uncapped kind.
+  if (input.kind === null || typeof input.capForKind !== "number") return "unknown-kind";
   // Text-like rows are inlined by the RPC and never get a URL, so a text-like
-  // claim should not exist. Refuse rather than serve one.
-  if (input.kind === "markdown" || input.kind === "text") return "text-like";
+  // claim should not exist. Uses the SAME predicate as the list path rather
+  // than open-coding the kinds, so the two cannot drift.
+  if (isTextLikeKind(input.kind)) return "text-like";
   // Re-checked against the CURRENT size: the claim carries no size baseline, so
   // a file small at signing time could otherwise grow and force a full read.
   if (input.size > input.capForKind) return "over-cap";

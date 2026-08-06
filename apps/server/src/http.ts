@@ -42,7 +42,6 @@ import {
   activeContentFor,
   ARTIFACT_FILE_CAPS,
   detectArtifactKind,
-  isTextLikeKind,
 } from "./workflow/artifactRules.ts";
 import {
   decideScratchServe,
@@ -436,6 +435,11 @@ const serveTicketScratch = (
           return HttpServerResponse.uint8Array(body, { status: 206, headers: partialHeaders });
         }
 
+        // NOTE on memory: the 8 MiB window clamps only SERVER-chosen range ends.
+        // An explicit `start-end` is served exactly (the pinned Range table), and
+        // a plain GET returns the whole body, so a single request can allocate up
+        // to ARTIFACT_FILE_CAPS[kind]. That per-kind cap — re-checked against the
+        // current size above — is the intended bound, not the window.
         const fullHeaders = { ...headers, "Content-Length": String(opened.size) };
         if (isHead) return HttpServerResponse.empty({ status: 200, headers: fullHeaders });
         const body = yield* readExactly(0, opened.size);

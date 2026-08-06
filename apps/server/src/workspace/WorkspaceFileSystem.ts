@@ -176,6 +176,9 @@ export class WorkspaceFileSystem extends Context.Service<
       readonly cwd: string;
       readonly relativePath: string;
       readonly maxEntries?: number;
+      /** Traversal order at TRUNCATION time: default locale; "bytes" =
+       *  unsigned UTF-8 byte order (the workflow artifacts comparator). */
+      readonly order?: "bytes";
     }) => Effect.Effect<
       ReadonlyArray<string>,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
@@ -219,7 +222,10 @@ export class WorkspaceFileSystem extends Context.Service<
     readonly deleteFile: (input: {
       readonly cwd: string;
       readonly relativePath: string;
-    }) => Effect.Effect<void, WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError>;
+    }) => Effect.Effect<
+      void,
+      WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
+    >;
   }
 >()("t3/workspace/WorkspaceFileSystem") {}
 
@@ -287,11 +293,13 @@ export const make = Effect.gen(function* () {
     input: { readonly cwd: string; readonly relativePath: string },
     operation: WorkspaceFileSystemOperationError["operation"],
   ) =>
-    fileSystem.realPath(input.cwd).pipe(
-      Effect.mapError((cause) =>
-        makeOperationError(input, operation, input.cwd, input.cwd, cause),
-      ),
-    );
+    fileSystem
+      .realPath(input.cwd)
+      .pipe(
+        Effect.mapError((cause) =>
+          makeOperationError(input, operation, input.cwd, input.cwd, cause),
+        ),
+      );
 
   /**
    * Resolve a real path for an existing target and verify it is contained
@@ -304,11 +312,13 @@ export const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const realRoot = yield* resolveRealWorkspaceRoot(input, operation);
-      const realTarget = yield* fileSystem.realPath(absolutePath).pipe(
-        Effect.mapError((cause) =>
-          makeOperationError(input, operation, absolutePath, absolutePath, cause),
-        ),
-      );
+      const realTarget = yield* fileSystem
+        .realPath(absolutePath)
+        .pipe(
+          Effect.mapError((cause) =>
+            makeOperationError(input, operation, absolutePath, absolutePath, cause),
+          ),
+        );
       if (!containsRealPath(realRoot, realTarget)) {
         return yield* new WorkspaceFilePathEscapeError({
           workspaceRoot: input.cwd,
@@ -333,11 +343,13 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const realRoot = yield* resolveRealWorkspaceRoot(input, operation);
       const targetDirectory = path.dirname(absolutePath);
-      const realParent = yield* fileSystem.realPath(targetDirectory).pipe(
-        Effect.mapError((cause) =>
-          makeOperationError(input, operation, absolutePath, targetDirectory, cause),
-        ),
-      );
+      const realParent = yield* fileSystem
+        .realPath(targetDirectory)
+        .pipe(
+          Effect.mapError((cause) =>
+            makeOperationError(input, operation, absolutePath, targetDirectory, cause),
+          ),
+        );
       if (!containsRealPath(realRoot, realParent)) {
         return yield* makeEscapeError(input, realRoot, realParent);
       }
@@ -369,11 +381,13 @@ export const make = Effect.gen(function* () {
 
       if (symlinkTarget !== null) {
         const targetDirectory = path.dirname(absolutePath);
-        const realParent = yield* fileSystem.realPath(targetDirectory).pipe(
-          Effect.mapError((cause) =>
-            makeOperationError(input, operation, absolutePath, targetDirectory, cause),
-          ),
-        );
+        const realParent = yield* fileSystem
+          .realPath(targetDirectory)
+          .pipe(
+            Effect.mapError((cause) =>
+              makeOperationError(input, operation, absolutePath, targetDirectory, cause),
+            ),
+          );
         if (!containsRealPath(realRoot, realParent)) {
           return yield* makeEscapeError(input, realRoot, realParent);
         }
@@ -404,20 +418,20 @@ export const make = Effect.gen(function* () {
         Effect.catch((cause) =>
           isNotFoundError(cause)
             ? Effect.succeed(false)
-            : Effect.fail(
-                makeOperationError(input, operation, absolutePath, absolutePath, cause),
-              ),
+            : Effect.fail(makeOperationError(input, operation, absolutePath, absolutePath, cause)),
         ),
       );
       if (!targetExists) {
         return false;
       }
 
-      const realTarget = yield* fileSystem.realPath(absolutePath).pipe(
-        Effect.mapError((cause) =>
-          makeOperationError(input, operation, absolutePath, absolutePath, cause),
-        ),
-      );
+      const realTarget = yield* fileSystem
+        .realPath(absolutePath)
+        .pipe(
+          Effect.mapError((cause) =>
+            makeOperationError(input, operation, absolutePath, absolutePath, cause),
+          ),
+        );
       if (!containsRealPath(realRoot, realTarget)) {
         return yield* makeEscapeError(input, realRoot, realTarget);
       }
@@ -569,11 +583,13 @@ export const make = Effect.gen(function* () {
       operation,
     );
 
-    return yield* fileSystem.readFileString(realTarget).pipe(
-      Effect.mapError((cause) =>
-        makeOperationError(input, operation, realTarget, realTarget, cause),
-      ),
-    );
+    return yield* fileSystem
+      .readFileString(realTarget)
+      .pipe(
+        Effect.mapError((cause) =>
+          makeOperationError(input, operation, realTarget, realTarget, cause),
+        ),
+      );
   });
 
   const readFileStringCapped: NonNullable<WorkspaceFileSystem["Service"]["readFileStringCapped"]> =
@@ -590,15 +606,13 @@ export const make = Effect.gen(function* () {
       );
       // Stream at most maxBytes off disk and decode — never materialise the whole
       // file in memory just to truncate it.
-      return yield* fileSystem
-        .stream(realTarget, { bytesToRead: input.maxBytes })
-        .pipe(
-          Stream.decodeText(),
-          Stream.mkString,
-          Effect.mapError((cause) =>
-            makeOperationError(input, operation, realTarget, realTarget, cause),
-          ),
-        );
+      return yield* fileSystem.stream(realTarget, { bytesToRead: input.maxBytes }).pipe(
+        Stream.decodeText(),
+        Stream.mkString,
+        Effect.mapError((cause) =>
+          makeOperationError(input, operation, realTarget, realTarget, cause),
+        ),
+      );
     });
 
   const listFiles: WorkspaceFileSystem["Service"]["listFiles"] = Effect.fn(
@@ -609,11 +623,13 @@ export const make = Effect.gen(function* () {
       workspaceRoot: input.cwd,
       relativePath: input.relativePath,
     });
-    const exists = yield* fileSystem.exists(target.absolutePath).pipe(
-      Effect.mapError((cause) =>
-        makeOperationError(input, operation, target.absolutePath, target.absolutePath, cause),
-      ),
-    );
+    const exists = yield* fileSystem
+      .exists(target.absolutePath)
+      .pipe(
+        Effect.mapError((cause) =>
+          makeOperationError(input, operation, target.absolutePath, target.absolutePath, cause),
+        ),
+      );
     if (!exists) {
       return [];
     }
@@ -622,11 +638,13 @@ export const make = Effect.gen(function* () {
       target.absolutePath,
       operation,
     );
-    const entries = yield* fileSystem.readDirectory(realTarget).pipe(
-      Effect.mapError((cause) =>
-        makeOperationError(input, operation, realTarget, realTarget, cause),
-      ),
-    );
+    const entries = yield* fileSystem
+      .readDirectory(realTarget)
+      .pipe(
+        Effect.mapError((cause) =>
+          makeOperationError(input, operation, realTarget, realTarget, cause),
+        ),
+      );
     const files: string[] = [];
     for (const entry of entries) {
       const info = yield* fileSystem
@@ -646,11 +664,13 @@ export const make = Effect.gen(function* () {
         workspaceRoot: input.cwd,
         relativePath: input.relativePath,
       });
-      const exists = yield* fileSystem.exists(target.absolutePath).pipe(
-        Effect.mapError((cause) =>
-          makeOperationError(input, operation, target.absolutePath, target.absolutePath, cause),
-        ),
-      );
+      const exists = yield* fileSystem
+        .exists(target.absolutePath)
+        .pipe(
+          Effect.mapError((cause) =>
+            makeOperationError(input, operation, target.absolutePath, target.absolutePath, cause),
+          ),
+        );
       if (!exists) {
         return [];
       }
@@ -667,12 +687,19 @@ export const make = Effect.gen(function* () {
         absDir: string,
       ): Effect.Effect<void, WorkspaceFileSystemOperationError | WorkspaceFilePathEscapeError> =>
         Effect.gen(function* () {
-          const entries = yield* fileSystem.readDirectory(absDir).pipe(
-            Effect.mapError((cause) =>
-              makeOperationError(input, operation, absDir, absDir, cause),
-            ),
+          const entries = yield* fileSystem
+            .readDirectory(absDir)
+            .pipe(
+              Effect.mapError((cause) =>
+                makeOperationError(input, operation, absDir, absDir, cause),
+              ),
+            );
+          const ordered = [...entries].sort((left, right) =>
+            input.order === "bytes"
+              ? Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+              : left.localeCompare(right),
           );
-          for (const entry of [...entries].sort((left, right) => left.localeCompare(right))) {
+          for (const entry of ordered) {
             if (results.length >= limit) {
               return;
             }
@@ -791,11 +818,13 @@ export const make = Effect.gen(function* () {
       return;
     }
 
-    yield* fileSystem.remove(target.absolutePath, { force: true }).pipe(
-      Effect.mapError((cause) =>
-        makeOperationError(input, operation, target.absolutePath, target.absolutePath, cause),
-      ),
-    );
+    yield* fileSystem
+      .remove(target.absolutePath, { force: true })
+      .pipe(
+        Effect.mapError((cause) =>
+          makeOperationError(input, operation, target.absolutePath, target.absolutePath, cause),
+        ),
+      );
     yield* workspaceEntries.refresh(input.cwd);
   });
 

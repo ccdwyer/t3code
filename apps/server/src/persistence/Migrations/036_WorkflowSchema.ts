@@ -769,11 +769,11 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`
-    CREATE INDEX IF NOT EXISTS idx_workflow_ticket_artifact_board
-    ON workflow_ticket_artifact (board_id)
-  `;
-  yield* sql`
     CREATE INDEX IF NOT EXISTS idx_workflow_ticket_artifact_ticket
     ON workflow_ticket_artifact (ticket_id)
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_workflow_ticket_artifact_board
+    ON workflow_ticket_artifact (board_id)
   `;
 });

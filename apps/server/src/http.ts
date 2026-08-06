@@ -225,20 +225,20 @@ const serveTicketArtifact = (
         headers: ARTIFACT_BASE_404_HEADERS,
       });
     }
+    const rowHeaders = artifactHeaders({
+      mime: row.mime,
+      displayName: row.name,
+      isHtml: row.kind === "html",
+    });
     const blob = yield* store.openVerifiedBlob(row).pipe(Effect.orElseSucceed(() => null));
     if (blob === null) {
-      return HttpServerResponse.text("Not Found", {
-        status: 404,
-        headers: ARTIFACT_BASE_404_HEADERS,
-      });
+      // Row RESOLVED: the reduced base set is reserved for no-row cases; an
+      // unavailable blob still answers with the artifact's full header set.
+      return HttpServerResponse.empty({ status: 404, headers: rowHeaders });
     }
 
     return yield* Effect.gen(function* () {
-      const headers = artifactHeaders({
-        mime: row.mime,
-        displayName: row.name,
-        isHtml: row.kind === "html",
-      });
+      const headers = rowHeaders;
       const isHead = request.method === "HEAD";
       const rangeHeader = request.headers["range"];
       const decision = decideRange(rangeHeader, blob.size);
@@ -248,16 +248,18 @@ const serveTicketArtifact = (
           ...headers,
           "Content-Range": `bytes */${String(blob.size)}`,
         };
-        // HEAD parity holds on 416 too: identical status/headers, no body.
-        return isHead
-          ? HttpServerResponse.empty({ status: 416, headers: unsatisfiableHeaders })
-          : HttpServerResponse.text("Range Not Satisfiable", {
-              status: 416,
-              headers: unsatisfiableHeaders,
-            });
+        // Empty body for GET too, so HEAD parity is byte-for-byte on headers
+        // (a text body would add a diverging Content-Length).
+        return HttpServerResponse.empty({ status: 416, headers: unsatisfiableHeaders });
       }
       if (decision.kind === "partial") {
-        const end = Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1);
+        // The 8 MiB window applies ONLY to server-chosen ends (start- and
+        // -suffix forms, where a shorter 206 is RFC-legal); explicit
+        // start-end ranges are client-bounded and served exactly per the
+        // pinned table.
+        const end = decision.openEnded
+          ? Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1)
+          : decision.end;
         const partialHeaders = {
           ...headers,
           "Content-Range": `bytes ${String(decision.start)}-${String(end)}/${String(blob.size)}`,
@@ -270,10 +272,7 @@ const serveTicketArtifact = (
           .readRange(decision.start, end)
           .pipe(Effect.orElseSucceed(() => null));
         if (body === null) {
-          return HttpServerResponse.text("Not Found", {
-            status: 404,
-            headers: ARTIFACT_BASE_404_HEADERS,
-          });
+          return HttpServerResponse.empty({ status: 404, headers: rowHeaders });
         }
         return HttpServerResponse.uint8Array(body, { status: 206, headers: partialHeaders });
       }
@@ -283,10 +282,7 @@ const serveTicketArtifact = (
       }
       const body = yield* blob.read(blob.size).pipe(Effect.orElseSucceed(() => null));
       if (body === null) {
-        return HttpServerResponse.text("Not Found", {
-          status: 404,
-          headers: ARTIFACT_BASE_404_HEADERS,
-        });
+        return HttpServerResponse.empty({ status: 404, headers: rowHeaders });
       }
       return HttpServerResponse.uint8Array(body, { status: 200, headers: fullHeaders });
     }).pipe(Effect.ensuring(blob.close()));

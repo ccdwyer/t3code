@@ -7,7 +7,15 @@
 
 export type RangeDecision =
   | { readonly kind: "full" } // 200, whole body (ignore-class or no header)
-  | { readonly kind: "partial"; readonly start: number; readonly end: number } // 206
+  | {
+      readonly kind: "partial";
+      readonly start: number;
+      readonly end: number;
+      /** True for start-/-suffix forms: the SERVER chose the end, so it may
+       *  legally serve a shorter window; explicit start-end is client-bounded
+       *  and served exactly (spec range table). */
+      readonly openEnded: boolean;
+    } // 206
   | { readonly kind: "unsatisfiable" }; // 416 + Content-Range: bytes */<size>
 
 /**
@@ -32,17 +40,17 @@ export const decideRange = (header: string | undefined, size: number): RangeDeci
     const count = Number(suffix[1]);
     if (count === 0 || size === 0) return { kind: "unsatisfiable" };
     const start = Math.max(0, size - count);
-    return { kind: "partial", start, end: size - 1 };
+    return { kind: "partial", start, end: size - 1, openEnded: true };
   }
   const bounded = /^(\d+)-(\d*)$/.exec(spec);
   if (bounded === null) return { kind: "full" }; // malformed → ignore
   const start = Number(bounded[1]);
   const endRaw = bounded[2] ?? "";
   if (size === 0 || start >= size) return { kind: "unsatisfiable" };
-  if (endRaw === "") return { kind: "partial", start, end: size - 1 };
+  if (endRaw === "") return { kind: "partial", start, end: size - 1, openEnded: true };
   const end = Number(endRaw);
   if (end < start) return { kind: "unsatisfiable" };
-  return { kind: "partial", start, end: Math.min(end, size - 1) };
+  return { kind: "partial", start, end: Math.min(end, size - 1), openEnded: false };
 };
 
 /** Non-ASCII → "_", strip quotes/backslashes/controls, never empty. */

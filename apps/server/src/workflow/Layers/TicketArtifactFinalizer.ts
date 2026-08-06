@@ -60,6 +60,63 @@ const make = Effect.gen(function* () {
   const store = yield* TicketArtifactStore;
   const locator = yield* TicketWorktreeLocator;
 
+  /** Durable agent note into the ticket discussion; never fails. */
+  const postFinalizerNote = (
+    input: { readonly ticketId: TicketId; readonly stepRunId?: string | undefined },
+    note: string,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const committerOption = yield* Effect.serviceOption(WorkflowEventCommitter);
+      const idsOption = yield* Effect.serviceOption(WorkflowIds);
+      if (Option.isNone(committerOption) || Option.isNone(idsOption)) {
+        return;
+      }
+      const committer = committerOption.value;
+      const ids = idsOption.value;
+      const messageId = yield* ids.messageId();
+      const now = DateTime.formatIso(yield* DateTime.now);
+      const stepRunId = input.stepRunId;
+      const eventId = yield* ids.eventId();
+      yield* committer.commit(
+        stepRunId === undefined
+          ? {
+              eventId,
+              type: "TicketMessagePosted",
+              ticketId: input.ticketId,
+              occurredAt: now as never,
+              payload: {
+                messageId,
+                author: "agent",
+                body: note,
+                attachments: [],
+                createdAt: now as never,
+              },
+            }
+          : {
+              eventId,
+              type: "TicketMessagePosted",
+              ticketId: input.ticketId,
+              occurredAt: now as never,
+              payload: {
+                messageId,
+                stepRunId: StepRunId.make(stepRunId),
+                author: "agent",
+                body: note,
+                attachments: [],
+                createdAt: now as never,
+              },
+            },
+      );
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("ticket-artifact finalizer: note not posted", {
+          cause,
+          ticketId: input.ticketId,
+        }),
+      ),
+      Effect.asVoid,
+    );
+
   const finalizeStep: TicketArtifactFinalizerShape["finalizeStep"] = (input) =>
     Effect.gen(function* () {
       const worktree = yield* locator.locate(input.ticketId);
@@ -90,6 +147,9 @@ const make = Effect.gen(function* () {
       const names = yield* listRecursive({
         cwd: worktree.path,
         relativePath: relativeRoot,
+        // Canonical order AT TRUNCATION TIME: the 500-entry bound must select
+        // the same first-500 the comparator defines, not a locale ordering.
+        order: "bytes",
       });
       if (names.length === 0) {
         return { ok: true };
@@ -115,65 +175,30 @@ const make = Effect.gen(function* () {
         return { ok: true };
       }
       const note = formatSkipNote(report);
-      const committerOption = yield* Effect.serviceOption(WorkflowEventCommitter);
-      const idsOption = yield* Effect.serviceOption(WorkflowIds);
-      if (note !== null && Option.isSome(committerOption) && Option.isSome(idsOption)) {
-        const committer = committerOption.value;
-        const ids = idsOption.value;
+      if (note !== null) {
         // Best-effort, posted AFTER the ingest commit; crash-duplication is an
         // accepted residual (deterministic content).
-        yield* Effect.gen(function* () {
-          const messageId = yield* ids.messageId();
-          const now = DateTime.formatIso(yield* DateTime.now);
-          const stepRunId = input.stepRunId;
-          const eventId = yield* ids.eventId();
-          yield* committer.commit(
-            stepRunId === undefined
-              ? {
-                  eventId,
-                  type: "TicketMessagePosted",
-                  ticketId: input.ticketId,
-                  occurredAt: now as never,
-                  payload: {
-                    messageId,
-                    author: "agent",
-                    body: note,
-                    attachments: [],
-                    createdAt: now as never,
-                  },
-                }
-              : {
-                  eventId,
-                  type: "TicketMessagePosted",
-                  ticketId: input.ticketId,
-                  occurredAt: now as never,
-                  payload: {
-                    messageId,
-                    stepRunId: StepRunId.make(stepRunId),
-                    author: "agent",
-                    body: note,
-                    attachments: [],
-                    createdAt: now as never,
-                  },
-                },
-          );
-        }).pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("ticket-artifact finalizer: skip note not posted", {
-              cause,
-              ticketId: input.ticketId,
-            }),
-          ),
-        );
+        yield* postFinalizerNote(input, note);
       }
       return { ok: true };
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logError("ticket-artifact ingestion failed persistently", {
-          cause,
-          stepRunId: input.stepRunId,
-          ticketId: input.ticketId,
-        }).pipe(Effect.as({ ok: false })),
+        Effect.gen(function* () {
+          yield* Effect.logError("ticket-artifact ingestion failed persistently", {
+            cause,
+            stepRunId: input.stepRunId,
+            ticketId: input.ticketId,
+          });
+          // Surface the failure DURABLY (spec §Failure semantics): the step
+          // warning lives in the ticket discussion, not only the server log —
+          // at merge time this is the last chance to tell the user evidence
+          // may be lost. Best-effort; the lifecycle proceeds regardless.
+          yield* postFinalizerNote(
+            input,
+            "Artifact ingestion failed for this step after retries — files under .t3/ticket/<id>/artifacts/ may not have been preserved.",
+          );
+          return { ok: false };
+        }),
       ),
     );
 

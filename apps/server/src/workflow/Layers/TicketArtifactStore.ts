@@ -438,8 +438,13 @@ const make = Effect.gen(function* () {
       return yield* lock.withPermits(1)(ingestBatchUnlocked(input));
     });
 
-  const ingestBatchUnlocked = (input: IngestBatchInput) =>
-    Effect.gen(function* () {
+  const ingestBatchUnlocked = (input: IngestBatchInput) => {
+    // Hoisted so the OUTER interrupt finalizer sees them: an interrupt during
+    // Phase-A staging (before the tx-scoped handlers exist) must still remove
+    // promoted blobs; after commit the adopted set protects referenced blobs.
+    const promotedBlobPaths: Array<string> = [];
+    const adoptedBlobIds = new Set<string>();
+    return Effect.gen(function* () {
       const ticketId = String(input.ticketId);
       const scanTruncated = input.scanTruncated === true;
       const dir = ticketDir(ticketId);
@@ -569,6 +574,7 @@ const make = Effect.gen(function* () {
           try: () => Fs.rename(tmpPath, NodePath.join(dir, blobId)),
           catch: toStoreError("TicketArtifactStore.ingest:promote"),
         });
+        promotedBlobPaths.push(NodePath.join(dir, blobId));
         staged.push({
           candidate,
           description,
@@ -587,7 +593,6 @@ const make = Effect.gen(function* () {
       // transaction fails or the fiber is interrupted before adoption, all
       // promoted-but-unadopted staged blobs are removed here — the reconciler
       // is a backstop, not the primary exit path.
-      const adoptedBlobIds = new Set<string>();
       const removeStagedExcept = (keep: ReadonlySet<string>) =>
         Effect.promise(async () => {
           for (const item of staged) {
@@ -728,8 +733,11 @@ const make = Effect.gen(function* () {
         )
         .pipe(
           Effect.mapError(toStoreError("TicketArtifactStore.ingest:commit")),
-          Effect.onError(() => removeStagedExcept(new Set())),
-          Effect.onInterrupt(() => removeStagedExcept(new Set())),
+          // Adoption-aware: a failure/interrupt after commit must not delete
+          // blobs a committed row now references; before commit the set is
+          // empty and every staged blob goes.
+          Effect.onError(() => removeStagedExcept(adoptedBlobIds)),
+          Effect.onInterrupt(() => removeStagedExcept(adoptedBlobIds)),
         );
 
       if (txResult.ticketMissing) {
@@ -759,7 +767,18 @@ const make = Effect.gen(function* () {
         ticketMissing: false,
         scanTruncated,
       } satisfies IngestReport;
-    });
+    }).pipe(
+      Effect.onInterrupt(() =>
+        Effect.promise(async () => {
+          for (const path of promotedBlobPaths) {
+            if (!adoptedBlobIds.has(NodePath.basename(path))) {
+              await Fs.rm(path, { force: true }).catch(() => undefined);
+            }
+          }
+        }),
+      ),
+    );
+  };
 
   const deleteRowsForTickets: TicketArtifactStoreShape["deleteRowsForTickets"] = (ticketIds) =>
     Effect.gen(function* () {

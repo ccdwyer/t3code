@@ -24,22 +24,44 @@ describe("decideRange — the pinned decision table", () => {
       kind: "partial",
       start: 100,
       end: 200,
+      openEnded: false,
     });
     assert.deepEqual(decideRange("bytes=900-5000", SIZE), {
       kind: "partial",
       start: 900,
       end: 999,
+      openEnded: false,
     });
   });
 
   it("open-ended bytes=0- (the first thing browsers send) → whole file 206", () => {
-    assert.deepEqual(decideRange("bytes=0-", SIZE), { kind: "partial", start: 0, end: 999 });
-    assert.deepEqual(decideRange("bytes=500-", SIZE), { kind: "partial", start: 500, end: 999 });
+    assert.deepEqual(decideRange("bytes=0-", SIZE), {
+      kind: "partial",
+      start: 0,
+      end: 999,
+      openEnded: true,
+    });
+    assert.deepEqual(decideRange("bytes=500-", SIZE), {
+      kind: "partial",
+      start: 500,
+      end: 999,
+      openEnded: true,
+    });
   });
 
   it("suffix ranges; suffix > size covers the whole file", () => {
-    assert.deepEqual(decideRange("bytes=-100", SIZE), { kind: "partial", start: 900, end: 999 });
-    assert.deepEqual(decideRange("bytes=-5000", SIZE), { kind: "partial", start: 0, end: 999 });
+    assert.deepEqual(decideRange("bytes=-100", SIZE), {
+      kind: "partial",
+      start: 900,
+      end: 999,
+      openEnded: true,
+    });
+    assert.deepEqual(decideRange("bytes=-5000", SIZE), {
+      kind: "partial",
+      start: 0,
+      end: 999,
+      openEnded: true,
+    });
   });
 
   it("unsatisfiable → 416: start ≥ size, -0, end < start, valid range on empty file", () => {

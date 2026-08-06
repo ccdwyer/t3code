@@ -55,16 +55,11 @@ const make = Effect.gen(function* () {
       // about to be purged, so the finalizer MUST drain first. Persistent
       // failure is surfaced as a step-level warning and the merge proceeds —
       // the documented merge-time residual.
+      // Persistent failure is surfaced by the finalizer itself (loud log + a
+      // durable ticket message); the merge proceeds either way — the
+      // documented merge-time residual.
       if (Option.isSome(artifactFinalizerOption)) {
-        const finalized = yield* artifactFinalizerOption.value.finalizeStep({
-          ticketId: input.ticketId,
-        });
-        if (!finalized.ok) {
-          yield* Effect.logWarning(
-            "ticket-artifact ingestion failed before scratch cleanup — artifacts from this worktree may be lost",
-            { ticketId: input.ticketId },
-          );
-        }
+        yield* artifactFinalizerOption.value.finalizeStep({ ticketId: input.ticketId });
       }
       yield* cleanupTicketScratch(git, input.worktreePath, input.ticketId as string);
 

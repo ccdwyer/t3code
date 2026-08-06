@@ -361,7 +361,7 @@ function ArtifactList({
       ) : null}
       {artifacts.map((artifact) => (
         <ArtifactRow
-          key={artifact.artifactId}
+          key={`${artifact.artifactId}:${artifact.updatedAt}`}
           api={api}
           ticketId={ticketId}
           artifact={artifact}

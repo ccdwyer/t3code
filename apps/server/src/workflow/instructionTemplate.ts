@@ -195,7 +195,7 @@ export const stringifyHandoffOutput = (output: unknown): string =>
  */
 export const TICKET_ARTIFACTS_INSTRUCTION = `## Artifacts
 
-Files you write under .t3/ticket/{{ticket.id}}/artifacts/ become durable ticket artifacts: they appear in the ticket's Artifacts panel in the UI and survive the merge. To caption an artifact, add a sidecar file literally named <file>.caption.md next to it (report.md.caption.md captions report.md). Allowed extensions: ${ARTIFACT_ALLOWED_EXTENSIONS}. Caps: 1 MiB per markdown/html/text file, 10 MiB per image, 100 MiB per video, 100 files per ticket. An HTML artifact must be a SINGLE self-contained file — references to sibling files will not resolve. For UI-affecting work, capturing before/after screenshots — and, where playwright or argent tooling is available, a short screen recording — as artifacts is encouraged.`;
+Files you write under .t3/ticket/{{ticket.id}}/artifacts/ become durable ticket artifacts: they appear in the ticket's Artifacts panel in the UI and survive the merge. To caption an artifact, add a sidecar file literally named <file>.caption.md next to it (report.md.caption.md captions report.md). Allowed extensions: ${ARTIFACT_ALLOWED_EXTENSIONS}. Caps: 1 MiB per markdown/html/text file, 10 MiB per image, 100 MiB per video, 100 files / 250 MiB total per ticket. An HTML artifact must be a SINGLE self-contained file — references to sibling files will not resolve. For UI-affecting work, capturing before/after screenshots — and, where playwright or argent tooling is available, a short screen recording — as artifacts is encouraged.`;
 
 const PATH_SAFE_TICKET_ID = /^[A-Za-z0-9_-]+$/;
 

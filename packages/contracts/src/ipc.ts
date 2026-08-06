@@ -124,6 +124,7 @@ import type {
   WorkflowSaveBoardDefinitionResult,
   WorkflowIntakeResult,
   WorkflowTicketArtifactsResult,
+  WorkflowReadTicketArtifactResult,
   WorkflowWebhookConfig,
   WorkflowBoardDigest,
   WorkflowBoardMetrics,
@@ -1470,6 +1471,10 @@ export interface EnvironmentApi {
     listTicketArtifacts: (input: {
       readonly ticketId: TicketId;
     }) => Promise<WorkflowTicketArtifactsResult>;
+    readTicketArtifact: (input: {
+      readonly ticketId: TicketId;
+      readonly artifactId: string;
+    }) => Promise<WorkflowReadTicketArtifactResult>;
     getWebhookConfig: (input: {
       readonly boardId: BoardId;
       readonly rotate?: boolean | undefined;

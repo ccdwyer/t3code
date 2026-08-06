@@ -50,6 +50,11 @@ import {
   WorkflowResolveBoardProposalResult,
   WorkflowRevertBoardProposalResult,
   WorkflowTicketMessageView,
+  WorkflowTicketArtifactKind,
+  WorkflowTicketArtifactView,
+  WorkflowTicketArtifactsResult,
+  TICKET_ARTIFACT_ERROR_MESSAGES,
+  isTicketArtifactUnavailableMessage,
   isTicketNoWorktreeMessage,
   TICKET_NO_WORKTREE_MESSAGE,
   WORKFLOW_WS_METHODS,
@@ -2880,5 +2885,72 @@ describe("ticket no-worktree message", () => {
     );
     assert.isFalse(isTicketNoWorktreeMessage("Failed to resolve workflow ticket worktree refs"));
     assert.isFalse(isTicketNoWorktreeMessage(""));
+  });
+});
+
+describe("ticket artifact contracts", () => {
+  it.effect("decodes a durable artifact view with orthogonal content flags", () =>
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(WorkflowTicketArtifactView);
+      const view = yield* decode({
+        artifactId: "0f2c7b1e-9d4a-4c1b-8e6f-1a2b3c4d5e6f",
+        name: "after/board.png",
+        kind: "image",
+        mime: "image/png",
+        byteSize: 12_345,
+        description: "Board after the fix",
+        createdAt: "2026-08-05T12:00:00.000Z",
+        updatedAt: "2026-08-05T12:34:00.000Z",
+        url: "/api/assets/token/board.png",
+      });
+      assert.equal(view.kind, "image");
+      assert.equal(view.contentTruncated, undefined);
+      const withFlags = yield* decode({
+        artifactId: "a",
+        name: "PLAN.md",
+        kind: "markdown",
+        mime: "text/markdown; charset=utf-8",
+        byteSize: 100_000,
+        createdAt: "2026-08-05T12:00:00.000Z",
+        updatedAt: "2026-08-05T12:00:00.000Z",
+        url: "/api/assets/t/PLAN.md",
+        content: "# Plan",
+        contentTruncated: true,
+        contentOmitted: true,
+        contentUnavailable: true,
+      });
+      assert.isTrue(withFlags.contentTruncated);
+      assert.isTrue(withFlags.contentOmitted);
+      assert.isTrue(withFlags.contentUnavailable);
+    }),
+  );
+
+  it.effect("list result carries durable artifacts and legacy scratch separately", () =>
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(WorkflowTicketArtifactsResult);
+      const result = yield* decode({
+        artifacts: [],
+        scratch: [{ name: "NOTES.md", content: "wip" }],
+      });
+      assert.lengthOf(result.artifacts, 0);
+      assert.equal(result.scratch[0]?.name, "NOTES.md");
+    }),
+  );
+
+  it("artifact-unavailable predicate matches the shared fragment", () => {
+    assert.isTrue(
+      isTicketArtifactUnavailableMessage(TICKET_ARTIFACT_ERROR_MESSAGES.unavailable),
+    );
+    assert.isTrue(
+      isTicketArtifactUnavailableMessage(
+        `workflow error: ${TICKET_ARTIFACT_ERROR_MESSAGES.unavailable} (artifact x)`,
+      ),
+    );
+    assert.isFalse(isTicketArtifactUnavailableMessage("some other failure"));
+  });
+
+  it("rejects an unknown artifact kind", () => {
+    assert.isFalse(Schema.is(WorkflowTicketArtifactKind)("pdf"));
+    assert.isTrue(Schema.is(WorkflowTicketArtifactKind)("video"));
   });
 });

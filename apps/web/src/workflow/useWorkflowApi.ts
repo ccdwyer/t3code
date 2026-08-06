@@ -202,6 +202,7 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
       getTicketDiff: (input) => readQuery(w.getTicketDiff, input),
       intakeTickets: (input) => run(w.intakeTickets, input),
       listTicketArtifacts: (input) => readQuery(w.listTicketArtifacts, input),
+      readTicketArtifact: (input) => readQuery(w.readTicketArtifact, input),
       getWebhookConfig: (input) => readQuery(w.getWebhookConfig, input),
       getBoardDigest: (input) => readQuery(w.getBoardDigest, input),
       getBoardMetrics: (input) => readQuery(w.getBoardMetrics, input),

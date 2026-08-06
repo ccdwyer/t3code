@@ -66,6 +66,7 @@ import {
   BoardId,
   LaneKey,
   StepKey,
+  TICKET_ARTIFACT_ERROR_MESSAGES,
   WORKFLOW_WS_METHODS,
   WorkflowCreateBoardInput,
   WorkflowDefinition,
@@ -3306,7 +3307,7 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
               ? listRecursive({ cwd: worktree.cwd, relativePath: scratchDir })
               : deps.workspaceFileSystem.listFiles({ cwd: worktree.cwd, relativePath: scratchDir })
           ).pipe(Effect.mapError(toWorkflowRpcError("Failed to list ticket artifacts")));
-          const artifacts: Array<{
+          const scratch: Array<{
             readonly name: string;
             readonly content: string;
             readonly truncated?: boolean;
@@ -3326,14 +3327,31 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
                   })
                 : deps.workspaceFileSystem.readFileString({ cwd: worktree.cwd, relativePath })
             ).pipe(Effect.mapError(toWorkflowRpcError("Failed to read ticket artifact")));
-            artifacts.push({
+            scratch.push({
               name,
               content: content.slice(0, MAX_TICKET_ARTIFACT_CHARS),
               ...(content.length > MAX_TICKET_ARTIFACT_CHARS ? { truncated: true } : {}),
             });
           }
-          return { artifacts };
+          // Durable artifacts arrive with the TicketArtifactStore (plan task
+          // A8); until then the durable list is empty and only the legacy
+          // worktree scratch rides along.
+          return { artifacts: [], scratch };
         }),
+        { "rpc.aggregate": "workflow" },
+      ),
+
+    [WORKFLOW_WS_METHODS.readTicketArtifact]: (_input: {
+      readonly ticketId: TicketId;
+      readonly artifactId: string;
+    }) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.readTicketArtifact,
+        // No durable store exists until plan task A8 lands, so every read is
+        // honestly unavailable (shared message fragment, PARK_ACTION idiom).
+        Effect.fail(
+          new WorkflowRpcError({ message: TICKET_ARTIFACT_ERROR_MESSAGES.unavailable }),
+        ),
         { "rpc.aggregate": "workflow" },
       ),
 

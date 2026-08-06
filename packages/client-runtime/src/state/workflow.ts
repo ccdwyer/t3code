@@ -104,6 +104,10 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       label: "environment-data:workflow:list-ticket-artifacts",
       tag: WORKFLOW_WS_METHODS.listTicketArtifacts,
     }),
+    readTicketArtifact: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:workflow:read-ticket-artifact",
+      tag: WORKFLOW_WS_METHODS.readTicketArtifact,
+    }),
     getWebhookConfig: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:workflow:get-webhook-config",
       tag: WORKFLOW_WS_METHODS.getWebhookConfig,

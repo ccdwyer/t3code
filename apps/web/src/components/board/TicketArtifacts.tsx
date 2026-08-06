@@ -27,7 +27,9 @@ export function TicketArtifacts({
       const result = await api.workflow.listTicketArtifacts({
         ticketId: TicketId.make(ticketId),
       });
-      setArtifacts(result.artifacts);
+      // Durable artifacts get a rebuilt UI in plan task B2; until then this
+      // legacy section keeps showing the worktree scratch listing.
+      setArtifacts(result.scratch);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Failed to load artifacts.");
     } finally {

@@ -207,6 +207,7 @@ import {
   WorkflowIntakeBraindump,
   WorkflowIntakeResult,
   WorkflowTicketArtifactsResult,
+  WorkflowReadTicketArtifactResult,
   WorkflowWebhookConfig,
   WorkflowBoardDigest,
   WorkflowBoardMetrics,
@@ -1095,6 +1096,12 @@ export const WsWorkflowListTicketArtifactsRpc = Rpc.make(WORKFLOW_WS_METHODS.lis
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });
 
+export const WsWorkflowReadTicketArtifactRpc = Rpc.make(WORKFLOW_WS_METHODS.readTicketArtifact, {
+  payload: Schema.Struct({ ticketId: TicketId, artifactId: Schema.String }),
+  success: WorkflowReadTicketArtifactResult,
+  error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
 export const WsWorkflowGetWebhookConfigRpc = Rpc.make(WORKFLOW_WS_METHODS.getWebhookConfig, {
   payload: Schema.Struct({ boardId: BoardId, rotate: Schema.optional(Schema.Boolean) }),
   success: WorkflowWebhookConfig,
@@ -1419,6 +1426,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowGetTicketDiffRpc,
   WsWorkflowIntakeTicketsRpc,
   WsWorkflowListTicketArtifactsRpc,
+  WsWorkflowReadTicketArtifactRpc,
   WsWorkflowGetWebhookConfigRpc,
   WsWorkflowGetBoardDigestRpc,
   WsWorkflowGetBoardMetricsRpc,

@@ -135,6 +135,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WORKFLOW_WS_METHODS.cancelStep]: AuthWorkflowOperateScope,
   [WORKFLOW_WS_METHODS.intakeTickets]: AuthWorkflowOperateScope,
   [WORKFLOW_WS_METHODS.listTicketArtifacts]: AuthWorkflowReadScope,
+  [WORKFLOW_WS_METHODS.readTicketArtifact]: AuthWorkflowReadScope,
   [WORKFLOW_WS_METHODS.getWebhookConfig]: AuthWorkflowOperateScope,
   [WORKFLOW_WS_METHODS.getBoardDigest]: AuthWorkflowReadScope,
   [WORKFLOW_WS_METHODS.getBoardMetrics]: AuthWorkflowReadScope,

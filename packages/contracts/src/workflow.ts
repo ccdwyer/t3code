@@ -44,6 +44,7 @@ export const WORKFLOW_WS_METHODS = {
   getTicketDiff: "workflow.getTicketDiff",
   intakeTickets: "workflow.intakeTickets",
   listTicketArtifacts: "workflow.listTicketArtifacts",
+  readTicketArtifact: "workflow.readTicketArtifact",
   getWebhookConfig: "workflow.getWebhookConfig",
   getBoardDigest: "workflow.getBoardDigest",
   dryRunBoard: "workflow.dryRunBoard",
@@ -1844,7 +1845,8 @@ export const WorkflowIntakeBraindump = TrimmedNonEmptyString.check(Schema.isMaxL
 export type WorkflowIntakeBraindump = typeof WorkflowIntakeBraindump.Type;
 
 // A scratch file from .t3/ticket/<id>/ in the ticket's worktree — the
-// ticket's case file (PLAN.md, SPEC.md, REVIEW.md, ...).
+// ticket's LEGACY case file view (working files that have not been ingested
+// into the durable artifact store; excludes artifacts/**).
 export const WorkflowTicketArtifact = Schema.Struct({
   name: TrimmedNonEmptyString,
   content: Schema.String,
@@ -1852,10 +1854,72 @@ export const WorkflowTicketArtifact = Schema.Struct({
 });
 export type WorkflowTicketArtifact = typeof WorkflowTicketArtifact.Type;
 
+// ─── Durable ticket artifacts (spec: 2026-08-05-ticket-artifacts-design) ───
+
+export const WorkflowTicketArtifactKind = Schema.Literals([
+  "markdown",
+  "html",
+  "image",
+  "video",
+  "text",
+]);
+export type WorkflowTicketArtifactKind = typeof WorkflowTicketArtifactKind.Type;
+
+/**
+ * A durable artifact ingested from the ticket worktree's artifacts/ dir.
+ * `content` is inlined only for markdown/text within the decoded-slice
+ * budgets; the three content flags are orthogonal:
+ * - contentTruncated — the decoded content was not fully included in the slice
+ * - contentOmitted — excluded from THIS response by the aggregate budget
+ * - contentUnavailable — the blob failed verified-open (missing/mismatched)
+ */
+export const WorkflowTicketArtifactView = Schema.Struct({
+  artifactId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  kind: WorkflowTicketArtifactKind,
+  mime: TrimmedNonEmptyString,
+  byteSize: NonNegativeInt,
+  description: Schema.optional(Schema.String),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  stepRunId: Schema.optional(StepRunId),
+  /** Signed asset URL (ticket-artifact claim, 6h TTL). */
+  url: Schema.String,
+  content: Schema.optional(Schema.String),
+  contentTruncated: Schema.optional(Schema.Boolean),
+  contentOmitted: Schema.optional(Schema.Boolean),
+  contentUnavailable: Schema.optional(Schema.Boolean),
+});
+export type WorkflowTicketArtifactView = typeof WorkflowTicketArtifactView.Type;
+
 export const WorkflowTicketArtifactsResult = Schema.Struct({
-  artifacts: Schema.Array(WorkflowTicketArtifact),
+  /** Durable store contents, in the server's canonical (name) order. */
+  artifacts: Schema.Array(WorkflowTicketArtifactView),
+  /** Legacy worktree scratch (live worktrees only; excludes artifacts/**). */
+  scratch: Schema.Array(WorkflowTicketArtifact),
 });
 export type WorkflowTicketArtifactsResult = typeof WorkflowTicketArtifactsResult.Type;
+
+export const WorkflowReadTicketArtifactResult = Schema.Struct({
+  content: Schema.String,
+});
+export type WorkflowReadTicketArtifactResult =
+  typeof WorkflowReadTicketArtifactResult.Type;
+
+/**
+ * Stable message fragments for artifact read refusals — single source of
+ * truth shared by the server (which emits them) and clients (which
+ * branch on them). Same idiom as PARK_ACTION_DRIFT_MESSAGES.
+ */
+export const TICKET_ARTIFACT_ERROR_MESSAGES = {
+  /** Blob failed verified-open (missing, size-mismatched, or unsafe path). */
+  unavailable: "artifact content is unavailable",
+  /** readTicketArtifact called for a non-text kind (html/image/video). */
+  kindNotReadable: "artifact kind cannot be read as text",
+} as const;
+
+export const isTicketArtifactUnavailableMessage = (message: string): boolean =>
+  message.includes(TICKET_ARTIFACT_ERROR_MESSAGES.unavailable);
 
 // Webhook ingress config for a board. The plaintext token appears ONLY in
 // the response that created/rotated it; thereafter only the prefix.

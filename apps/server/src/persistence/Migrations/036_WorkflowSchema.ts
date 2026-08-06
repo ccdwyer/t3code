@@ -590,6 +590,11 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_validation_phase TEXT`;
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN output_repaired INTEGER NOT NULL DEFAULT 0`;
   yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_seq INTEGER NOT NULL DEFAULT 0`;
+  // dispatch_kind (was standalone migration 037): what KIND of dispatch an
+  // outbox row is — NULL = initial turn; explicit now that dispatch_seq is
+  // monotonic and can no longer imply it. Folded back in under the branch's
+  // single-migration rule; any DB that applied 036 without it is wiped.
+  yield* sql`ALTER TABLE workflow_dispatch_outbox ADD COLUMN dispatch_kind TEXT`;
   // --- Worktree parallelism (was 037). ---
   yield* sql`
     CREATE TABLE IF NOT EXISTS ticket_changed_paths (
@@ -737,4 +742,38 @@ export default Effect.gen(function* () {
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_form_json TEXT`;
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_decision TEXT`;
   yield* sql`ALTER TABLE projection_step_run ADD COLUMN checkpoint_answers_json TEXT`;
+
+  // --- Durable ticket artifacts (2026-08-05-ticket-artifacts-design v2.5) ---
+  // Manifest for the blob-per-version artifact store under
+  // stateDir/ticket-artifacts/<ticketId>/<blobId>. `blob_id` names the CURRENT
+  // immutable bytes file; `board_id` is derived from projection_ticket at
+  // ingest time (never caller-trusted); UNIQUE(ticket_id, name) is on the
+  // NFC-normalized display name.
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS workflow_ticket_artifact (
+      artifact_id TEXT PRIMARY KEY,
+      blob_id TEXT NOT NULL,
+      ticket_id TEXT NOT NULL,
+      board_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      byte_size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      source_mtime_ms INTEGER,
+      description TEXT,
+      step_run_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (ticket_id, name)
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_workflow_ticket_artifact_ticket
+    ON workflow_ticket_artifact (ticket_id)
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_workflow_ticket_artifact_board
+    ON workflow_ticket_artifact (board_id)
+  `;
 });

@@ -21,7 +21,8 @@ import { migrationEntries, runMigrations } from "../Migrations.ts";
  * If this test fails, the collapsed schema diverged from the chain — fix the
  * migration, do not weaken the assertion.
  *
- * ONE column post-dates the chain: `workflow_dispatch_outbox.dispatch_kind`,
+ * ONE column post-dates the chain: `workflow_dispatch_outbox.dispatch_kind`
+ * (now folded into 036 under the single-migration rule),
  * added by 036_DispatchKind for agent-question continuations and registered as
  * id 37 in this rebased loader. It is listed in GOLDEN because this dump runs
  * every migration, not because it came from the 033->055 chain. Anything else
@@ -256,6 +257,24 @@ const GOLDEN: ReadonlyArray<MasterRow> = [
     name: "workflow_setup_run",
     tbl_name: "workflow_setup_run",
     sql: "CREATE TABLE workflow_setup_run ( setup_run_id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL UNIQUE, worktree_ref TEXT NOT NULL, status TEXT NOT NULL, exit_code INTEGER, started_at TEXT NOT NULL, finished_at TEXT )",
+  },
+  {
+    type: "table",
+    name: "workflow_ticket_artifact",
+    tbl_name: "workflow_ticket_artifact",
+    sql: "CREATE TABLE workflow_ticket_artifact ( artifact_id TEXT PRIMARY KEY, blob_id TEXT NOT NULL, ticket_id TEXT NOT NULL, board_id TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, mime TEXT NOT NULL, byte_size INTEGER NOT NULL, sha256 TEXT NOT NULL, source_mtime_ms INTEGER, description TEXT, step_run_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (ticket_id, name) )",
+  },
+  {
+    type: "index",
+    name: "idx_workflow_ticket_artifact_board",
+    tbl_name: "workflow_ticket_artifact",
+    sql: "CREATE INDEX idx_workflow_ticket_artifact_board ON workflow_ticket_artifact (board_id)",
+  },
+  {
+    type: "index",
+    name: "idx_workflow_ticket_artifact_ticket",
+    tbl_name: "workflow_ticket_artifact",
+    sql: "CREATE INDEX idx_workflow_ticket_artifact_ticket ON workflow_ticket_artifact (ticket_id)",
   },
   {
     type: "table",
@@ -679,9 +698,11 @@ layer("036_WorkflowSchema", (it) => {
     Effect.gen(function* () {
       const consolidated = migrationEntries.find(([id]) => id === 36);
       assert.strictEqual(consolidated?.[1], "WorkflowSchema");
+      // Single-migration rule: 036 is the branch's ONE migration on top of
+      // upstream (035). dispatch_kind and the ticket-artifact schema are
+      // folded in; standalone 037 was deleted (dev DBs wiped, per Chris).
       const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 37);
-      assert.strictEqual(migrationEntries.find(([id]) => id === highest)?.[1], "DispatchKind");
+      assert.strictEqual(highest, 36);
     }),
   );
 

@@ -1,0 +1,559 @@
+import type { WorkflowDefinition } from "@t3tools/contracts";
+import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+
+import { defaultBoardDefinition } from "./defaultBoard.ts";
+import { PredicateEvaluatorLive } from "./Layers/PredicateEvaluator.ts";
+import { PredicateEvaluator } from "./Services/PredicateEvaluator.ts";
+import { simulateBoardRoute } from "./dryRun.ts";
+
+const definition = {
+  name: "Dry run",
+  lanes: [
+    { key: "backlog", name: "Backlog", entry: "manual" },
+    {
+      key: "work",
+      name: "Work",
+      entry: "auto",
+      pipeline: [
+        {
+          key: "code",
+          type: "agent",
+          agent: { instance: "claude_main", model: "sonnet" },
+          instruction: "do it",
+          on: { success: "review", blocked: "stuck" },
+        },
+      ],
+      on: { failure: "stuck" },
+    },
+    {
+      key: "review",
+      name: "Review",
+      entry: "auto",
+      pipeline: [
+        {
+          key: "check",
+          type: "agent",
+          agent: { instance: "claude_main", model: "sonnet" },
+          instruction: "review it",
+        },
+      ],
+      // Self-loop twice (streak grows while runs stay in this lane), then
+      // fall through to done.
+      transitions: [{ when: { "<": [{ var: "lane.runCount" }, 3] }, to: "review" }],
+      on: { success: "done" },
+    },
+    { key: "stuck", name: "Stuck", entry: "manual" },
+    { key: "done", name: "Done", entry: "manual", terminal: true },
+  ],
+} as unknown as WorkflowDefinition;
+
+const layer = it.layer(PredicateEvaluatorLive);
+
+layer("simulateBoardRoute", (it) => {
+  it.effect("walks step routes and bounded self-loop transitions to the terminal lane", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition,
+        startLane: "work" as never,
+        scenario: "success",
+        evaluator,
+      });
+
+      // work →(step.on) review →(self-loop ×2 while runCount < 3) →(lane.on) done
+      assert.equal(run.end, "terminal");
+      assert.equal(run.endLane, "done");
+      assert.deepEqual(
+        run.hops.map((hop) => `${hop.fromLane}>${hop.toLane}:${hop.source}`),
+        [
+          "work>review:step_on",
+          "review>review:lane_transition",
+          "review>review:lane_transition",
+          "review>done:lane_on",
+        ],
+      );
+      assert.equal(run.hops[0]?.viaStepKey, "code");
+      assert.equal(run.hops[1]?.matchedTransitionIndex, 0);
+      assert.lengthOf(run.notes, 0);
+    }),
+  );
+
+  it.effect("lane.runCount resets when another lane runs, exactly like the engine", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      // Review bounces back to work, so review's streak never exceeds 1 and
+      // `runCount < 3` matches forever — the live engine loops unboundedly,
+      // and the dry run must say so instead of claiming a bounded loop.
+      const alternating = {
+        ...definition,
+        lanes: (definition.lanes as ReadonlyArray<Record<string, unknown>>).map((lane) =>
+          lane["key"] === "review"
+            ? {
+                ...lane,
+                transitions: [
+                  {
+                    when: { "<": [{ var: "lane.runCount" }, 3] },
+                    to: "work",
+                  },
+                ],
+              }
+            : lane,
+        ),
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: alternating,
+        startLane: "work" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "cycle_cap");
+      assert.equal(run.hops.length, 25);
+    }),
+  );
+
+  it.effect("failure scenario falls through lane.on into a manual lane", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition,
+        startLane: "work" as never,
+        scenario: "failure",
+        evaluator,
+      });
+      assert.equal(run.end, "manual");
+      assert.equal(run.endLane, "stuck");
+      assert.deepEqual(
+        run.hops.map((hop) => `${hop.fromLane}>${hop.toLane}:${hop.source}`),
+        ["work>stuck:lane_on"],
+      );
+    }),
+  );
+
+  it.effect("blocked scenario uses the step's blocked route", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition,
+        startLane: "work" as never,
+        scenario: "blocked",
+        evaluator,
+      });
+      assert.equal(run.hops[0]?.toLane, "stuck");
+      assert.equal(run.hops[0]?.source, "step_on");
+      assert.equal(run.end, "manual");
+    }),
+  );
+
+  it.effect("a manual start lane without a pipeline ends immediately", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition,
+        startLane: "backlog" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "manual");
+      assert.equal(run.endLane, "backlog");
+      assert.lengthOf(run.hops, 0);
+    }),
+  );
+
+  it.effect("an empty auto lane never routes, exactly like the engine", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      // The engine returns before starting a pipeline when there are no
+      // steps, so the lane.on fallback must NOT fire in the dry run either.
+      const noSteps = {
+        name: "No steps",
+        lanes: [
+          {
+            key: "only",
+            name: "Only",
+            entry: "auto",
+            pipeline: [],
+            on: { success: "done" },
+          },
+          { key: "done", name: "Done", entry: "manual", terminal: true },
+        ],
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: noSteps,
+        startLane: "only" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "no_route");
+      assert.equal(run.endLane, "only");
+      assert.isTrue(run.notes.some((note) => note.includes("has no steps")));
+    }),
+  );
+
+  it.effect("an unbounded loop stops at the hop cap", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const step = (key: string) => ({ key, type: "script", run: "true" });
+      const looping = {
+        name: "Loop",
+        lanes: [
+          {
+            key: "a",
+            name: "A",
+            entry: "auto",
+            pipeline: [step("sa")],
+            on: { success: "b" },
+          },
+          {
+            key: "b",
+            name: "B",
+            entry: "auto",
+            pipeline: [step("sb")],
+            on: { success: "a" },
+          },
+        ],
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: looping,
+        startLane: "a" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "cycle_cap");
+      assert.equal(run.hops.length, 25);
+    }),
+  );
+
+  it.effect("notes when predicates read the approximated ticket status", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const statusBoard = {
+        name: "Status",
+        lanes: [
+          {
+            key: "work",
+            name: "Work",
+            entry: "auto",
+            pipeline: [{ key: "s", type: "script", run: "true" }],
+            transitions: [{ when: { "==": [{ var: "status" }, "running"] }, to: "done" }],
+          },
+          { key: "done", name: "Done", entry: "manual", terminal: true },
+        ],
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: statusBoard,
+        startLane: "work" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "terminal");
+      assert.isTrue(run.notes.some((note) => note.includes("approximates it")));
+    }),
+  );
+
+  it.effect("does not strand a lane whose only exit gates on captured step output", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const outputBoard = {
+        name: "Output gated",
+        lanes: [
+          {
+            key: "review",
+            name: "Review",
+            entry: "auto",
+            pipeline: [
+              {
+                key: "review",
+                type: "agent",
+                agent: { instance: "claude_main", model: "sonnet" },
+                instruction: "review",
+                captureOutput: true,
+              },
+            ],
+            // The ONLY way out is an output-conditioned transition: a dry run
+            // reads `steps.review.output.verdict` as null, so without the fix
+            // this lane falsely reports as a dead end (no_route).
+            transitions: [
+              {
+                when: {
+                  "==": [{ var: "steps.review.output.verdict" }, "approve"],
+                },
+                to: "done",
+              },
+            ],
+          },
+          { key: "done", name: "Done", entry: "manual", terminal: true },
+        ],
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: outputBoard,
+        startLane: "review" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.notEqual(run.end, "no_route");
+      assert.equal(run.endLane, "done");
+      assert.isTrue(run.notes.some((note) => note.includes("captured step output")));
+    }),
+  );
+
+  it.effect("an output-gated fallback that resolves to a park ends the walk as parked", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      // The ONLY exit is an output-gated transition whose target is a park
+      // (not a lane), and there is no lane.on fallback — the optimistic
+      // output-gated follow (Task 5's fix) must resolve to a park hop with no
+      // toLane, exactly like a concretely-matched output-gated park would.
+      const outputGatedParkBoard = {
+        name: "Output gated park",
+        lanes: [
+          {
+            key: "review",
+            name: "Review",
+            entry: "auto",
+            pipeline: [
+              {
+                key: "review",
+                type: "agent",
+                agent: { instance: "claude_main", model: "sonnet" },
+                instruction: "review",
+                captureOutput: true,
+              },
+            ],
+            transitions: [
+              {
+                when: {
+                  "==": [{ var: "steps.review.output.verdict" }, "revise"],
+                },
+                to: {
+                  park: "waiting",
+                  label: "Needs manual review",
+                  actions: [{ label: "Retry", to: "review" }],
+                },
+              },
+            ],
+          },
+        ],
+      } as unknown as WorkflowDefinition;
+      const run = yield* simulateBoardRoute({
+        definition: outputGatedParkBoard,
+        startLane: "review" as never,
+        scenario: "success",
+        evaluator,
+      });
+      assert.equal(run.end, "parked");
+      assert.equal(run.endLane, "review");
+      assert.lengthOf(run.hops, 1);
+      const hop = run.hops[0];
+      assert.isUndefined(hop?.toLane);
+      assert.equal(hop?.park?.substate, "waiting");
+      assert.isTrue(run.notes.some((note) => note.includes("captured step output")));
+    }),
+  );
+
+  // ── Park-target dry-run tests (Task 10) ──────────────────────────────────
+
+  const parkBoard = {
+    name: "Park board",
+    lanes: [
+      {
+        key: "work",
+        name: "Work",
+        entry: "auto",
+        pipeline: [
+          {
+            key: "code",
+            type: "script",
+            run: "true",
+            on: {
+              blocked: {
+                park: "issue",
+                label: "Step blocked",
+                actions: [{ label: "Retry", to: "work" }],
+              },
+            },
+          },
+        ],
+        // Never matches (lane.runCount never reaches 999) — present so the
+        // failure scenario walks through the transitions block before
+        // falling through to lane.on, exercising the real precedence order.
+        transitions: [{ when: { "==": [{ var: "lane.runCount" }, 999] }, to: "done" }],
+        on: {
+          success: "done",
+          failure: {
+            park: "waiting",
+            label: "Needs manual review",
+            actions: [{ label: "Retry", to: "work" }],
+          },
+        },
+      },
+      { key: "done", name: "Done", entry: "manual", terminal: true },
+    ],
+  } as unknown as WorkflowDefinition;
+
+  it.effect("a step.on park hop ends the walk as parked with no toLane", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition: parkBoard,
+        startLane: "work" as never,
+        scenario: "blocked",
+        evaluator,
+      });
+      assert.equal(run.end, "parked");
+      assert.equal(run.endLane, "work");
+      assert.lengthOf(run.hops, 1);
+      const hop = run.hops[0];
+      assert.equal(hop?.fromLane, "work");
+      assert.equal(hop?.source, "step_on");
+      assert.equal(hop?.viaStepKey, "code");
+      assert.isUndefined(hop?.toLane);
+      assert.equal(hop?.park?.substate, "issue");
+      assert.equal(hop?.park?.label, "Step blocked");
+    }),
+  );
+
+  it.effect("a lane.on park hop ends the walk as parked with no toLane", () =>
+    Effect.gen(function* () {
+      const evaluator = yield* PredicateEvaluator;
+      const run = yield* simulateBoardRoute({
+        definition: parkBoard,
+        startLane: "work" as never,
+        scenario: "failure",
+        evaluator,
+      });
+      assert.equal(run.end, "parked");
+      assert.equal(run.endLane, "work");
+      assert.lengthOf(run.hops, 1);
+      const hop = run.hops[0];
+      assert.equal(hop?.fromLane, "work");
+      assert.equal(hop?.source, "lane_on");
+      assert.isUndefined(hop?.toLane);
+      assert.equal(hop?.park?.substate, "waiting");
+      assert.equal(hop?.park?.label, "Needs manual review");
+    }),
+  );
+
+  it.effect(
+    "the success scenario on the same board still routes to a real lane, unaffected by the parks",
+    () =>
+      Effect.gen(function* () {
+        const evaluator = yield* PredicateEvaluator;
+        const run = yield* simulateBoardRoute({
+          definition: parkBoard,
+          startLane: "work" as never,
+          scenario: "success",
+          evaluator,
+        });
+        assert.equal(run.end, "terminal");
+        assert.equal(run.endLane, "done");
+        assert.deepEqual(
+          run.hops.map((hop) => `${hop.fromLane}>${hop.toLane}:${hop.source}`),
+          ["work>done:lane_on"],
+        );
+        assert.isUndefined(run.hops[0]?.park);
+      }),
+  );
+
+  it.effect(
+    "a lane_transition park hop ends the walk as parked, matching the engine's precedence",
+    () =>
+      Effect.gen(function* () {
+        const evaluator = yield* PredicateEvaluator;
+        const transitionParkBoard = {
+          name: "Transition park board",
+          lanes: [
+            {
+              key: "review",
+              name: "Review",
+              entry: "auto",
+              pipeline: [{ key: "check", type: "script", run: "true" }],
+              transitions: [
+                {
+                  when: true,
+                  to: {
+                    park: "issue",
+                    label: "Needs a human",
+                    actions: [{ label: "Retry", to: "review" }],
+                  },
+                },
+              ],
+            },
+          ],
+        } as unknown as WorkflowDefinition;
+        const run = yield* simulateBoardRoute({
+          definition: transitionParkBoard,
+          startLane: "review" as never,
+          scenario: "success",
+          evaluator,
+        });
+        assert.equal(run.end, "parked");
+        assert.equal(run.endLane, "review");
+        assert.lengthOf(run.hops, 1);
+        const hop = run.hops[0];
+        assert.equal(hop?.source, "lane_transition");
+        assert.equal(hop?.matchedTransitionIndex, 0);
+        assert.isUndefined(hop?.toLane);
+        assert.equal(hop?.park?.substate, "issue");
+        assert.equal(hop?.park?.label, "Needs a human");
+      }),
+  );
+
+  // ── Task 11: sanity dry-run against the shipped default board template ──
+
+  it.effect(
+    "the shipped default board's Planning failure scenario ends parked, proving editor dry-run works on it",
+    () =>
+      Effect.gen(function* () {
+        const evaluator = yield* PredicateEvaluator;
+        const definition = defaultBoardDefinition({
+          name: "Default board",
+          agent: { instance: "codex_main", model: "gpt-5.5" },
+        });
+        const run = yield* simulateBoardRoute({
+          definition,
+          startLane: "planning" as never,
+          scenario: "failure",
+          evaluator,
+        });
+        assert.equal(run.end, "parked");
+        assert.equal(run.endLane, "planning");
+        assert.lengthOf(run.hops, 1);
+        const hop = run.hops[0];
+        assert.equal(hop?.source, "lane_on");
+        assert.isUndefined(hop?.toLane);
+        assert.equal(hop?.park?.substate, "issue");
+      }),
+  );
+
+  it.effect(
+    "the shipped default board's Implementation success scenario parks 'issue' via on.success (malformed-verdict path)",
+    () =>
+      Effect.gen(function* () {
+        // The Implementation lane routes only via captured review-verdict output
+        // the dry run cannot evaluate, and its `on.success` is an issue park. Per
+        // the engine-mirrored precedence (dryRun.ts), a success dry-run from a
+        // lane whose `on.success` exists parks rather than optimistically
+        // following an output-gated transition — proving the shipped default
+        // board's on.success issue park is reachable, not just its Planning
+        // failure park.
+        const evaluator = yield* PredicateEvaluator;
+        const definition = defaultBoardDefinition({
+          name: "Default board",
+          agent: { instance: "codex_main", model: "gpt-5.5" },
+        });
+        const run = yield* simulateBoardRoute({
+          definition,
+          startLane: "implementation" as never,
+          scenario: "success",
+          evaluator,
+        });
+        assert.equal(run.end, "parked");
+        assert.equal(run.endLane, "implementation");
+        const parkHop = run.hops.at(-1);
+        assert.equal(parkHop?.source, "lane_on");
+        assert.isUndefined(parkHop?.toLane);
+        assert.equal(parkHop?.park?.substate, "issue");
+      }),
+  );
+});

@@ -1,0 +1,1700 @@
+import {
+  ProviderInstanceId,
+  TrimmedNonEmptyString,
+  type CheckpointAnswers,
+  type CheckpointForm,
+  type ProjectId,
+  type StepOutcome,
+  type StepRunId,
+  type TurnId,
+  type WorkflowStepUsage,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import type { SqlError } from "effect/unstable/sql/SqlError";
+
+import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { CapturedStepOutputReader } from "../Services/CapturedStepOutputReader.ts";
+import { ProjectScriptTrust } from "../Services/ProjectScriptTrust.ts";
+import {
+  ProviderDispatchOutbox,
+  type ProviderDispatchTerminalResult,
+} from "../Services/ProviderDispatchOutbox.ts";
+import { ScriptStepExecutor } from "../Services/ScriptStepExecutor.ts";
+import { SetupRunService } from "../Services/SetupRunService.ts";
+import { StepExecutor, type StepExecutorShape } from "../Services/StepExecutor.ts";
+import { StepOutputHandoffReader } from "../Services/StepOutputHandoffReader.ts";
+import { StepUsageReader } from "../Services/StepUsageReader.ts";
+import { TicketCheckpointService } from "../Services/TicketCheckpointService.ts";
+import { TicketMergeService } from "../Services/TicketMergeService.ts";
+import { TicketPullRequestService } from "../Services/TicketPullRequestService.ts";
+import { WorkflowAgentSessionStore } from "../Services/WorkflowAgentSessionStore.ts";
+import { WorkflowEventStoreError } from "../Services/Errors.ts";
+import {
+  AGENT_QUESTIONS_KEY,
+  mapAgentQuestions,
+  questionsWaitingReason,
+} from "../agentQuestions.ts";
+import { WorkflowEventCommitter } from "../Services/WorkflowEventCommitter.ts";
+import { WorkflowIds } from "../Services/WorkflowIds.ts";
+import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { WorktreeLeaseService } from "../Services/WorktreeLeaseService.ts";
+import {
+  WorktreePort,
+  type WorktreeHandle,
+  type WorktreePortShape,
+} from "../Services/WorktreePort.ts";
+import {
+  containsRealPath,
+  resolveWorkflowInstructionPath,
+  unsafeWorkflowInstructionPathMessage,
+} from "../instructionPath.ts";
+import {
+  CONTEXT_PACK_EMPTY,
+  makeContextPackSentinel,
+  renderContextPack,
+  substituteContextPackPlaceholder,
+} from "../contextPack.ts";
+import {
+  applyInstructionTemplateExcept,
+  descriptionSpillPath,
+  descriptionSpillReference,
+  DISCUSSION_MESSAGE_CAP,
+  findHandoffReferences,
+  handoffSpillPath,
+  handoffSpillReference,
+  hasDiscussionPlaceholder,
+  instructionBodyBudget,
+  NO_PRIOR_OUTPUT_NOTE,
+  providerInputBudget,
+  renderTicketDiscussion,
+  stringifyHandoffOutput,
+} from "../instructionTemplate.ts";
+import { ticketBaseRef } from "../ticketRefs.ts";
+import { agentKey as deriveAgentKey } from "../agentSessionKey.ts";
+import {
+  appendAgentQuestionsInstruction,
+  appendCaptureOutputInstruction,
+} from "../steerHelpers.ts";
+import {
+  renderContractInstruction,
+  renderRepairPrompt,
+  validateStepOutput,
+  type OutputDiagnostic,
+} from "../stepOutputContract.ts";
+import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
+import { WorktreeCoordinator, type OverlapGateResult } from "../Services/WorktreeCoordinator.ts";
+import { BoardRegistry } from "../Services/BoardRegistry.ts";
+import { PARALLELISM_HOLD_REASON_ACTIVE, serializeHoldReason } from "../worktreeOverlap.ts";
+
+const encodeJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+const toExecutorError = (message: string) => (cause: unknown) =>
+  new WorkflowEventStoreError({ message, cause });
+
+const wrapSql = <A>(message: string, effect: Effect.Effect<A, SqlError>) =>
+  effect.pipe(Effect.mapError(toExecutorError(message)));
+
+const executorErrorDetail = (error: unknown): string => {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as {
+      readonly message?: unknown;
+      readonly cause?: unknown;
+    };
+    const message = typeof candidate.message === "string" ? candidate.message : String(error);
+    const cause =
+      typeof candidate.cause === "object" && candidate.cause !== null
+        ? (candidate.cause as { readonly message?: unknown })
+        : null;
+    return typeof cause?.message === "string" && cause.message.length > 0
+      ? `${message}: ${cause.message}`
+      : message;
+  }
+  return String(error);
+};
+
+interface TicketProjectRow {
+  readonly repoRoot: string;
+  readonly projectId: string;
+}
+
+const make = Effect.gen(function* () {
+  const worktrees = yield* WorktreePort;
+  const lease = yield* WorktreeLeaseService;
+  const setup = yield* SetupRunService;
+  const dispatch = yield* ProviderDispatchOutbox;
+  const ids = yield* WorkflowIds;
+  const read = yield* WorkflowReadModel;
+  const scriptExecutor = yield* ScriptStepExecutor;
+  const scriptTrust = yield* ProjectScriptTrust;
+  const capturedOutputs = yield* CapturedStepOutputReader;
+  const merges = yield* TicketMergeService;
+  const pullRequests = yield* TicketPullRequestService;
+  const ticketCheckpoints = yield* TicketCheckpointService;
+  const committer = yield* WorkflowEventCommitter;
+
+  /**
+   * How many rounds of questions one step run may ask before it fails.
+   *
+   * Bounded so an agent that keeps asking cannot park a ticket on a human
+   * forever; counted from persisted dispatch rows, not from its own output.
+   */
+  const MAX_QUESTION_ROUNDS = 5;
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+
+  /**
+   * Remove the reserved questions key before the output is validated or stored.
+   *
+   * Without this an `allowUnknown: false` contract would reject a turn for
+   * carrying the very block the feature asked it to emit, and the raw questions
+   * could end up as a step's recorded output.
+   */
+  const stripQuestionsKey = (output: unknown): unknown => {
+    if (!isRecord(output) || !(AGENT_QUESTIONS_KEY in output)) return output;
+    const { [AGENT_QUESTIONS_KEY]: _questions, ...rest } = output;
+    return rest;
+  };
+
+  /**
+   * Rounds already asked, or `null` when that cannot be established.
+   *
+   * A read failure must NOT read as zero: the cap would look fresh and a sixth
+   * question would go through, defeating the bound that stops an agent parking
+   * a ticket on a human indefinitely.
+   */
+  const countQuestionRaises = (stepRunId: StepRunId) =>
+    dispatch.getDispatchRequestForStep(stepRunId).pipe(
+      Effect.map((assembly): number | null => assembly?.questionContinuations ?? 0),
+      Effect.orElseSucceed((): number | null => null),
+    );
+  const agentSessions = yield* WorkflowAgentSessionStore;
+  const handoffReader = yield* StepOutputHandoffReader;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const worktreeCoordinator = yield* Effect.serviceOption(WorktreeCoordinator);
+  const boardRegistry = yield* Effect.serviceOption(BoardRegistry);
+  // Optional so test layers without a git driver keep working: an absent driver
+  // is treated exactly like a failed git call — the path cache is left intact.
+  const gitDriverOption = yield* Effect.serviceOption(GitVcsDriver);
+  // Optional: token-usage capture is best-effort telemetry, absent in older
+  // test stacks.
+  const usageReader = Context.getOption(
+    (yield* Effect.context<never>()) as Context.Context<StepUsageReader>,
+    StepUsageReader,
+  );
+  const readStepUsage = (threadId: string) =>
+    Option.isNone(usageReader)
+      ? // @effect-diagnostics-next-line effectSucceedWithVoid:off — must stay `Effect<undefined>` (not `Effect<void>`) so it unifies with read()'s `WorkflowStepUsage | undefined` and feeds sumUsage
+        Effect.succeed<WorkflowStepUsage | undefined>(undefined)
+      : usageReader.value.read(threadId as never);
+
+  const prepareWorktreeStep = (
+    ctx: Parameters<StepExecutorShape["execute"]>[0],
+    body: (worktree: WorktreeHandle) => Effect.Effect<StepOutcome, WorkflowEventStoreError>,
+    options?: {
+      readonly preSetupGuard?: (
+        worktree: WorktreeHandle,
+      ) => Effect.Effect<StepOutcome | null, WorkflowEventStoreError>;
+      readonly skipSetup?: boolean;
+      // When true, the project's setup script is only run if the worktree's
+      // project is trusted; an untrusted project's setup is SKIPPED (its
+      // arbitrary shell never executes) without failing the step.
+      readonly gateSetupOnTrust?: boolean;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const worktree = yield* worktrees.ensureWorktree(ctx.ticketId);
+      const hasBaseline = yield* ticketCheckpoints.hasBaseline(ctx.ticketId, worktree.path);
+      if (!hasBaseline) {
+        yield* ticketCheckpoints.captureBaseline(ctx.ticketId, worktree.path);
+      }
+
+      // Phase A worktree parallelism: registry + early overlap gate.
+      // Gate is one step stale by design (cache fills post-checkpoint only) —
+      // a ticket's first step always sees empty ownPaths and proceeds (SPEC non-goal).
+      if (Option.isSome(worktreeCoordinator)) {
+        const coord = worktreeCoordinator.value;
+        const activeHold = yield* coord.hasActiveHold(ctx.ticketId);
+        if (activeHold) {
+          return {
+            _tag: "blocked",
+            reason: PARALLELISM_HOLD_REASON_ACTIVE,
+          } satisfies StepOutcome;
+        }
+        yield* coord
+          .upsertRegistry({
+            ticketId: ctx.ticketId,
+            // Canonical repo identity for cross-ticket overlap (not the worktree path).
+            repoRoot: worktree.repoRoot,
+            branch: worktree.worktreeRef,
+          })
+          .pipe(Effect.catch(() => Effect.void));
+
+        if (Option.isSome(boardRegistry)) {
+          const definition = yield* boardRegistry.value.getDefinition(ctx.boardId);
+          const policy = definition?.settings?.parallelism?.conflictPolicy ?? "off";
+          const ignorePaths = definition?.settings?.parallelism?.overlapIgnorePaths ?? [];
+          if (policy === "warn" || policy === "serialize") {
+            const noneGate: OverlapGateResult = {
+              decision: { action: "none" },
+              withTicketId: null,
+            };
+            const gate = yield* coord
+              .evaluateOverlapGate({
+                ticketId: ctx.ticketId,
+                boardId: ctx.boardId,
+                policy,
+                ignorePaths: ignorePaths.map(String),
+                laneKey: ctx.laneKey as string,
+                laneEntryToken: ctx.laneEntryToken as string,
+                pipelineRunId: ctx.pipelineRunId as string,
+                stepRunId: ctx.stepRunId as string,
+              })
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("worktree overlap gate failed open", {
+                    ticketId: ctx.ticketId,
+                    error: String(error),
+                  }).pipe(Effect.as(noneGate)),
+                ),
+              );
+            if (gate.hold !== undefined) {
+              return {
+                _tag: "blocked",
+                reason: serializeHoldReason(gate.hold.blockedByTicketId as string),
+              } satisfies StepOutcome;
+            }
+          }
+        }
+      }
+
+      const guarded = yield* options?.preSetupGuard?.(worktree) ?? Effect.succeed(null);
+      if (guarded !== null) {
+        return guarded;
+      }
+
+      let runSetupStep = options?.skipSetup !== true;
+      if (runSetupStep && options?.gateSetupOnTrust === true && worktree.projectId !== undefined) {
+        const trusted = yield* scriptTrust.isTrusted(worktree.projectId as ProjectId);
+        if (!trusted) {
+          // Untrusted project: withhold the setup script (arbitrary code) but let
+          // the agent step proceed. Distinct from the script-step guard, which
+          // blocks because the script IS the untrusted surface.
+          runSetupStep = false;
+          yield* Effect.logWarning("skipping setup for untrusted project on agent step", {
+            ticketId: ctx.ticketId,
+            projectId: worktree.projectId,
+          });
+        }
+      }
+      if (runSetupStep) {
+        const setupRunId = yield* ids.eventId();
+        const setupResult = yield* setup.runSetup(
+          ctx.ticketId,
+          worktree.worktreeRef,
+          worktree.path,
+          setupRunId as never,
+          worktree.projectId,
+        );
+        if (setupResult.status !== "completed") {
+          return {
+            _tag: "failed",
+            error: `setup ${setupResult.status}`,
+            failureClass: "infra",
+          } satisfies StepOutcome;
+        }
+      }
+
+      const acquired = yield* lease.acquire(worktree.worktreeRef, "step", ctx.stepRunId as string);
+      const releaseIfStillOwner = lease.isValid(worktree.worktreeRef, acquired.fenceToken).pipe(
+        Effect.flatMap((valid) =>
+          valid ? lease.release(worktree.worktreeRef, acquired.fenceToken) : Effect.void,
+        ),
+        Effect.orElseSucceed(() => undefined),
+      );
+
+      const result = yield* Effect.gen(function* () {
+        const preRef = yield* ticketCheckpoints.captureStep(
+          ctx.ticketId,
+          ctx.stepRunId,
+          worktree.path,
+          "pre",
+        );
+        const bodyExit = yield* body(worktree).pipe(Effect.exit);
+        const postRef = yield* ticketCheckpoints.captureStep(
+          ctx.ticketId,
+          ctx.stepRunId,
+          worktree.path,
+          "post",
+        );
+        // Refresh path cache when conflictPolicy is active (Phase A).
+        // SPEC: git diff --name-only -z <baselineRef> <latestPostRef>
+        // On git failure: leave the prior cache intact (fail-closed for serialize).
+        if (Option.isSome(worktreeCoordinator) && Option.isSome(boardRegistry)) {
+          const definition = yield* boardRegistry.value
+            .getDefinition(ctx.boardId)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          const policy = definition?.settings?.parallelism?.conflictPolicy ?? "off";
+          if (policy === "warn" || policy === "serialize") {
+            const baseline = ticketBaseRef(ctx.ticketId);
+            if (Option.isNone(gitDriverOption)) {
+              // Same outcome as a failed git call: leave the prior cache intact,
+              // which is the fail-closed behavior serialize depends on.
+              yield* Effect.logWarning("worktree path cache refresh skipped (no git driver)", {
+                ticketId: ctx.ticketId,
+              });
+            } else {
+              // Through GitVcsDriver rather than a raw child process: it bounds
+              // the output, carries a typed error, and is the path every other
+              // git call in this codebase takes.
+              const pathsExit = yield* gitDriverOption.value
+                .execute({
+                  operation: "WorkflowStep.refreshChangedPaths",
+                  cwd: worktree.path,
+                  args: ["diff", "--name-only", "-z", baseline, postRef],
+                  maxOutputBytes: 4 * 1024 * 1024,
+                })
+                // -z already delimits; do not trim (paths may have intentional spaces).
+                .pipe(
+                  Effect.map((result) =>
+                    result.stdout.split("\u0000").filter((path) => path.length > 0),
+                  ),
+                  Effect.exit,
+                );
+              if (Exit.isSuccess(pathsExit)) {
+                yield* worktreeCoordinator.value
+                  .replaceChangedPaths({
+                    ticketId: ctx.ticketId,
+                    sourceRef: postRef,
+                    paths: pathsExit.value,
+                  })
+                  .pipe(Effect.catch(() => Effect.void));
+              } else {
+                yield* Effect.logWarning("worktree path cache refresh skipped (git failed)", {
+                  ticketId: ctx.ticketId,
+                  error: String(pathsExit.cause),
+                });
+              }
+            }
+          }
+        }
+        const eventId = yield* ids.eventId();
+        const occurredAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+        yield* committer.commit({
+          type: "StepRefsCaptured",
+          eventId: eventId as never,
+          ticketId: ctx.ticketId,
+          occurredAt: occurredAt as never,
+          payload: { stepRunId: ctx.stepRunId, preRef, postRef },
+        });
+        if (Exit.isFailure(bodyExit)) {
+          return yield* Effect.failCause(bodyExit.cause);
+        }
+        return bodyExit.value;
+      }).pipe(Effect.ensuring(releaseIfStillOwner));
+
+      return result;
+    });
+
+  const providerServiceOption = Effect.serviceOption(ProviderService);
+
+  const cleanupStepSession = (threadId: string, turnId: TurnId) =>
+    Effect.gen(function* () {
+      const provider = yield* providerServiceOption;
+      if (Option.isNone(provider)) {
+        return;
+      }
+      yield* provider.value
+        .interruptTurn({ threadId: threadId as never, turnId: turnId as never })
+        .pipe(Effect.catch(() => Effect.void));
+      yield* provider.value
+        .stopSession({ threadId: threadId as never })
+        .pipe(Effect.catch(() => Effect.void));
+    });
+
+  const sumUsage = (
+    total: WorkflowStepUsage | undefined,
+    next: WorkflowStepUsage | undefined,
+  ): WorkflowStepUsage | undefined => {
+    if (next === undefined) {
+      return total;
+    }
+    if (total === undefined) {
+      return next;
+    }
+    const add = (a: number | undefined, b: number | undefined) =>
+      a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+    return {
+      ...(add(total.inputTokens, next.inputTokens) === undefined
+        ? {}
+        : { inputTokens: add(total.inputTokens, next.inputTokens) }),
+      ...(add(total.cachedInputTokens, next.cachedInputTokens) === undefined
+        ? {}
+        : {
+            cachedInputTokens: add(total.cachedInputTokens, next.cachedInputTokens),
+          }),
+      ...(add(total.outputTokens, next.outputTokens) === undefined
+        ? {}
+        : { outputTokens: add(total.outputTokens, next.outputTokens) }),
+      ...(add(total.totalTokens, next.totalTokens) === undefined
+        ? {}
+        : { totalTokens: add(total.totalTokens, next.totalTokens) }),
+    };
+  };
+
+  const verdictOf = (output: unknown): string | null => {
+    if (typeof output !== "object" || output === null || Array.isArray(output)) {
+      return null;
+    }
+    const verdict = (output as Record<string, unknown>)["verdict"];
+    return typeof verdict === "string" ? verdict : null;
+  };
+
+  // Fan out `panelSize` independent turns of the same review step and take
+  // the strict-majority verdict. A member that fails, stalls on a question,
+  // or returns unusable output simply contributes no vote; without a strict
+  // majority the step fails (never silently picks a side).
+  const runReviewPanel = (
+    ctx: Parameters<StepExecutorShape["execute"]>[0],
+    step: Extract<Parameters<StepExecutorShape["execute"]>[0]["step"], { readonly type: "agent" }>,
+    panelSize: number,
+    runTurn: (
+      turnIds: { readonly dispatchId: string; readonly threadId: string },
+      titleSuffix: string,
+    ) => Effect.Effect<
+      {
+        readonly terminal: ProviderDispatchTerminalResult;
+        readonly turnId: TurnId;
+        readonly threadId: string;
+      },
+      WorkflowEventStoreError
+    >,
+  ) =>
+    Effect.gen(function* () {
+      const memberIds = yield* Effect.forEach(
+        Array.from({ length: panelSize }, (_, index) => index),
+        () =>
+          Effect.all({
+            dispatchId: ids.eventId().pipe(Effect.map((id) => id as string)),
+            threadId: ids.eventId().pipe(Effect.map((id) => id as string)),
+          }),
+      );
+      // Members run sequentially: they share the ticket worktree, and two
+      // concurrent full-access agents in one tree can corrupt each other's
+      // view. Review steps are read-mostly, so serial members are safe even
+      // if one misbehaves and writes.
+      const members = yield* Effect.all(
+        memberIds.map((turnIds, index) =>
+          runTurn(turnIds, ` (reviewer ${index + 1}/${panelSize})`),
+        ),
+        { concurrency: 1 },
+      );
+
+      let usage: WorkflowStepUsage | undefined;
+      const votes: Array<{
+        readonly reviewer: number;
+        readonly verdict: string | null;
+        readonly output: unknown;
+        readonly error?: string;
+      }> = [];
+      for (const [index, member] of members.entries()) {
+        usage = sumUsage(usage, yield* readStepUsage(member.threadId));
+        if (!member.terminal.ok) {
+          votes.push({
+            reviewer: index + 1,
+            verdict: null,
+            output: null,
+            error:
+              "awaitingUser" in member.terminal
+                ? "reviewer asked a question"
+                : (member.terminal.error ?? "turn failed"),
+          });
+          continue;
+        }
+        const output = yield* capturedOutputs.read({
+          stepRunId: ctx.stepRunId,
+          threadId: member.threadId as never,
+          turnId: member.turnId,
+        });
+        // Panel: validate against outputContract when present (no repair).
+        if (
+          step.captureOutput === true &&
+          step.outputContract !== undefined &&
+          output !== undefined
+        ) {
+          const memberErrors = validateStepOutput(step.outputContract, {
+            output: output as object,
+            rawBlock: encodeJsonString(output),
+          });
+          if (memberErrors.length > 0) {
+            votes.push({
+              reviewer: index + 1,
+              verdict: null,
+              output: output ?? null,
+              error: `output contract violation: ${memberErrors[0]}`,
+            });
+            continue;
+          }
+        } else if (
+          step.captureOutput === true &&
+          step.outputContract !== undefined &&
+          output === undefined
+        ) {
+          votes.push({
+            reviewer: index + 1,
+            verdict: null,
+            output: null,
+            error: "output contract violation: no fenced json block found",
+          });
+          continue;
+        }
+        votes.push({
+          reviewer: index + 1,
+          verdict: verdictOf(output),
+          output: output ?? null,
+        });
+      }
+
+      // A member that stalled on a question (or failed mid-turn) leaves a
+      // live provider session and an unconfirmed outbox row nobody is meant
+      // to answer — stop the session and settle every member row so restart
+      // recovery never re-monitors a decided panel.
+      for (const member of members) {
+        if (member.terminal.ok) {
+          continue;
+        }
+        // cleanupStepSession already swallows its own failures (its error channel
+        // is `never`), so this is a defensive best-effort guard; `Effect.ignore`
+        // discards any typed failure while letting genuine defects surface.
+        yield* cleanupStepSession(member.threadId, member.turnId).pipe(Effect.ignore);
+      }
+      yield* dispatch.confirmStep(ctx.stepRunId).pipe(Effect.catch(() => Effect.void));
+
+      const counts = new Map<string, number>();
+      for (const vote of votes) {
+        if (vote.verdict !== null) {
+          counts.set(vote.verdict, (counts.get(vote.verdict) ?? 0) + 1);
+        }
+      }
+      let winner: string | null = null;
+      let winnerCount = 0;
+      for (const [verdict, count] of counts) {
+        if (count > winnerCount) {
+          winner = verdict;
+          winnerCount = count;
+        }
+      }
+      if (winner !== null && winnerCount * 2 > panelSize) {
+        return {
+          _tag: "completed",
+          output: { verdict: winner, votes },
+          ...(usage === undefined ? {} : { usage }),
+        } satisfies StepOutcome;
+      }
+      return {
+        _tag: "failed",
+        error: `review panel did not reach a majority (${votes
+          .map((vote) => vote.verdict ?? "no vote")
+          .join(", ")})`,
+        ...(usage === undefined ? {} : { usage }),
+      } satisfies StepOutcome;
+    });
+
+  // Resolve a single handoff variable to its source step's captured output.
+  // `prev` reads the immediately-preceding step in THIS pass; `step.<key>`
+  // reads this pass first, then the latest completed prior pass (loop). A
+  // forward reference with nothing captured yet resolves to null.
+  const resolveHandoffSource = (
+    ctx: Parameters<StepExecutorShape["execute"]>[0],
+    sourceStepKey: string | null,
+  ) =>
+    Effect.gen(function* () {
+      if (sourceStepKey === null) {
+        return null;
+      }
+      const thisPass = yield* handoffReader.currentPassOutput(
+        ctx.pipelineRunId,
+        sourceStepKey as never,
+      );
+      if (thisPass !== null) {
+        return thisPass;
+      }
+      return yield* handoffReader.latestCompletedOutput(
+        ctx.ticketId,
+        ctx.laneKey,
+        sourceStepKey as never,
+      );
+    });
+
+  // Resolve `{{prev.output}}` / `{{step.<key>.output}}` in the assembled
+  // instruction. Each resolved output is inlined when the running assembled
+  // instruction stays under the handoff budget (the provider input cap minus
+  // reserved room for discussion + capture suffix); otherwise the full output
+  // spills to `.t3/ticket/<id>/handoff/<safeKey>.md` in the worktree and a path
+  // reference is substituted. Spill files live in the per-ticket scratch tree
+  // the merge step purges, so they never reach the branch/PR.
+  const resolveHandoffPlaceholders = (
+    ctx: Parameters<StepExecutorShape["execute"]>[0],
+    worktree: WorktreeHandle,
+    step: Extract<Parameters<StepExecutorShape["execute"]>[0]["step"], { readonly type: "agent" }>,
+    baseInstruction: string,
+    bodyBudget: number,
+  ) =>
+    Effect.gen(function* () {
+      const references = findHandoffReferences(baseInstruction);
+      if (references.length === 0) {
+        return baseInstruction;
+      }
+      const stepKeys = ctx.laneStepKeys as ReadonlyArray<string>;
+      const currentIndex = stepKeys.indexOf(step.key as string);
+      const precedingStepKey = currentIndex > 0 ? (stepKeys[currentIndex - 1] ?? null) : null;
+
+      let assembled = baseInstruction;
+      // Tracks the projected final length as inlines accumulate, so the budget
+      // applies to the WHOLE assembled instruction, not each output in isolation.
+      let assembledLength = baseInstruction.length;
+      for (const reference of references) {
+        const sourceStepKey =
+          reference.kind === "prev" ? precedingStepKey : (reference.stepKey ?? null);
+        const output = yield* resolveHandoffSource(ctx, sourceStepKey);
+        let replacement: string;
+        if (output === null) {
+          replacement = NO_PRIOR_OUTPUT_NOTE;
+        } else {
+          const rendered = stringifyHandoffOutput(output);
+          const projected = assembledLength - reference.raw.length + rendered.length;
+          if (projected > bodyBudget && sourceStepKey !== null) {
+            const relativePath = handoffSpillPath(ctx.ticketId as string, sourceStepKey);
+            const absolutePath = `${worktree.path}/${relativePath}`;
+            const directory = absolutePath.slice(0, absolutePath.lastIndexOf("/"));
+            yield* fileSystem
+              .makeDirectory(directory, { recursive: true })
+              .pipe(Effect.mapError(toExecutorError("handoff spill directory create failed")));
+            yield* fileSystem
+              .writeFileString(absolutePath, rendered)
+              .pipe(Effect.mapError(toExecutorError("handoff spill write failed")));
+            replacement = handoffSpillReference(relativePath);
+          } else {
+            replacement = rendered;
+          }
+        }
+        // Function replacer: a string replacement would interpret `$`
+        // sequences (e.g. `$&`) in agent output as special patterns.
+        assembled = assembled.replace(reference.raw, () => replacement);
+        assembledLength = assembledLength - reference.raw.length + replacement.length;
+      }
+      return assembled;
+    });
+
+  const executeAgentStep = (
+    ctx: Parameters<StepExecutorShape["execute"]>[0],
+    worktree: WorktreeHandle,
+    step: Extract<Parameters<StepExecutorShape["execute"]>[0]["step"], { readonly type: "agent" }>,
+    /**
+     * Set when this is a continuation of a step that parked on a question.
+     *
+     * It APPENDS the answers to the normally-built instruction and reuses the
+     * asking turn's thread — everything else (templating, handoff pack,
+     * discussion, capture suffix, question detection, output contract, repair)
+     * is the SAME code the original turn ran.
+     *
+     * Appending rather than replacing matters: a provider without a resumable
+     * session starts fresh even on the same thread, so a prompt of only "they
+     * answered X, continue" would leave the agent with no idea what the task
+     * was.
+     */
+    resume?: { readonly answersBlock: string; readonly threadId: string },
+  ) =>
+    Effect.gen(function* () {
+      // Budget gate: once the ticket's usage roll-up reaches its budget, no
+      // further provider turns start — the step blocks (not fails) so a human
+      // can raise the budget or move the ticket on.
+      const budgetDetail = yield* read.getTicketDetail(ctx.ticketId);
+      const tokenBudget = budgetDetail?.ticket.tokenBudget;
+      const usedTokens = budgetDetail?.ticket.totalTokens ?? 0;
+      if (typeof tokenBudget === "number" && usedTokens >= tokenBudget) {
+        return {
+          _tag: "blocked",
+          reason: `token budget reached (${usedTokens.toLocaleString("en-US")} of ${tokenBudget.toLocaleString("en-US")} tokens used)`,
+        } satisfies StepOutcome;
+      }
+      const dispatchId = yield* ids.eventId();
+      const mintedThreadId = yield* ids.eventId();
+      // A `continueSession` agent step resumes its own provider session across
+      // steps/loops by reusing a stable workflow `threadId` anchored to
+      // (ticket, lane, agentKey): `startSession(threadId)` replays the persisted
+      // resume cursor. On a miss we mint a fresh thread and record it; on a hit
+      // we dispatch the stored thread (and never overwrite it). Panel members
+      // always keep fresh ids — lint forbids continueSession + panel.
+      // A question continuation MUST run on the thread that asked. Minting a
+      // fresh one would start a brand-new provider session whose entire prompt
+      // is the answers restatement — the agent would resume with no memory of
+      // the task it paused in the middle of.
+      const threadId =
+        resume !== undefined
+          ? resume.threadId
+          : step.continueSession === true
+            ? yield* Effect.gen(function* () {
+                const agentKey = deriveAgentKey(
+                  step.agent.instance as string,
+                  step.agent.model as string,
+                  step.agent.options,
+                );
+                const existing = yield* agentSessions.getThreadId(
+                  ctx.ticketId,
+                  ctx.laneKey,
+                  agentKey,
+                );
+                if (existing !== null) {
+                  return existing;
+                }
+                yield* agentSessions.upsert(
+                  ctx.ticketId,
+                  ctx.laneKey,
+                  agentKey,
+                  mintedThreadId as string,
+                );
+                return mintedThreadId as string;
+              })
+            : (mintedThreadId as string);
+      const resolvedInstruction = yield* Effect.gen(function* () {
+        if (typeof step.instruction === "string") {
+          return step.instruction;
+        }
+
+        const instructionFile = step.instruction.file;
+        const instructionPath = resolveWorkflowInstructionPath(worktree.repoRoot, instructionFile);
+        if (instructionPath === null) {
+          return yield* new WorkflowEventStoreError({
+            message: unsafeWorkflowInstructionPathMessage(instructionFile),
+          });
+        }
+
+        const realRepoRoot = yield* fileSystem
+          .realPath(worktree.repoRoot)
+          .pipe(Effect.mapError(toExecutorError("instruction file realpath check failed")));
+        const realInstructionPath = yield* fileSystem
+          .realPath(instructionPath)
+          .pipe(Effect.mapError(toExecutorError("instruction file realpath check failed")));
+        if (!containsRealPath(realRepoRoot, realInstructionPath)) {
+          return yield* Effect.succeed({
+            _tag: "failed",
+            error: `Instruction file resolves outside the project root: "${instructionFile}"`,
+          } satisfies StepOutcome);
+        }
+
+        return yield* fileSystem
+          .readFileString(realInstructionPath)
+          .pipe(Effect.mapError(toExecutorError("instruction file read failed")));
+      });
+      if (typeof resolvedInstruction !== "string") {
+        return resolvedInstruction;
+      }
+      // Attachment-count-only query capped one past the renderer's message
+      // budget, so long threads never decode attachment data URLs here.
+      const discussion = renderTicketDiscussion(
+        yield* read.listTicketDiscussion(ctx.ticketId, DISCUSSION_MESSAGE_CAP + 1),
+      );
+      // The handoff pack for the lane this step is EXECUTING in. Not
+      // ticket.currentLaneKey, which can drift from the executing lane while a
+      // dispatch is in flight. A read failure degrades to no pack: an optional
+      // enrichment must never fail the step.
+      const contextPack = yield* read
+        .getContextPack(ctx.ticketId, ctx.laneKey)
+        .pipe(Effect.orElseSucceed(() => null));
+      const packBlock =
+        contextPack === null || contextPack.sections.length === 0
+          ? ""
+          : renderContextPack({
+              fromLane: contextPack.fromLane as string,
+              sections: contextPack.sections,
+            });
+
+      // Stand the pack behind a short sentinel for the whole of templating, then
+      // splice the real text over it at the very end. Consequences: literal
+      // {{ticket.description}} / {{prev.output}} text inside a captured output or
+      // a human-written note is never re-expanded, and the description's
+      // inline-or-spill decision is computed against the sentinel rather than the
+      // pack body, so a pack can never make the description spill earlier.
+      // The haystack must include every text that gets spliced in AFTER the
+      // sentinel is chosen — above all the ticket description, which the
+      // templating below inlines. A sentinel that already occurs in the
+      // description would be replaced along with ours, corrupting the
+      // description and double-injecting the pack.
+      const packHaystackDetail = yield* read
+        .getTicketDetail(ctx.ticketId)
+        .pipe(Effect.orElseSucceed(() => null));
+      const sentinel = makeContextPackSentinel(
+        [
+          resolvedInstruction,
+          discussion,
+          packBlock,
+          packHaystackDetail?.ticket.title ?? "",
+          packHaystackDetail?.ticket.description ?? "",
+        ].join("\n"),
+        ctx.stepRunId as string,
+      );
+      const placeholderResult = substituteContextPackPlaceholder(resolvedInstruction, sentinel);
+      const hasPackPlaceholder = placeholderResult.matched > 0;
+      if (placeholderResult.matched > 1) {
+        yield* Effect.logWarning(
+          `workflow step ${step.key} instruction repeats {{ticket.contextPack}} ${String(
+            placeholderResult.matched,
+          )} times; only the first is filled`,
+        );
+      }
+      const packedInstruction = placeholderResult.text;
+
+      // Resolve the active provider's per-turn input budget (clamped to 120k).
+      // Absent ProviderService (some test layers) or a failed lookup → 120k.
+      const providerSvcOpt = yield* providerServiceOption;
+      const maxInputChars = Option.isSome(providerSvcOpt)
+        ? yield* providerSvcOpt.value
+            .getCapabilities(step.agent.instance as ProviderInstanceId)
+            .pipe(
+              Effect.map((c) => c.maxInputChars),
+              Effect.orElseSucceed(() => undefined),
+            )
+        : undefined;
+      const providerBudget = providerInputBudget(maxInputChars);
+
+      // The discussion block appended after the body (0 when inlined via the
+      // {{ticket.discussion}} placeholder). Reserved exactly against the budget.
+      const appendedDiscussionBlock =
+        discussion !== "" && !hasDiscussionPlaceholder(packedInstruction)
+          ? `\n\n## Ticket discussion\n\n${discussion}`
+          : "";
+      const bodyBudget = instructionBodyBudget(
+        providerBudget,
+        // The answers block is trailing content appended after the body, same
+        // as the discussion block, so it is charged the same way. Ten 2000-char
+        // answers is ~20KB; leaving it uncharged meant a near-budget
+        // instruction could tip over AFTER the operator's answers were already
+        // durable — failing a step for a prompt we assembled, not anything they
+        // did.
+        appendedDiscussionBlock.length + (resume?.answersBlock.length ?? 0),
+        step.captureOutput === true,
+        step.allowQuestions === true,
+      );
+
+      // Substitute the short ticket fields, decide whether the {{ticket.description}}
+      // body inlines or spills, resolve handoff against the SKELETON (description
+      // still a marker), then substitute the description. Resolving handoff before
+      // the description is spliced in is deliberate: it stops the handoff scanner
+      // from matching {{prev.output}}/{{step.k.output}} text that happens to appear
+      // inside a ticket description (which would silently mangle the description).
+      const instructionWithHandoff = packedInstruction.includes("{{")
+        ? yield* Effect.gen(function* () {
+            const detail = yield* read.getTicketDetail(ctx.ticketId);
+            const title = detail?.ticket.title ?? "";
+            const rawDescription = detail?.ticket.description ?? "";
+            const templatedShort = applyInstructionTemplateExcept(
+              packedInstruction,
+              {
+                title,
+                id: ctx.ticketId as string,
+                baseRef: ticketBaseRef(ctx.ticketId),
+                ...(hasDiscussionPlaceholder(packedInstruction)
+                  ? {
+                      discussion: discussion === "" ? "(no discussion yet)" : discussion,
+                    }
+                  : {}),
+              },
+              ["description"],
+            );
+            const descRefs = [...templatedShort.matchAll(/\{\{\s*ticket\.description\s*\}\}/g)];
+            // Sum the ACTUAL matched marker lengths (the pattern allows internal
+            // whitespace), so the inline projection is exact.
+            const matchedLen = descRefs.reduce((n, m) => n + m[0].length, 0);
+            const pointer = descriptionSpillReference(descriptionSpillPath(ctx.ticketId as string));
+            // Spilling only helps when there is a body and the pointer is shorter
+            // than it (otherwise inlining produces the smaller prompt).
+            const canSpillDescription =
+              descRefs.length > 0 &&
+              rawDescription.length > 0 &&
+              pointer.length < rawDescription.length;
+            const spillDescriptionFile = Effect.gen(function* () {
+              const spillPath = descriptionSpillPath(ctx.ticketId as string);
+              const absolute = `${worktree.path}/${spillPath}`;
+              const dir = absolute.slice(0, absolute.lastIndexOf("/"));
+              yield* fileSystem
+                .makeDirectory(dir, { recursive: true })
+                .pipe(Effect.mapError(toExecutorError("description spill dir create failed")));
+              yield* fileSystem
+                .writeFileString(absolute, `# ${title.split("\n")[0]}\n\n${rawDescription}`)
+                .pipe(Effect.mapError(toExecutorError("description spill write failed")));
+            });
+            // Decide the description replacement: inline if it fits, otherwise spill
+            // it to a worktree scratch file and point the agent at it.
+            let descriptionReplacement = rawDescription;
+            if (canSpillDescription) {
+              const inlineProjection =
+                templatedShort.length - matchedLen + descRefs.length * rawDescription.length;
+              if (inlineProjection > bodyBudget) {
+                yield* spillDescriptionFile;
+                descriptionReplacement = pointer;
+              }
+            }
+            // Net length the description substitution adds to the body; reserve it
+            // out of the handoff budget so the final assembled body stays bounded.
+            const descriptionDelta = descRefs.length * descriptionReplacement.length - matchedLen;
+            const resolvedSkeleton = yield* resolveHandoffPlaceholders(
+              ctx,
+              worktree,
+              step,
+              templatedShort,
+              Math.max(0, bodyBudget - descriptionDelta),
+            );
+            // Final-fit fallback: handoff spilling adds small pointer-reference
+            // overhead the up-front description projection couldn't account for. If
+            // the assembled body (skeleton + inlined description) would still exceed
+            // the body budget, spill the description now — it's the largest
+            // reclaimable blob. providerBudget − bodyBudget already reserves the
+            // appended discussion + capture suffix, so body ≤ bodyBudget keeps the
+            // final prompt within the provider budget.
+            if (canSpillDescription && descriptionReplacement === rawDescription) {
+              const inlinedBodyLength = resolvedSkeleton.length + descriptionDelta;
+              if (inlinedBodyLength > bodyBudget) {
+                yield* spillDescriptionFile;
+                descriptionReplacement = pointer;
+              }
+            }
+            // Splice the description in LAST — its literal {{...}} text is never
+            // scanned for handoff placeholders.
+            return resolvedSkeleton.replace(
+              /\{\{\s*ticket\.description\s*\}\}/g,
+              () => descriptionReplacement,
+            );
+          })
+        : packedInstruction;
+      // Comments always reach the next agent step: unless the instruction
+      // already placed the transcript via {{ticket.discussion}}, append it.
+      const instructionWithDiscussion =
+        appendedDiscussionBlock !== ""
+          ? `${instructionWithHandoff}${appendedDiscussionBlock}`
+          : instructionWithHandoff;
+      // Default injection: only when the instruction did not place the pack
+      // itself, only on the lane's FIRST agent step, and only when there is a
+      // pack with content — otherwise an empty "Handoff context" heading would
+      // be appended to every agent step in the lane. The sentinel goes in here
+      // (not the pack text) so the capture suffix below still lands last.
+      const appendsPack = !hasPackPlaceholder && packBlock !== "" && ctx.isFirstAgentStep === true;
+      const instructionWithPack = appendsPack
+        ? `${instructionWithDiscussion}\n\n${sentinel}`
+        : instructionWithDiscussion;
+      const contract =
+        step.captureOutput === true && step.outputContract !== undefined
+          ? step.outputContract
+          : undefined;
+      let instruction =
+        step.captureOutput === true
+          ? appendCaptureOutputInstruction(instructionWithPack)
+          : instructionWithPack;
+      if (contract !== undefined) {
+        instruction = `${instruction}\n\n${renderContractInstruction(contract)}`;
+      }
+      // Lint guarantees allowQuestions implies captureOutput, so this always
+      // lands after the capture suffix that introduced the json block it
+      // describes.
+      if (step.allowQuestions === true) {
+        instruction = appendAgentQuestionsInstruction(instruction);
+      }
+      if (resume !== undefined) {
+        instruction = `${instruction}\n\n${resume.answersBlock}`;
+      }
+      // Everything above is done templating, so the pack text can go in now —
+      // it is never itself scanned for placeholders.
+      // Decide against the SPLICED length but drop by re-splicing from the
+      // pre-splice string. Removing the pack by searching for its text in the
+      // finished prompt would also delete any identical text the instruction or
+      // a discussion happened to contain.
+      const preSplice = instruction;
+      const packReplacement = packBlock === "" ? CONTEXT_PACK_EMPTY : packBlock;
+      // Handoff expansions ({{prev.output}} and friends) resolve after the
+      // sentinel is chosen and are not in its haystack, so an extra occurrence
+      // is still conceivable. It is not silently corrected — surfacing it beats
+      // splicing the pack into a place nobody asked for.
+      // Handoff expansions ({{prev.output}} and friends) resolve AFTER the
+      // sentinel is chosen, so they are not in its haystack — and neither is the
+      // description, if the best-effort detail read failed. A second occurrence
+      // is therefore possible and is indistinguishable from ours.
+      //
+      // So exactly ONE occurrence is ever rewritten, never all of them: a
+      // replace-all would rewrite a prior step's output as collateral. In append
+      // mode ours is provably the LAST occurrence, because the append happens
+      // after every expansion; in placeholder mode ours sits where the
+      // instruction put it, so the first is the better guess. The worst case is
+      // one pack in a slightly wrong place plus one stray token — not duplicated
+      // packs and not text silently deleted.
+      const sentinelOccurrences = preSplice.split(sentinel).length - 1;
+      if (sentinelOccurrences > 1) {
+        yield* Effect.logWarning(
+          `workflow step ${step.key} context-pack sentinel occurs ${String(
+            sentinelOccurrences,
+          )} times after templating; expanded step output appears to contain it, so only one site is filled`,
+        );
+      }
+      const replaceOneSentinel = (text: string, replacement: string): string => {
+        const at = appendsPack ? text.lastIndexOf(sentinel) : text.indexOf(sentinel);
+        return at < 0
+          ? text
+          : `${text.slice(0, at)}${replacement}${text.slice(at + sentinel.length)}`;
+      };
+      instruction = replaceOneSentinel(preSplice, packReplacement);
+      if (packBlock !== "" && preSplice.includes(sentinel) && instruction.length > providerBudget) {
+        // The pack is the one block that can be dropped without losing anything
+        // a human wrote, so it goes first — then fall through to the existing
+        // warn-only path if the prompt is still too long.
+        yield* Effect.logWarning(
+          `workflow step ${step.key} prompt exceeds provider budget (${String(
+            providerBudget,
+          )}); dropping the handoff context pack`,
+        );
+        instruction = replaceOneSentinel(preSplice, CONTEXT_PACK_EMPTY);
+      }
+      if (instruction.length > providerBudget) {
+        if (contract !== undefined) {
+          return {
+            _tag: "failed",
+            error: "output contract prompt exceeds provider budget",
+            retryable: false,
+          } satisfies StepOutcome;
+        }
+        yield* Effect.logWarning(
+          `workflow step ${step.key} prompt (${instruction.length}) exceeds provider budget (${providerBudget}) after spilling`,
+        );
+      }
+      const runTurn = (
+        turnIds: { readonly dispatchId: string; readonly threadId: string },
+        turnInstruction: string,
+        titleSuffix: string,
+        dispatchKind?: "repair" | "question-continuation",
+      ) =>
+        Effect.gen(function* () {
+          // Follow-up turns take `max(seq) + 1` rather than a fixed number: a
+          // repair can follow a question continuation, and a fixed seq would put
+          // it BELOW the continuation in every "latest turn" read, completing the
+          // step from stale output.
+          const assembly =
+            dispatchKind === undefined
+              ? null
+              : yield* dispatch
+                  .getDispatchRequestForStep(ctx.stepRunId)
+                  .pipe(Effect.orElseSucceed(() => null));
+          // Never fall back to 1. A follow-up that lands BELOW an existing row
+          // (a repair after a continuation, say) is read as older than the very
+          // output it supersedes, and the step can then sit `running` across
+          // every restart. A failed read fails the turn instead.
+          if (dispatchKind !== undefined && assembly === null) {
+            return yield* Effect.fail(
+              new WorkflowEventStoreError({
+                message: "could not read the step's dispatch sequence",
+              }),
+            );
+          }
+          const dispatchSeq = dispatchKind === undefined ? 0 : (assembly?.nextDispatchSeq ?? 0);
+          const started = yield* dispatch.ensureStarted({
+            dispatchId: turnIds.dispatchId as never,
+            ticketId: ctx.ticketId,
+            stepRunId: ctx.stepRunId,
+            threadId: turnIds.threadId as never,
+            providerInstance: step.agent.instance as string,
+            model: step.agent.model as string,
+            instruction: turnInstruction,
+            worktreePath: worktree.path,
+            ...(step.agent.options === undefined ? {} : { options: step.agent.options }),
+            ...(worktree.projectId === undefined ? {} : { projectId: worktree.projectId }),
+            threadTitle: `Workflow step ${step.key}${titleSuffix} · ${ctx.ticketId}`,
+            // Dispatch-time metadata for steer validation (TOCTOU-safe).
+            captureOutput: step.captureOutput === true,
+            panelSize: step.panel ?? 1,
+            dispatchSeq,
+            ...(dispatchKind === undefined ? {} : { dispatchKind }),
+          });
+          const terminal = yield* dispatch.awaitTerminal(
+            turnIds.dispatchId as never,
+            turnIds.threadId as never,
+          );
+          // Prefer the terminal turn id (steers may open a new turn); fall
+          // back to the originally started turn for awaiting_user arms.
+          const terminalTurnId = "awaitingUser" in terminal ? started.turnId : terminal.turnId;
+          return {
+            terminal,
+            turnId: terminalTurnId,
+            threadId: turnIds.threadId,
+          };
+        });
+
+      const panelSize = step.panel ?? 0;
+      if (panelSize >= 2 && step.captureOutput === true) {
+        return yield* runReviewPanel(ctx, step, panelSize, (ids, suffix) =>
+          runTurn(ids, instruction, suffix),
+        );
+      }
+
+      const result = yield* runTurn(
+        { dispatchId: dispatchId as string, threadId: threadId as string },
+        instruction,
+        resume === undefined ? "" : " (answers)",
+        resume === undefined ? undefined : "question-continuation",
+      );
+
+      if (result.terminal.ok) {
+        const usage = yield* readStepUsage(threadId as string);
+        if (step.captureOutput === true) {
+          const rawOutput = yield* capturedOutputs.read({
+            stepRunId: ctx.stepRunId,
+            threadId: threadId as never,
+            turnId: result.turnId,
+          });
+
+          if (step.allowQuestions === true) {
+            // STRICT read: only the turn's final assistant message. `read` above
+            // falls back to earlier messages, which is right for a result and
+            // wrong for a question — an earlier progress note or a quoted
+            // payload must never park a ticket on a human.
+            const strict = yield* capturedOutputs.readFinalMessage({
+              stepRunId: ctx.stepRunId,
+              threadId: threadId as never,
+              turnId: result.turnId,
+            });
+            const rawQuestions = isRecord(strict) ? strict[AGENT_QUESTIONS_KEY] : undefined;
+            if (rawQuestions !== undefined) {
+              const raised = yield* countQuestionRaises(ctx.stepRunId);
+              if (raised === null || raised >= MAX_QUESTION_ROUNDS) {
+                return {
+                  _tag: "failed",
+                  error: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                  ...(usage === undefined ? {} : { usage }),
+                } satisfies StepOutcome;
+              }
+              const mapped = mapAgentQuestions(rawQuestions);
+              if (!mapped.ok) {
+                return {
+                  _tag: "failed",
+                  error: `invalid ${AGENT_QUESTIONS_KEY}: ${mapped.message}`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                  ...(usage === undefined ? {} : { usage }),
+                } satisfies StepOutcome;
+              }
+              return {
+                _tag: "awaiting_questions",
+                waitingReason: questionsWaitingReason(mapped.form),
+                form: mapped.form,
+                raisedFromDispatchId: dispatchId as string,
+              } satisfies StepOutcome;
+            }
+          }
+
+          // The reserved key is stripped before contract validation so an
+          // `allowUnknown: false` contract cannot reject it and it never
+          // reaches the repair path or a step's recorded output.
+          const output = stripQuestionsKey(rawOutput);
+          const diagnostic: OutputDiagnostic =
+            output === undefined
+              ? { failure: "no_block" }
+              : {
+                  output: output as object,
+                  rawBlock: encodeJsonString(output),
+                };
+
+          if (contract === undefined) {
+            if (output === undefined) {
+              return {
+                _tag: "failed",
+                error: "missing or invalid structured output",
+                failureClass: "agent_error",
+                ...(usage === undefined ? {} : { usage }),
+              } satisfies StepOutcome;
+            }
+            return {
+              _tag: "completed",
+              output,
+              ...(usage === undefined ? {} : { usage }),
+            } satisfies StepOutcome;
+          }
+
+          // Contract path: validate → one repair → fail.
+          let errors = validateStepOutput(contract, diagnostic);
+          if (errors.length === 0 && output !== undefined) {
+            return {
+              _tag: "completed",
+              output,
+              ...(usage === undefined ? {} : { usage }),
+            } satisfies StepOutcome;
+          }
+          if (errors.length === 0) {
+            errors = ["no fenced json block found"];
+          }
+
+          yield* committer
+            .commit({
+              type: "StepOutputInvalid",
+              eventId: (yield* ids.eventId()) as never,
+              ticketId: ctx.ticketId,
+              occurredAt: (yield* DateTime.now.pipe(Effect.map(DateTime.formatIso))) as never,
+              payload: {
+                stepRunId: ctx.stepRunId,
+                phase: "initial",
+                errors: errors as [string, ...string[]],
+              },
+            })
+            .pipe(Effect.catch(() => Effect.void));
+
+          const repairPrompt = renderRepairPrompt(contract, diagnostic, errors, providerBudget);
+          if (repairPrompt === null) {
+            return {
+              _tag: "failed",
+              error: `output contract violation (no repair budget): ${errors.join("; ")}`,
+              retryable: false,
+              contractViolation: true,
+              failureClass: "agent_error" as const,
+              ...(usage === undefined ? {} : { usage }),
+            } satisfies StepOutcome;
+          }
+
+          const repairDispatchId = yield* ids.eventId();
+          const repairResult = yield* runTurn(
+            {
+              dispatchId: repairDispatchId as string,
+              threadId: threadId as string,
+            },
+            repairPrompt,
+            " (output repair)",
+            "repair",
+          );
+          if ("awaitingUser" in repairResult.terminal) {
+            yield* cleanupStepSession(repairResult.threadId, repairResult.turnId);
+            yield* dispatch.confirmStep(ctx.stepRunId).pipe(Effect.catch(() => Effect.void));
+            const failUsage = yield* readStepUsage(threadId as string);
+            return {
+              _tag: "failed",
+              error: `output contract violation (repair awaited user): ${errors.join("; ")}`,
+              contractViolation: true,
+              failureClass: "agent_error" as const,
+              ...(failUsage === undefined ? {} : { usage: failUsage }),
+            } satisfies StepOutcome;
+          }
+          if (!repairResult.terminal.ok) {
+            yield* cleanupStepSession(repairResult.threadId, repairResult.turnId);
+            const failUsage = yield* readStepUsage(threadId as string);
+            return {
+              _tag: "failed",
+              error: repairResult.terminal.error ?? "repair turn failed",
+              contractViolation: true,
+              failureClass: "agent_error" as const,
+              ...(failUsage === undefined ? {} : { usage: failUsage }),
+            } satisfies StepOutcome;
+          }
+
+          // A repair turn can ask too. Detect BEFORE stripping: stripping alone
+          // would delete the question (permissive contract) or fail the step for
+          // an unexpected key (allowUnknown: false), and in both cases the agent
+          // asked and nobody was told.
+          if (step.allowQuestions === true) {
+            const repairStrict = yield* capturedOutputs.readFinalMessage({
+              stepRunId: ctx.stepRunId,
+              threadId: threadId as never,
+              turnId: repairResult.turnId,
+            });
+            const repairQuestions = isRecord(repairStrict)
+              ? repairStrict[AGENT_QUESTIONS_KEY]
+              : undefined;
+            if (repairQuestions !== undefined) {
+              const raisedRepair = yield* countQuestionRaises(ctx.stepRunId);
+              if (raisedRepair === null || raisedRepair >= MAX_QUESTION_ROUNDS) {
+                return {
+                  _tag: "failed",
+                  error: `agent asked more than ${String(MAX_QUESTION_ROUNDS)} rounds of questions`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                } satisfies StepOutcome;
+              }
+              const mappedRepair = mapAgentQuestions(repairQuestions);
+              if (!mappedRepair.ok) {
+                // Fail rather than fall through to strip-and-validate: the agent
+                // asked, and continuing would delete the question and report
+                // whatever was left as the step's result.
+                return {
+                  _tag: "failed",
+                  error: `invalid ${AGENT_QUESTIONS_KEY}: ${mappedRepair.message}`,
+                  retryable: false,
+                  failureClass: "agent_error",
+                } satisfies StepOutcome;
+              }
+              return {
+                _tag: "awaiting_questions",
+                waitingReason: questionsWaitingReason(mappedRepair.form),
+                form: mappedRepair.form,
+                // The REPAIR dispatch raised it, so recovery's idempotency check
+                // keys off the turn that actually asked.
+                raisedFromDispatchId: repairDispatchId as string,
+              } satisfies StepOutcome;
+            }
+          }
+          const repairedOutput = stripQuestionsKey(
+            yield* capturedOutputs.read({
+              stepRunId: ctx.stepRunId,
+              threadId: threadId as never,
+              turnId: repairResult.turnId,
+            }),
+          );
+          const repairDiagnostic: OutputDiagnostic =
+            repairedOutput === undefined
+              ? { failure: "no_block" }
+              : {
+                  output: repairedOutput as object,
+                  rawBlock: encodeJsonString(repairedOutput),
+                };
+          const repairErrors = validateStepOutput(contract, repairDiagnostic);
+          const finalUsage = yield* readStepUsage(threadId as string);
+          if (repairErrors.length === 0 && repairedOutput !== undefined) {
+            return {
+              _tag: "completed",
+              output: repairedOutput,
+              outputRepaired: true,
+              ...(finalUsage === undefined ? {} : { usage: finalUsage }),
+            } satisfies StepOutcome;
+          }
+          const finalErrors =
+            repairErrors.length > 0 ? repairErrors : (["no fenced json block found"] as const);
+          yield* committer
+            .commit({
+              type: "StepOutputInvalid",
+              eventId: (yield* ids.eventId()) as never,
+              ticketId: ctx.ticketId,
+              occurredAt: (yield* DateTime.now.pipe(Effect.map(DateTime.formatIso))) as never,
+              payload: {
+                stepRunId: ctx.stepRunId,
+                phase: "repair",
+                errors: [...finalErrors] as [string, ...string[]],
+              },
+            })
+            .pipe(Effect.catch(() => Effect.void));
+          return {
+            _tag: "failed",
+            error: `output contract violation after repair: ${finalErrors.join("; ")}`,
+            contractViolation: true,
+            failureClass: "agent_error" as const,
+            ...(finalUsage === undefined ? {} : { usage: finalUsage }),
+          } satisfies StepOutcome;
+        }
+        return {
+          _tag: "completed",
+          ...(usage === undefined ? {} : { usage }),
+        } satisfies StepOutcome;
+      }
+      if ("awaitingUser" in result.terminal) {
+        return {
+          _tag: "awaiting_user",
+          waitingReason: result.terminal.waitingReason,
+          providerThreadId: result.terminal.providerThreadId,
+          providerRequestId: result.terminal.providerRequestId,
+          providerResponseKind: result.terminal.providerResponseKind,
+          ...(result.terminal.providerQuestionId === undefined
+            ? {}
+            : { providerQuestionId: result.terminal.providerQuestionId }),
+        } satisfies StepOutcome;
+      }
+      // The turn may still be live (e.g. the terminal-wait timed out): stop
+      // the provider session so the agent cannot keep mutating the worktree
+      // while the pipeline routes on. Interrupting an already-terminal turn
+      // is a harmless no-op.
+      yield* cleanupStepSession(result.threadId, result.turnId);
+      const failureUsage = yield* readStepUsage(threadId as string);
+      const turnErr = result.terminal.error ?? "turn failed";
+      const failureClass =
+        turnErr === "turn did not reach a terminal state before timeout" ? "infra" : "agent_error";
+      return {
+        _tag: "failed",
+        error: turnErr,
+        failureClass,
+        ...(failureUsage === undefined ? {} : { usage: failureUsage }),
+      } satisfies StepOutcome;
+    });
+
+  const scriptTrustGuard = (ctx: Parameters<StepExecutorShape["execute"]>[0]) =>
+    Effect.gen(function* () {
+      const board = yield* read.getBoard(ctx.boardId);
+      if (board === null) {
+        return {
+          _tag: "failed",
+          error: "workflow board not found",
+        } satisfies StepOutcome;
+      }
+      const trusted = yield* scriptTrust.isTrusted(board.projectId as ProjectId);
+      if (!trusted) {
+        return {
+          _tag: "blocked",
+          reason: "Project not trusted to run scripts",
+        } satisfies StepOutcome;
+      }
+      return null;
+    });
+
+  const execute: StepExecutorShape["execute"] = (ctx) =>
+    Effect.gen(function* () {
+      const step = ctx.step;
+      if (step.type === "approval") {
+        return { _tag: "completed" } satisfies StepOutcome;
+      }
+      if (step.type === "fork") {
+        // Fork steps are resolved by the engine before dispatch (it spawns children
+        // and suspends the pipeline with `awaiting_children`), so the executor must
+        // never see one. Fail closed instead of falling through to the agent arm
+        // below, which would run the fork step as an agent turn.
+        return {
+          _tag: "failed",
+          error: "fork step reached the executor; forks are handled by the engine",
+          retryable: false,
+          failureClass: "infra",
+        } satisfies StepOutcome;
+      }
+      if (step.type === "script") {
+        return yield* prepareWorktreeStep(
+          ctx,
+          (worktree) => scriptExecutor.execute({ ctx, step, worktree }),
+          { preSetupGuard: () => scriptTrustGuard(ctx) },
+        );
+      }
+      if (step.type === "merge") {
+        return yield* prepareWorktreeStep(
+          ctx,
+          (worktree) =>
+            merges.merge({
+              ticketId: ctx.ticketId,
+              repoRoot: worktree.repoRoot,
+              worktreePath: worktree.path,
+              worktreeRef: worktree.worktreeRef,
+              step,
+            }),
+          // Merging needs no project dependencies installed in the worktree.
+          { skipSetup: true },
+        );
+      }
+      if (step.type === "pullRequest") {
+        // PR steps need no project dependencies installed in the worktree —
+        // they push/merge via gh. open and land share the same worktree prep.
+        return yield* prepareWorktreeStep(
+          ctx,
+          (worktree) =>
+            step.action === "open"
+              ? pullRequests.open({
+                  ticketId: ctx.ticketId,
+                  stepRunId: ctx.stepRunId,
+                  repoRoot: worktree.repoRoot,
+                  worktreePath: worktree.path,
+                  worktreeRef: worktree.worktreeRef,
+                  step,
+                })
+              : pullRequests.land({
+                  ticketId: ctx.ticketId,
+                  stepRunId: ctx.stepRunId,
+                  repoRoot: worktree.repoRoot,
+                  worktreePath: worktree.path,
+                  worktreeRef: worktree.worktreeRef,
+                  step,
+                }),
+          { skipSetup: true },
+        );
+      }
+      // Agent steps run the project's setup shell script via runSetup, which is
+      // arbitrary code — the same trust surface the script-step guard protects.
+      // But unlike a script step (whose whole purpose IS the untrusted script, so
+      // it blocks), the agent itself is not the untrusted surface. So gate ONLY
+      // the setup on project trust (gateSetupOnTrust): for an untrusted project
+      // the setup script is SKIPPED (never executed) while the agent step still
+      // runs. Merge/PR steps skip setup unconditionally.
+      return yield* prepareWorktreeStep(ctx, (worktree) => executeAgentStep(ctx, worktree, step), {
+        gateSetupOnTrust: true,
+      });
+    }).pipe(
+      // Keep the executor total, but surface the underlying cause — a bare
+      // "executor error" is undiagnosable from the board.
+      Effect.catch((error) =>
+        Effect.succeed<StepOutcome>({
+          _tag: "failed",
+          error: `executor error: ${executorErrorDetail(error)}`,
+          failureClass: "infra",
+        }),
+      ),
+    );
+
+  /**
+   * Restate the questions and the operator's answers for the continuation turn.
+   *
+   * Always restated rather than relying on provider session memory: the
+   * continuation may run on a different process after a restart, and on a
+   * provider with no resumable session there is nothing to remember.
+   */
+  const renderAnswersPrompt = (form: CheckpointForm, answers: CheckpointAnswers): string => {
+    const lines: Array<string> = [
+      "You paused to ask the operator some questions. They answered:",
+      "",
+    ];
+    for (const field of form.fields) {
+      if (field.kind === "decision") continue;
+      const answer = answers[field.key];
+      const rendered =
+        answer === undefined
+          ? "(no answer)"
+          : Array.isArray(answer)
+            ? answer.join(", ")
+            : String(answer);
+      lines.push(`- ${field.label}: ${rendered}`);
+    }
+    lines.push("", "Continue the task using those answers.");
+    return lines.join("\n");
+  };
+
+  const continueWithAnswers: StepExecutorShape["continueWithAnswers"] = ({ ctx, form, answers }) =>
+    Effect.gen(function* () {
+      const step = ctx.step;
+      // The thread the question was asked on. Persisted, so this works in a
+      // different process after a restart — which is the whole reason the
+      // assembly read exists.
+      const assembly = yield* dispatch
+        .getDispatchRequestForStep(ctx.stepRunId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (assembly === null) {
+        return {
+          _tag: "failed",
+          error: "question continuation lost its original dispatch",
+          retryable: false,
+          failureClass: "infra",
+        } satisfies StepOutcome;
+      }
+      if (step.type !== "agent") {
+        // Only an agent step can park on a question, so reaching here means the
+        // wait and the board definition disagree. Fail closed rather than
+        // running something else's step as an agent turn.
+        return {
+          _tag: "failed",
+          error: "question continuation reached a non-agent step",
+          retryable: false,
+          failureClass: "infra",
+        } satisfies StepOutcome;
+      }
+      // Through prepareWorktreeStep so the worktree LEASE is re-acquired: the
+      // original execute's lease is long gone by the time a human answers.
+      return yield* prepareWorktreeStep(
+        ctx,
+        (worktree) =>
+          executeAgentStep(ctx, worktree, step, {
+            answersBlock: renderAnswersPrompt(form, answers),
+            threadId: assembly.threadId as string,
+          }),
+        { gateSetupOnTrust: true },
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.succeed<StepOutcome>({
+          _tag: "failed",
+          error: `executor error: ${executorErrorDetail(error)}`,
+          failureClass: "infra",
+        }),
+      ),
+    );
+
+  return { execute, continueWithAnswers } satisfies StepExecutorShape;
+});
+
+export const RealStepExecutorLive = Layer.effect(StepExecutor, make);
+
+export const WorktreePortLive = Layer.effect(
+  WorktreePort,
+  Effect.gen(function* () {
+    const git = yield* GitWorkflowService;
+    const sql = yield* SqlClient.SqlClient;
+    const fileSystem = yield* FileSystem.FileSystem;
+
+    const canonicalizeExistingPath = (value: string) =>
+      fileSystem.realPath(value).pipe(Effect.orElseSucceed(() => value));
+
+    const repoRootForTicket = (ticketId: string) =>
+      wrapSql(
+        "ticket project lookup failed",
+        sql<TicketProjectRow>`
+          SELECT
+            projects.workspace_root AS "repoRoot",
+            projects.project_id AS "projectId"
+          FROM projection_ticket AS ticket
+          INNER JOIN projection_board AS board
+            ON board.board_id = ticket.board_id
+          INNER JOIN projection_projects AS projects
+            ON projects.project_id = board.project_id
+          WHERE ticket.ticket_id = ${ticketId}
+          LIMIT 1
+        `,
+      ).pipe(
+        Effect.flatMap((rows) => {
+          const row = rows[0];
+          return row?.repoRoot
+            ? Effect.succeed(row)
+            : Effect.fail(
+                new WorkflowEventStoreError({
+                  message: `project repo root not found for ticket ${ticketId}`,
+                }),
+              );
+        }),
+      );
+
+    const ensureWorktree: WorktreePortShape["ensureWorktree"] = (ticketId) =>
+      Effect.gen(function* () {
+        const project = yield* repoRootForTicket(ticketId as string);
+        const repoRoot = yield* canonicalizeExistingPath(project.repoRoot);
+        const projectId = project.projectId;
+        const worktreeRef = `workflow/${ticketId}`;
+        const refs = yield* git
+          .listRefs({ cwd: TrimmedNonEmptyString.make(repoRoot) })
+          .pipe(Effect.mapError(toExecutorError("worktree ref lookup failed")));
+        const existing = refs.refs.find((ref) => !ref.isRemote && ref.name === worktreeRef);
+        if (existing?.worktreePath) {
+          return {
+            repoRoot,
+            worktreeRef,
+            path: yield* canonicalizeExistingPath(existing.worktreePath),
+            projectId,
+          } satisfies WorktreeHandle;
+        }
+
+        const result = yield* git
+          .createWorktree(
+            existing
+              ? {
+                  cwd: TrimmedNonEmptyString.make(repoRoot),
+                  refName: TrimmedNonEmptyString.make(worktreeRef),
+                  path: null,
+                }
+              : {
+                  cwd: TrimmedNonEmptyString.make(repoRoot),
+                  refName: TrimmedNonEmptyString.make("HEAD"),
+                  newRefName: TrimmedNonEmptyString.make(worktreeRef),
+                  path: null,
+                },
+          )
+          .pipe(Effect.mapError(toExecutorError("worktree creation failed")));
+
+        return {
+          repoRoot,
+          worktreeRef: result.worktree.refName,
+          path: yield* canonicalizeExistingPath(result.worktree.path),
+          projectId,
+        } satisfies WorktreeHandle;
+      });
+
+    return { ensureWorktree } satisfies WorktreePortShape;
+  }),
+);

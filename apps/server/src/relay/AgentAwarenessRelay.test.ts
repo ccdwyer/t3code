@@ -251,7 +251,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       id: threadId,
       projectId: "project-1" as ProjectId,
       title: "Deleted thread",
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
       session: null,
       latestTurn: null,
       updatedAt: "2026-05-25T00:00:00.000Z",
@@ -296,7 +299,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
     const baseThread = {
       projectId,
       title: "Run remote agent",
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.4",
+      },
       runtimeMode: "full-access",
       interactionMode: "default",
       branch: null,
@@ -437,7 +443,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           id: threadId,
           projectId,
           title: "Run remote agent",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          },
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,
@@ -491,6 +500,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
               Effect.as(Option.some(thread)),
             ),
           getProjectShellById: () => Effect.succeed(Option.some(project)),
+          isThreadHidden: () => Effect.succeed(false),
         } as unknown as ProjectionSnapshotQueryShape;
 
         const descriptor = {
@@ -595,7 +605,10 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           id: threadId,
           projectId,
           title: "Run remote agent",
-          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          },
           runtimeMode: "full-access",
           interactionMode: "default",
           branch: null,
@@ -678,6 +691,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
               } satisfies OrchestrationShellSnapshot),
             getThreadShellById: () => Effect.succeed(Option.some(thread)),
             getProjectShellById: () => Effect.succeed(Option.some(project)),
+            isThreadHidden: () => Effect.succeed(false),
           } as unknown as ProjectionSnapshotQueryShape),
         );
 

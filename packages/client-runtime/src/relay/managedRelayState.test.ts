@@ -49,6 +49,7 @@ const device = {
     notifyOnInput: true,
     notifyOnCompletion: true,
     notifyOnFailure: true,
+    notifyOnBlocked: true,
   },
   liveActivities: {
     enabled: true,
@@ -310,7 +311,10 @@ describe("createManagedRelayQueryManager", () => {
     const onQueryEvent = vi.fn();
     const manager = createManager(undefined, onQueryEvent);
     setSession();
-    const atom = manager.environmentStatusAtom({ accountId: "account-1", environment });
+    const atom = manager.environmentStatusAtom({
+      accountId: "account-1",
+      environment,
+    });
 
     registry.get(atom);
     await vi.waitFor(() => {
@@ -346,7 +350,10 @@ describe("createManagedRelayQueryManager", () => {
       getEnvironmentStatus: () => Effect.succeed(mismatchedStatus),
     });
     setSession();
-    const atom = manager.environmentStatusAtom({ accountId: "account-1", environment });
+    const atom = manager.environmentStatusAtom({
+      accountId: "account-1",
+      environment,
+    });
 
     registry.get(atom);
     await vi.waitFor(() => {
@@ -368,7 +375,10 @@ describe("createManagedRelayQueryManager", () => {
         ),
     });
     setSession();
-    const atom = manager.environmentStatusAtom({ accountId: "account-1", environment });
+    const atom = manager.environmentStatusAtom({
+      accountId: "account-1",
+      environment,
+    });
 
     registry.get(atom);
     await vi.waitFor(() => {

@@ -1,0 +1,2330 @@
+import * as Schema from "effect/Schema";
+
+import {
+  ApprovalRequestId,
+  IsoDateTime,
+  MessageId,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
+import { ProviderOptionSelection } from "./model.ts";
+
+export const WORKFLOW_WS_METHODS = {
+  listBoards: "workflow.listBoards",
+  createBoard: "workflow.createBoard",
+  deleteBoard: "workflow.deleteBoard",
+  renameBoard: "workflow.renameBoard",
+  getBoard: "workflow.getBoard",
+  getBoardDefinition: "workflow.getBoardDefinition",
+  saveBoardDefinition: "workflow.saveBoardDefinition",
+  listBoardVersions: "workflow.listBoardVersions",
+  getBoardVersion: "workflow.getBoardVersion",
+  subscribeBoard: "workflow.subscribeBoard",
+  createTicket: "workflow.createTicket",
+  editTicket: "workflow.editTicket",
+  editTicketContextPack: "workflow.editTicketContextPack",
+  deleteTicket: "workflow.deleteTicket",
+  moveTicket: "workflow.moveTicket",
+  invokeParkAction: "workflow.invokeParkAction",
+  runLane: "workflow.runLane",
+  resolveApproval: "workflow.resolveApproval",
+  answerTicketStep: "workflow.answerTicketStep",
+  /** Mid-run guidance into a live agent step (see live-agent-steering SPEC). */
+  steerTicketStep: "workflow.steerTicketStep",
+  postTicketMessage: "workflow.postTicketMessage",
+  editTicketMessage: "workflow.editTicketMessage",
+  setProjectScriptTrust: "workflow.setProjectScriptTrust",
+  cancelStep: "workflow.cancelStep",
+  getTicketDetail: "workflow.getTicketDetail",
+  getTicketTimeline: "workflow.getTicketTimeline",
+  getBoardTimeline: "workflow.getBoardTimeline",
+  forkTicketFromEvent: "workflow.forkTicketFromEvent",
+  getTicketDiff: "workflow.getTicketDiff",
+  intakeTickets: "workflow.intakeTickets",
+  listTicketArtifacts: "workflow.listTicketArtifacts",
+  readTicketArtifact: "workflow.readTicketArtifact",
+  getWebhookConfig: "workflow.getWebhookConfig",
+  getBoardDigest: "workflow.getBoardDigest",
+  dryRunBoard: "workflow.dryRunBoard",
+  listNeedsAttentionTickets: "workflow.listNeedsAttentionTickets",
+  listWorkSourceConnections: "workflow.listWorkSourceConnections",
+  createWorkSourceConnection: "workflow.createWorkSourceConnection",
+  deleteWorkSourceConnection: "workflow.deleteWorkSourceConnection",
+  listOutboundConnections: "workflow.listOutboundConnections",
+  createOutboundConnection: "workflow.createOutboundConnection",
+  deleteOutboundConnection: "workflow.deleteOutboundConnection",
+  getBoardMetrics: "workflow.getBoardMetrics",
+  importBoard: "workflow.importBoard",
+  proposeBoardImprovement: "workflow.proposeBoardImprovement",
+  listBoardProposals: "workflow.listBoardProposals",
+  getBoardProposal: "workflow.getBoardProposal",
+  resolveBoardProposal: "workflow.resolveBoardProposal",
+  revertBoardProposal: "workflow.revertBoardProposal",
+  createWorkflowBoard: "workflow.createWorkflowBoard",
+  generateWorkflowDraft: "workflow.generateWorkflowDraft",
+  listBoardTemplates: "workflow.listBoardTemplates",
+  listImportableWorkItems: "workflow.listImportableWorkItems",
+  importWorkItems: "workflow.importWorkItems",
+} as const;
+
+/**
+ * Park-action drift error message fragments — the single source of truth shared
+ * by the server (which emits engine errors containing these) and the web (whose
+ * `isParkActionDriftError` substring-matches them). The RPC edge squashes an
+ * engine rejection to a plain `Error.message`, and the `invokeParkAction`
+ * handler surfaces the engine's cause message through the wire, so drift
+ * detection is a substring match against these exact fragments — never
+ * hand-copied strings on either side.
+ */
+export const PARK_ACTION_DRIFT_MESSAGES = {
+  /** The parked action no longer resolves against the CURRENT board definition. */
+  definitionChanged: "park actions unavailable — board definition changed",
+  /**
+   * `actionIndex` resolved cleanly against the current definition but points
+   * past the end of the re-resolved action list. The server treats this as a
+   * stale/bogus client request (not true definition drift), but the web still
+   * refreshes the board defensively so the dead inline button repairs.
+   */
+  indexOutOfRange: "park action index out of range",
+  /**
+   * Suffix fragment for the "target lane was deleted" case. The full server
+   * message is `park action targets lane '<lane>' which <targetLaneMissing>`.
+   */
+  targetLaneMissing: "no longer exists in the board definition",
+} as const;
+
+/**
+ * Message fragment for "this ticket has no attached worktree yet" — shared by
+ * the server (which emits it from the ticket-worktree resolver) and the web
+ * (which renders a quiet "no changes yet" empty state instead of a failure
+ * card). Same single-source-of-truth idiom as PARK_ACTION_DRIFT_MESSAGES.
+ */
+export const TICKET_NO_WORKTREE_MESSAGE = "does not have an attached worktree" as const;
+
+/** True when an RPC error message is the benign pre-first-run no-worktree case. */
+export const isTicketNoWorktreeMessage = (message: string): boolean =>
+  message.includes(TICKET_NO_WORKTREE_MESSAGE);
+
+const makeId = <Brand extends string>(brand: Brand) =>
+  TrimmedNonEmptyString.pipe(Schema.brand(brand));
+
+export const BoardId = makeId("BoardId");
+export type BoardId = typeof BoardId.Type;
+
+export const TicketId = makeId("TicketId");
+export type TicketId = typeof TicketId.Type;
+
+export const PipelineRunId = makeId("PipelineRunId");
+export type PipelineRunId = typeof PipelineRunId.Type;
+
+export const StepRunId = makeId("StepRunId");
+export type StepRunId = typeof StepRunId.Type;
+
+export const SetupRunId = makeId("SetupRunId");
+export type SetupRunId = typeof SetupRunId.Type;
+
+export const ScriptRunId = makeId("ScriptRunId");
+export type ScriptRunId = typeof ScriptRunId.Type;
+
+export const DispatchId = makeId("DispatchId");
+export type DispatchId = typeof DispatchId.Type;
+
+export const LaneEntryToken = makeId("LaneEntryToken");
+export type LaneEntryToken = typeof LaneEntryToken.Type;
+
+export const WorkflowEventId = makeId("WorkflowEventId");
+export type WorkflowEventId = typeof WorkflowEventId.Type;
+
+export const LaneKey = TrimmedNonEmptyString.pipe(Schema.brand("LaneKey"));
+export type LaneKey = typeof LaneKey.Type;
+
+export const StepKey = TrimmedNonEmptyString.pipe(Schema.brand("StepKey"));
+export type StepKey = typeof StepKey.Type;
+
+export const WorkflowBoardName = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type WorkflowBoardName = typeof WorkflowBoardName.Type;
+
+export const StepInstruction = Schema.Union([
+  Schema.String,
+  Schema.Struct({ file: TrimmedNonEmptyString }),
+]);
+export type StepInstruction = typeof StepInstruction.Type;
+
+export const AgentSelection = Schema.Struct({
+  instance: TrimmedNonEmptyString,
+  model: TrimmedNonEmptyString,
+  // Reasoning effort / provider option selections (the same shape the chat
+  // composer dispatches), applied when this agent step runs. Canonical array
+  // form only — this is a new field, so there is no legacy object form to
+  // tolerate.
+  options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+});
+export type AgentSelection = typeof AgentSelection.Type;
+
+export const StepRetryEscalation = Schema.Struct({
+  instance: Schema.optional(TrimmedNonEmptyString),
+  model: Schema.optional(TrimmedNonEmptyString),
+  options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+});
+export type StepRetryEscalation = typeof StepRetryEscalation.Type;
+
+export const StepClassRetryPolicy = Schema.Struct({
+  action: Schema.optional(Schema.Literals(["retry", "backoff", "escalate_model", "give_up"])),
+  backoffMs: Schema.optional(Schema.Int),
+  maxAttempts: Schema.optional(Schema.Int),
+});
+export type StepClassRetryPolicy = typeof StepClassRetryPolicy.Type;
+
+export const StepRetryByClass = Schema.Struct({
+  agent_error: Schema.optional(StepClassRetryPolicy),
+  script_failure: Schema.optional(StepClassRetryPolicy),
+  timeout: Schema.optional(StepClassRetryPolicy),
+  infra: Schema.optional(StepClassRetryPolicy),
+  unknown: Schema.optional(StepClassRetryPolicy),
+});
+export type StepRetryByClass = typeof StepRetryByClass.Type;
+
+export const StepRetryPolicy = Schema.Struct({
+  // Total attempts including the first run. Lint enforces 2..5; the engine
+  // additionally clamps so a hand-edited file cannot retry unboundedly.
+  maxAttempts: Schema.Int,
+  escalate: Schema.optional(StepRetryEscalation),
+  byClass: Schema.optional(StepRetryByClass),
+});
+export type StepRetryPolicy = typeof StepRetryPolicy.Type;
+
+export const WorkflowStepType = Schema.Union([
+  Schema.Literal("agent"),
+  Schema.Literal("approval"),
+  Schema.Literal("script"),
+  Schema.Literal("merge"),
+  Schema.Literal("pullRequest"),
+  Schema.Literal("fork"),
+]);
+export type WorkflowStepType = typeof WorkflowStepType.Type;
+
+// A human-facing transition out of a lane, rendered as a button on tickets
+// in that lane ("Approve & land", "Send back", …). Purely declarative sugar
+// over moveTicket — the engine treats it like any manual move.
+export const WorkflowLaneAction = Schema.Struct({
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(48)),
+  to: LaneKey,
+  hint: Schema.optional(Schema.String.check(Schema.isMaxLength(160))),
+});
+export type WorkflowLaneAction = typeof WorkflowLaneAction.Type;
+
+export const WorkflowParkSubstate = Schema.Literals(["issue", "waiting"]);
+export type WorkflowParkSubstate = typeof WorkflowParkSubstate.Type;
+
+// A route target that parks the ticket in place instead of moving it to
+// another lane — see docs/superpowers/specs/2026-07-22-workflow-substates-design.md.
+export const WorkflowParkTarget = Schema.Struct({
+  park: WorkflowParkSubstate,
+  label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  // action.to stays LaneKey — parks cannot chain into another park.
+  actions: Schema.NonEmptyArray(WorkflowLaneAction),
+});
+export type WorkflowParkTarget = typeof WorkflowParkTarget.Type;
+
+// The union used everywhere a routing target was previously a bare LaneKey:
+// lane `on.*`, `transitions[].to`, `step.on.*`, and `lane.onEvent[].to`. A
+// bare LaneKey is back-compat for a plain lane move.
+export const WorkflowRouteTarget = Schema.Union([LaneKey, WorkflowParkTarget]);
+export type WorkflowRouteTarget = typeof WorkflowRouteTarget.Type;
+
+export const isParkTarget = (t: WorkflowRouteTarget): t is WorkflowParkTarget =>
+  typeof t !== "string";
+
+export const StepRouting = Schema.Struct({
+  success: Schema.optional(WorkflowRouteTarget),
+  failure: Schema.optional(WorkflowRouteTarget),
+  blocked: Schema.optional(WorkflowRouteTarget),
+});
+export type StepRouting = typeof StepRouting.Type;
+
+/** Field name for agent-step output contracts (no prototype-ish names). */
+export const StepOutputFieldName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+);
+export type StepOutputFieldName = typeof StepOutputFieldName.Type;
+
+export const StepOutputFieldType = Schema.Literals([
+  "string",
+  "number",
+  "boolean",
+  "enum",
+  "string[]",
+]);
+export type StepOutputFieldType = typeof StepOutputFieldType.Type;
+
+export const StepOutputContractField = Schema.Struct({
+  type: StepOutputFieldType,
+  // Absent = required. `required: false` marks the field optional.
+  required: Schema.optional(Schema.Boolean),
+  // enum only: allowed string values (no triple-backtick — would break fences).
+  values: Schema.optional(
+    Schema.NonEmptyArray(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  ),
+});
+export type StepOutputContractField = typeof StepOutputContractField.Type;
+
+export const StepOutputContract = Schema.Struct({
+  fields: Schema.Record(StepOutputFieldName, StepOutputContractField),
+  // Absent/true = unknown keys allowed. false = reject extras.
+  allowUnknown: Schema.optional(Schema.Boolean),
+});
+export type StepOutputContract = typeof StepOutputContract.Type;
+
+export const AgentStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("agent"),
+  agent: AgentSelection,
+  instruction: StepInstruction,
+  captureOutput: Schema.optional(Schema.Boolean),
+  // Resume this agent's own provider session across steps/loops within the
+  // lane, reusing a stable workflow threadId per (ticket, lane, agentKey).
+  // Capability-gated to resumable providers; incompatible with a panel.
+  continueSession: Schema.optional(Schema.Boolean),
+  // Reviewer panel: run this many independent turns of the same step and
+  // take the majority verdict from their captured outputs. Requires
+  // captureOutput; lint enforces 2..5.
+  panel: Schema.optional(Schema.Int),
+  // Declared shape for captureOutput JSON. Requires captureOutput.
+  outputContract: Schema.optional(StepOutputContract),
+  /**
+   * Let this agent pause and ask the operator a question mid-step.
+   *
+   * The agent emits a reserved `__questions` block in its captured output; the
+   * server turns it into a CheckpointForm and parks the step until it is
+   * answered, then runs a continuation turn carrying the answers. Requires
+   * captureOutput (capture parsing is what reads the block) and is incompatible
+   * with panel — lint enforces both.
+   */
+  allowQuestions: Schema.optional(Schema.Boolean),
+  retry: Schema.optional(StepRetryPolicy),
+  on: Schema.optional(StepRouting),
+});
+
+/**
+ * Path-safe so `answers.<fieldKey>` can be addressed from a JsonLogic dot-path.
+ *
+ * The routing-context builder does not yet expose answers, so a lane transition
+ * cannot read them today; the constraint exists so that wiring it later cannot
+ * be blocked by keys already persisted with unaddressable names.
+ */
+export const CheckpointFieldKey = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_-]{1,40}$/),
+).pipe(Schema.brand("CheckpointFieldKey"));
+export type CheckpointFieldKey = typeof CheckpointFieldKey.Type;
+
+/** What a decision maps to for routing: the same terminals a step already has. */
+export const CheckpointOutcome = Schema.Literals(["success", "failure", "blocked"]);
+export type CheckpointOutcome = typeof CheckpointOutcome.Type;
+
+export const CheckpointOption = Schema.Struct({
+  value: TrimmedNonEmptyString.check(Schema.isMaxLength(40)),
+  label: TrimmedNonEmptyString.check(Schema.isMaxLength(48)),
+});
+export type CheckpointOption = typeof CheckpointOption.Type;
+
+export const CheckpointDecisionOption = Schema.Struct({
+  ...CheckpointOption.fields,
+  outcome: CheckpointOutcome,
+  hint: Schema.optional(Schema.String.check(Schema.isMaxLength(160))),
+});
+export type CheckpointDecisionOption = typeof CheckpointDecisionOption.Type;
+
+export const CheckpointFormField = Schema.Union([
+  Schema.Struct({
+    // Rendered as the submit buttons; its chosen option carries the outcome.
+    kind: Schema.Literal("decision"),
+    key: CheckpointFieldKey,
+    label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+    options: Schema.NonEmptyArray(CheckpointDecisionOption),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("select"),
+    key: CheckpointFieldKey,
+    label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    options: Schema.NonEmptyArray(CheckpointOption),
+    required: Schema.optional(Schema.Boolean),
+    /**
+     * Accept an answer that is not one of `options`.
+     *
+     * Without this a select can only ever return a listed value, so an agent
+     * question offering choices could not also accept "none of these". The
+     * snapshot validator is the only place that enforces it — see
+     * validateCheckpointSubmission.
+     */
+    allowOther: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("text"),
+    key: CheckpointFieldKey,
+    label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    placeholder: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
+    required: Schema.optional(Schema.Boolean),
+    maxLength: Schema.optional(Schema.Int),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("checklist"),
+    key: CheckpointFieldKey,
+    label: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+    items: Schema.NonEmptyArray(CheckpointOption),
+    /** At least one item checked before a success outcome is allowed. */
+    required: Schema.optional(Schema.Boolean),
+    /** Every item checked before a success outcome is allowed. */
+    requireAll: Schema.optional(Schema.Boolean),
+  }),
+]);
+export type CheckpointFormField = typeof CheckpointFormField.Type;
+
+export const CheckpointForm = Schema.Struct({
+  fields: Schema.NonEmptyArray(CheckpointFormField),
+});
+export type CheckpointForm = typeof CheckpointForm.Type;
+
+/**
+ * Answer values: select/text produce a string, checklist an array of checked
+ * option values.
+ *
+ * The caps are schema-level on purpose — they bound decode cost before any
+ * handler code runs. The engine still re-validates per-field limits against the
+ * form SNAPSHOT, because these bounds are the outer envelope, not the form's
+ * own rules.
+ */
+export const CheckpointAnswerValue = Schema.Union([
+  Schema.String.check(Schema.isMaxLength(2000)),
+  Schema.Array(Schema.String.check(Schema.isMaxLength(40))).check(Schema.isMaxLength(15)),
+]);
+export type CheckpointAnswerValue = typeof CheckpointAnswerValue.Type;
+
+export const CheckpointAnswers = Schema.Record(CheckpointFieldKey, CheckpointAnswerValue);
+export type CheckpointAnswers = typeof CheckpointAnswers.Type;
+
+export const ApprovalStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("approval"),
+  prompt: Schema.optional(Schema.String),
+  /** Turns the bare Approve/Reject pair into a structured checkpoint. */
+  form: Schema.optional(CheckpointForm),
+  on: Schema.optional(StepRouting),
+});
+
+export const ScriptStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("script"),
+  run: TrimmedNonEmptyString,
+  timeout: Schema.optional(Schema.DurationFromString),
+  cwd: Schema.optional(Schema.String),
+  allowFailure: Schema.optional(Schema.Boolean),
+  retry: Schema.optional(StepRetryPolicy),
+  on: Schema.optional(StepRouting),
+});
+export type ScriptStep = typeof ScriptStep.Type;
+
+export const MergeStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("merge"),
+  // Branch that must be checked out at the repo root for the merge to run;
+  // when unset the merge lands on whatever branch is currently checked out.
+  // The engine never switches the user's branch.
+  target: Schema.optional(TrimmedNonEmptyString),
+  commitMessage: Schema.optional(Schema.String),
+  // Repo-relative working files (e.g. PLAN.md / REVIEW.md) removed from the
+  // worktree before the snapshot commit so they never land in the target
+  // branch.
+  cleanupPaths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  on: Schema.optional(StepRouting),
+});
+export type MergeStep = typeof MergeStep.Type;
+
+export const PullRequestStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("pullRequest"),
+  action: Schema.Literals(["open", "land"]),
+  // action: "open" — base defaults to the repo's default branch (resolved
+  // via gh at run time); templates use the standard {{ticket.*}} placeholders.
+  base: Schema.optional(TrimmedNonEmptyString),
+  draft: Schema.optional(Schema.Boolean),
+  titleTemplate: Schema.optional(TrimmedNonEmptyString),
+  bodyTemplate: Schema.optional(Schema.String),
+  // action: "land"
+  strategy: Schema.optional(Schema.Literals(["squash", "merge", "rebase"])),
+  deleteBranch: Schema.optional(Schema.Boolean),
+  on: Schema.optional(StepRouting),
+});
+export type PullRequestStep = typeof PullRequestStep.Type;
+
+export const ForkChildKey = TrimmedNonEmptyString.check(Schema.isMaxLength(48)).pipe(
+  Schema.brand("ForkChildKey"),
+);
+export type ForkChildKey = typeof ForkChildKey.Type;
+
+export const ForkChildSpec = Schema.Struct({
+  key: ForkChildKey,
+  lane: LaneKey,
+  titleTemplate: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  descriptionTemplate: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))),
+  dependsOn: Schema.optional(Schema.Array(ForkChildKey)),
+  tokenBudget: Schema.optional(NonNegativeInt),
+});
+export type ForkChildSpec = typeof ForkChildSpec.Type;
+
+export const ForkJoinPolicy = Schema.Struct({
+  require: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  onBranchFailure: Schema.optional(Schema.Literals(["failFast", "waitImpossible"])),
+});
+export type ForkJoinPolicy = typeof ForkJoinPolicy.Type;
+
+export const ForkStep = Schema.Struct({
+  key: StepKey,
+  type: Schema.Literal("fork"),
+  children: Schema.NonEmptyArray(ForkChildSpec),
+  join: Schema.optional(ForkJoinPolicy),
+  on: Schema.optional(StepRouting),
+});
+export type ForkStep = typeof ForkStep.Type;
+
+export const WorkflowStep = Schema.Union([
+  AgentStep,
+  ApprovalStep,
+  ScriptStep,
+  MergeStep,
+  PullRequestStep,
+  ForkStep,
+]);
+export type WorkflowStep = typeof WorkflowStep.Type;
+
+export const LaneEntry = Schema.Union([Schema.Literal("auto"), Schema.Literal("manual")]);
+export type LaneEntry = typeof LaneEntry.Type;
+
+export const LaneRouting = Schema.Struct({
+  success: Schema.optional(WorkflowRouteTarget),
+  failure: Schema.optional(WorkflowRouteTarget),
+  blocked: Schema.optional(WorkflowRouteTarget),
+});
+export type LaneRouting = typeof LaneRouting.Type;
+
+export const JsonLogicRule = Schema.Unknown;
+export type JsonLogicRule = typeof JsonLogicRule.Type;
+
+export const WorkflowLaneTransition = Schema.Struct({
+  when: JsonLogicRule,
+  to: WorkflowRouteTarget,
+});
+export type WorkflowLaneTransition = typeof WorkflowLaneTransition.Type;
+
+// An external-event matcher: when a webhook event with this name correlates
+// to a ticket sitting in this lane (and the optional predicate over
+// {event: {name, payload}} passes), the ticket moves to `to`.
+export const WorkflowLaneEvent = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  when: Schema.optional(JsonLogicRule),
+  to: WorkflowRouteTarget,
+});
+export type WorkflowLaneEvent = typeof WorkflowLaneEvent.Type;
+
+/** Per-lane time budget. On breach the board escalates or (Phase B) notifies. */
+export const WorkflowLaneSla = Schema.Struct({
+  budget: Schema.DurationFromString, // e.g. "4 hours"
+  // Route on breach; absent = notify-only (Phase B). Phase A's editor requires it.
+  escalateTo: Schema.optional(LaneKey),
+});
+export type WorkflowLaneSla = typeof WorkflowLaneSla.Type;
+
+export const WorkflowLane = Schema.Struct({
+  key: LaneKey,
+  name: TrimmedNonEmptyString,
+  entry: LaneEntry,
+  actions: Schema.optional(Schema.Array(WorkflowLaneAction)),
+  onEvent: Schema.optional(Schema.Array(WorkflowLaneEvent)),
+  pipeline: Schema.optional(Schema.Array(WorkflowStep)),
+  on: Schema.optional(LaneRouting),
+  transitions: Schema.optional(Schema.Array(WorkflowLaneTransition)),
+  wipLimit: Schema.optional(Schema.Int),
+  color: Schema.optional(Schema.String),
+  terminal: Schema.optional(Schema.Boolean),
+  retention: Schema.optional(Schema.DurationFromString),
+  sla: Schema.optional(WorkflowLaneSla),
+});
+export type WorkflowLane = typeof WorkflowLane.Type;
+
+export const WorkflowParallelismSettings = Schema.Struct({
+  conflictPolicy: Schema.optional(Schema.Literals(["off", "warn", "serialize"])),
+  rebaseOnSiblingMerge: Schema.optional(Schema.Boolean),
+  overlapIgnorePaths: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+});
+export type WorkflowParallelismSettings = typeof WorkflowParallelismSettings.Type;
+
+export const WorkflowSettings = Schema.Struct({
+  maxConcurrentTickets: Schema.optional(Schema.Int),
+  parallelism: Schema.optional(WorkflowParallelismSettings),
+});
+export type WorkflowSettings = typeof WorkflowSettings.Type;
+
+// ── Work-source types (defined here to avoid an import cycle: workSource.ts
+//    imports LaneKey from this file, so this file must not import from
+//    workSource.ts). workSource.ts re-exports these for convenience. ──────────
+
+const _SourceId = TrimmedNonEmptyString.pipe(Schema.brand("SourceId"));
+/** Branded schema for a work-source identifier. `SourceId.is(v)` is a type guard. */
+export const SourceId = Object.assign(_SourceId, { is: Schema.is(_SourceId) });
+export type SourceId = typeof _SourceId.Type;
+
+export const WorkSourceProviderName = Schema.Literals(["github", "asana", "jira"]);
+export type WorkSourceProviderName = typeof WorkSourceProviderName.Type;
+
+export const WorkSourceAutoPull = Schema.Struct({ rule: JsonLogicRule });
+export type WorkSourceAutoPull = typeof WorkSourceAutoPull.Type;
+
+export const WorkflowSourceConfig = Schema.Struct({
+  id: SourceId,
+  provider: WorkSourceProviderName,
+  connectionRef: TrimmedNonEmptyString,
+  selector: Schema.Unknown, // validated against the provider's selector schema by lint
+  destinationLane: LaneKey,
+  closedLane: LaneKey,
+  enabled: Schema.optional(Schema.Boolean),
+  syncIntervalSec: Schema.optional(Schema.Int),
+  autoPull: Schema.optional(WorkSourceAutoPull),
+});
+export type WorkflowSourceConfig = typeof WorkflowSourceConfig.Type;
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const OutboundRuleId = makeId("OutboundRuleId");
+export type OutboundRuleId = typeof OutboundRuleId.Type;
+
+export const OutboundTrigger = Schema.Literals([
+  "needs_attention",
+  "blocked",
+  "done",
+  "lane_entered",
+]);
+export type OutboundTrigger = typeof OutboundTrigger.Type;
+
+export const OutboundFormatter = Schema.Literals(["generic", "slack"]);
+export type OutboundFormatter = typeof OutboundFormatter.Type;
+
+export const WorkflowOutboundRule = Schema.Struct({
+  id: OutboundRuleId,
+  on: OutboundTrigger,
+  when: Schema.optional(JsonLogicRule),
+  to: TrimmedNonEmptyString,
+  as: OutboundFormatter,
+  enabled: Schema.Boolean,
+});
+export type WorkflowOutboundRule = typeof WorkflowOutboundRule.Type;
+
+export const WorkflowDefinition = Schema.Struct({
+  name: WorkflowBoardName,
+  settings: Schema.optional(WorkflowSettings),
+  sources: Schema.optional(Schema.Array(WorkflowSourceConfig)),
+  outbound: Schema.optional(Schema.Array(WorkflowOutboundRule)),
+  lanes: Schema.Array(WorkflowLane),
+});
+export type WorkflowDefinition = typeof WorkflowDefinition.Type;
+
+export const WorkflowDefinitionEncoded = Schema.toEncoded(WorkflowDefinition);
+export type WorkflowDefinitionEncoded = typeof WorkflowDefinitionEncoded.Type;
+
+export const WorkflowLintCode = Schema.Union([
+  Schema.Literal("duplicate_lane_key"),
+  Schema.Literal("duplicate_step_key"),
+  Schema.Literal("missing_lane_ref"),
+  Schema.Literal("unknown_provider_instance"),
+  Schema.Literal("missing_instruction_file"),
+  Schema.Literal("unsafe_instruction_path"),
+  Schema.Literal("auto_lane_cycle"),
+  Schema.Literal("unreachable_terminal"),
+  Schema.Literal("invalid_json_logic"),
+  Schema.Literal("unknown_predicate_path"),
+  Schema.Literal("unsafe_step_key"),
+  Schema.Literal("invalid_wip_limit"),
+  Schema.Literal("invalid_retention"),
+  Schema.Literal("invalid_retry"),
+  Schema.Literal("invalid_panel"),
+  Schema.Literal("unknown_template_placeholder"),
+  Schema.Literal("invalid_step"),
+  Schema.Literal("invalid_source"),
+  Schema.Literal("duplicate_source_id"),
+  Schema.Literal("invalid_outbound"),
+  Schema.Literal("duplicate_outbound_id"),
+  Schema.Literal("invalid_continue_session"),
+  Schema.Literal("invalid_handoff_reference"),
+  Schema.Literal("invalid_sla"),
+  Schema.Literal("invalid_output_contract"),
+  Schema.Literal("invalid_allow_questions"),
+  Schema.Literal("invalid_fork"),
+]);
+export type WorkflowLintCode = typeof WorkflowLintCode.Type;
+
+export const WorkflowLintError = Schema.Struct({
+  code: WorkflowLintCode,
+  message: Schema.String,
+  laneKey: Schema.optional(LaneKey),
+  stepKey: Schema.optional(StepKey),
+  transitionIndex: Schema.optional(Schema.Int),
+});
+export type WorkflowLintError = typeof WorkflowLintError.Type;
+
+export const WorkflowGetBoardDefinitionResult = Schema.Struct({
+  definition: WorkflowDefinitionEncoded,
+  versionHash: Schema.String,
+});
+export type WorkflowGetBoardDefinitionResult = typeof WorkflowGetBoardDefinitionResult.Type;
+
+export const WorkflowCreateBoardInput = Schema.Struct({
+  projectId: ProjectId,
+  name: WorkflowBoardName,
+  agent: AgentSelection,
+});
+export type WorkflowCreateBoardInput = typeof WorkflowCreateBoardInput.Type;
+
+export const WorkflowRenameBoardInput = Schema.Struct({
+  boardId: BoardId,
+  name: WorkflowBoardName,
+});
+export type WorkflowRenameBoardInput = typeof WorkflowRenameBoardInput.Type;
+
+export const WorkflowBoardVersionSource = Schema.Literals([
+  "create",
+  "save",
+  "revert",
+  "import",
+  "rename",
+  "self-improve",
+  "self-improve-revert",
+]);
+export type WorkflowBoardVersionSource = typeof WorkflowBoardVersionSource.Type;
+
+export const WorkflowBoardVersionSummary = Schema.Struct({
+  versionId: Schema.Int,
+  versionHash: Schema.String,
+  source: WorkflowBoardVersionSource,
+  createdAt: IsoDateTime,
+  isCurrent: Schema.Boolean,
+});
+export type WorkflowBoardVersionSummary = typeof WorkflowBoardVersionSummary.Type;
+
+export const WorkflowGetBoardVersionResult = Schema.Struct({
+  versionId: Schema.Int,
+  definition: WorkflowDefinitionEncoded,
+  versionHash: Schema.String,
+  source: WorkflowBoardVersionSource,
+  createdAt: IsoDateTime,
+});
+export type WorkflowGetBoardVersionResult = typeof WorkflowGetBoardVersionResult.Type;
+
+const EventBase = {
+  eventId: WorkflowEventId,
+  ticketId: TicketId,
+  streamVersion: Schema.Int,
+  occurredAt: IsoDateTime,
+};
+
+export const TicketStatus = Schema.Union([
+  Schema.Literal("idle"),
+  Schema.Literal("running"),
+  Schema.Literal("waiting_on_user"),
+  Schema.Literal("blocked"),
+  Schema.Literal("queued"),
+  Schema.Literal("done"),
+  Schema.Literal("failed"),
+  Schema.Literal("parked"),
+  Schema.Literal("forked"),
+]);
+export type TicketStatus = typeof TicketStatus.Type;
+
+// Intentional copy — keep in sync with WorkflowTicketAttentionKind in relay.ts.
+export const WorkflowTicketAttentionKind = Schema.Literals([
+  "waiting_for_approval",
+  "waiting_for_input",
+  "blocked",
+  "parked_issue",
+  "parked_waiting",
+]);
+export type WorkflowTicketAttentionKind = typeof WorkflowTicketAttentionKind.Type;
+
+export const StepRunStatus = Schema.Union([
+  Schema.Literal("pending"),
+  Schema.Literal("dispatch_requested"),
+  Schema.Literal("running"),
+  Schema.Literal("awaiting_user"),
+  Schema.Literal("awaiting_children"),
+  Schema.Literal("completed"),
+  Schema.Literal("failed"),
+  Schema.Literal("blocked"),
+  Schema.Literal("superseded"),
+]);
+export type StepRunStatus = typeof StepRunStatus.Type;
+
+export const ScriptRunStatus = Schema.Union([
+  Schema.Literal("running"),
+  Schema.Literal("exited"),
+  Schema.Literal("timeout"),
+  Schema.Literal("cancelled"),
+]);
+export type ScriptRunStatus = typeof ScriptRunStatus.Type;
+
+const TicketAttachmentId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+const TicketAttachmentName = TrimmedNonEmptyString.check(Schema.isMaxLength(255));
+const TicketAttachmentMimeType = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
+const TicketRasterImageMimeType = Schema.Literals([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+// Cap raw bytes at ~10 MiB to stay consistent with the dataUrl length cap below
+// (14M base64 chars ≈ 10 MiB of raw image data) and with the server's enforced
+// MAX_TICKET_ANSWER_ATTACHMENT_BYTES (10 * 1024 * 1024). A higher sizeBytes cap
+// would advertise a limit that the dataUrl check and server both reject anyway.
+const TicketAttachmentSizeBytes = NonNegativeInt.check(
+  Schema.isLessThanOrEqualTo(10 * 1024 * 1024),
+);
+const TicketAttachmentRef = TrimmedNonEmptyString.check(Schema.isMaxLength(2048));
+const TicketImageDataUrl = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(14_000_000),
+  Schema.isPattern(/^data:image\/(?:png|jpeg|gif|webp);base64,/i),
+);
+
+export const TicketImageAttachment = Schema.Struct({
+  kind: Schema.Literal("image"),
+  id: TicketAttachmentId,
+  name: TicketAttachmentName,
+  mimeType: TicketRasterImageMimeType,
+  sizeBytes: TicketAttachmentSizeBytes,
+  dataUrl: TicketImageDataUrl,
+});
+export type TicketImageAttachment = typeof TicketImageAttachment.Type;
+
+export const TicketVideoAttachment = Schema.Struct({
+  kind: Schema.Literal("video"),
+  id: TicketAttachmentId,
+  name: TicketAttachmentName,
+  mimeType: TicketAttachmentMimeType,
+  sizeBytes: TicketAttachmentSizeBytes,
+  ref: TicketAttachmentRef,
+});
+export type TicketVideoAttachment = typeof TicketVideoAttachment.Type;
+
+export const TicketFileAttachment = Schema.Struct({
+  kind: Schema.Literal("file"),
+  id: TicketAttachmentId,
+  name: TicketAttachmentName,
+  mimeType: TicketAttachmentMimeType,
+  sizeBytes: TicketAttachmentSizeBytes,
+  ref: TicketAttachmentRef,
+});
+export type TicketFileAttachment = typeof TicketFileAttachment.Type;
+
+export const TicketAttachment = Schema.Union([
+  TicketImageAttachment,
+  TicketVideoAttachment,
+  TicketFileAttachment,
+]);
+export type TicketAttachment = typeof TicketAttachment.Type;
+
+export const WorkflowStepUsage = Schema.Struct({
+  inputTokens: Schema.optional(NonNegativeInt),
+  cachedInputTokens: Schema.optional(NonNegativeInt),
+  outputTokens: Schema.optional(NonNegativeInt),
+  totalTokens: Schema.optional(NonNegativeInt),
+});
+export type WorkflowStepUsage = typeof WorkflowStepUsage.Type;
+
+/** Closed failure taxonomy for step failures (display + retry policy). */
+export const WorkflowFailureClass = Schema.Literals([
+  "agent_error",
+  "script_failure",
+  "timeout",
+  "human_rejection",
+  "user_cancelled",
+  "infra",
+  "unknown",
+]);
+export type WorkflowFailureClass = typeof WorkflowFailureClass.Type;
+
+// ---------------------------------------------------------------------------
+// Agent handoff context packs
+// ---------------------------------------------------------------------------
+
+export const WorkflowContextPackSectionKey = Schema.Literals([
+  "prior_outputs",
+  "diff_summary",
+  "failed_attempts",
+  "notes",
+]);
+export type WorkflowContextPackSectionKey = typeof WorkflowContextPackSectionKey.Type;
+
+export const WorkflowContextPackSection = Schema.Struct({
+  key: WorkflowContextPackSectionKey,
+  // Caps (8k/section, 24k/pack) are enforced by the two writers — the compiler
+  // and the engine edit path — not the schema. A schema check here would turn an
+  // oversize pack into a failed event append on the routing hot path, which is a
+  // worse outcome than an over-budget prompt.
+  body: Schema.String,
+  autoGenerated: Schema.Boolean,
+});
+export type WorkflowContextPackSection = typeof WorkflowContextPackSection.Type;
+
+export const WorkflowContextPackView = Schema.Struct({
+  forLane: LaneKey,
+  fromLane: LaneKey,
+  compiledAt: IsoDateTime,
+  editedAt: Schema.optional(IsoDateTime),
+  sections: Schema.Array(WorkflowContextPackSection),
+});
+export type WorkflowContextPackView = typeof WorkflowContextPackView.Type;
+
+export const WorkflowEvent = Schema.Union([
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketCreated"),
+    payload: Schema.Struct({
+      boardId: BoardId,
+      title: TrimmedNonEmptyString,
+      laneKey: LaneKey,
+      description: Schema.optional(Schema.String),
+      // Soft cap on provider tokens this ticket may consume; agent steps
+      // block (not fail) once the roll-up reaches it.
+      tokenBudget: Schema.optional(NonNegativeInt),
+      // Present on tickets created by "fork from this event" (time-travel
+      // replay). Distinct from `forkOrigin`, which is the fork-join parent/child
+      // relation: this one records which event of which ticket was replayed.
+      forkOf: Schema.optional(
+        Schema.Struct({
+          sourceTicketId: TicketId,
+          sourceEventId: WorkflowEventId,
+        }),
+      ),
+      // Present on fork-spawned children (SPEC fork-join).
+      forkOrigin: Schema.optional(
+        Schema.Struct({
+          parentTicketId: TicketId,
+          stepRunId: StepRunId,
+          childKey: ForkChildKey,
+          forkDepth: NonNegativeInt,
+          rootTicketId: TicketId,
+        }),
+      ),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketForkSpawned"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      stepRunId: StepRunId,
+      stepKey: StepKey,
+      joinRequire: Schema.Int,
+      onBranchFailure: Schema.Literals(["failFast", "waitImpossible"]),
+      children: Schema.NonEmptyArray(
+        Schema.Struct({
+          childKey: ForkChildKey,
+          ticketId: TicketId,
+          lane: LaneKey,
+          title: Schema.String,
+        }),
+      ),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketForkChildSettled"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      childTicketId: TicketId,
+      childKey: ForkChildKey,
+      outcome: Schema.Literals(["success", "failure", "cancelled"]),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketForkResolved"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      result: Schema.Literals(["success", "failure", "cancelled"]),
+      succeeded: NonNegativeInt,
+      failed: NonNegativeInt,
+      cancelled: NonNegativeInt,
+      detached: Schema.Array(ForkChildKey),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketEdited"),
+    payload: Schema.Struct({
+      title: Schema.optional(TrimmedNonEmptyString),
+      description: Schema.optional(Schema.String),
+      // Null clears the budget; absent leaves it unchanged.
+      tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketDependenciesSet"),
+    // Full-set semantics: replaces the ticket's blocked-by edges.
+    payload: Schema.Struct({
+      dependsOn: Schema.Array(TicketId),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketContextPackCompiled"),
+    // Emitted only with non-empty sections; clearing is a projection fold rule on
+    // lane-entry events, never an empty event. `compiledAt` derives from occurredAt.
+    payload: Schema.Struct({
+      forLane: LaneKey,
+      fromLane: LaneKey,
+      // Non-empty by construction: clearing is a projection fold rule on lane
+      // entry, never an empty Compiled event.
+      sections: Schema.NonEmptyArray(WorkflowContextPackSection),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketContextPackEdited"),
+    // Full-set semantics (like TicketDependenciesSet): replaces every section of
+    // the pack for `forLane`; `sections: []` deletes it. `editedAt` derives from
+    // occurredAt — no payload timestamp.
+    payload: Schema.Struct({
+      forLane: LaneKey,
+      sections: Schema.Array(WorkflowContextPackSection),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketMessagePosted"),
+    payload: Schema.Struct({
+      messageId: MessageId,
+      stepRunId: Schema.optional(StepRunId),
+      author: Schema.Literals(["agent", "user"]),
+      body: Schema.String,
+      attachments: Schema.Array(TicketAttachment),
+      createdAt: IsoDateTime,
+    }),
+  }),
+  // Committed when a steer is acknowledged by the provider (not at RPC accept).
+  // Envelope matches TicketMessagePosted: ticket id lives on the event base.
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepSteered"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      messageId: MessageId,
+      text: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketMessageEdited"),
+    payload: Schema.Struct({
+      messageId: MessageId,
+      body: Schema.String,
+      editedAt: IsoDateTime,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketMovedToLane"),
+    payload: Schema.Struct({
+      toLane: LaneKey,
+      laneEntryToken: LaneEntryToken,
+      reason: Schema.Union([
+        Schema.Literal("manual"),
+        Schema.Literal("routed"),
+        Schema.Literal("initial"),
+        Schema.Literal("external"),
+        Schema.Literal("sla"),
+      ]),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketSlaBreached"),
+    payload: Schema.Struct({
+      laneKey: LaneKey,
+      laneEntryToken: LaneEntryToken, // dedupe key: one breach per lane entry
+      // Duration.toMillis(budget). Lint requires >= 60_000; NonNegativeInt keeps
+      // the wire type an integer (Infinity rejected at encode of Duration).
+      budgetMs: NonNegativeInt,
+      enteredLaneAt: IsoDateTime,
+      // Present when the same commit also moved/queued the ticket.
+      escalatedTo: Schema.optional(LaneKey),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketQueued"),
+    payload: Schema.Struct({
+      lane: LaneKey,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketAdmitted"),
+    payload: Schema.Struct({
+      lane: LaneKey,
+      laneEntryToken: LaneEntryToken,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketBlocked"),
+    payload: Schema.Struct({ reason: Schema.String }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("PipelineStarted"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      laneKey: LaneKey,
+      laneEntryToken: LaneEntryToken,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("PipelineCompleted"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      result: Schema.Union([
+        Schema.Literal("success"),
+        Schema.Literal("failure"),
+        Schema.Literal("blocked"),
+        Schema.Literal("superseded"),
+      ]),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepStarted"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      stepRunId: StepRunId,
+      stepKey: StepKey,
+      stepType: WorkflowStepType,
+      attempt: Schema.optional(Schema.Int),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepAwaitingUser"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      waitingReason: Schema.String,
+      providerThreadId: Schema.optional(ThreadId),
+      providerRequestId: Schema.optional(ApprovalRequestId),
+      providerResponseKind: Schema.optional(Schema.Literals(["request", "user-input"])),
+      providerQuestionId: Schema.optional(Schema.String),
+      /**
+       * The step's form as of pipeline execution. THIS event is the authority
+       * for rendering and validating this wait — never the current board
+       * definition, which may have been edited since. Mirrors actionsSnapshot
+       * on TicketParked.
+       */
+      formSnapshot: Schema.optional(CheckpointForm),
+      /**
+       * This wait was raised by an agent asking a question (allowQuestions),
+       * not by a provider prompt or a board-authored approval.
+       *
+       * It is the discriminator that tells the resolution paths "resume this by
+       * running a NEW turn carrying the answers", rather than by resuming a live
+       * provider request.
+       */
+      questionPhase: Schema.optional(Schema.Boolean),
+      /**
+       * The dispatch whose captured output raised this wait.
+       *
+       * Recovery needs to answer "has this turn already been turned into a
+       * wait?" exactly rather than by timestamp heuristics — without a stored
+       * key, a crash between the outbox confirm and this event would either
+       * double-raise or complete the step with the raw `__questions` payload as
+       * its output.
+       */
+      raisedFromDispatchId: Schema.optional(Schema.String),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepUserResolved"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      /**
+       * Stamped ONLY for native approval waits. Provider-originated waits get
+       * their real terminal later from the provider turn, and stamping one here
+       * would let boot replay fabricate the wrong terminal.
+       */
+      outcome: Schema.optional(CheckpointOutcome),
+      decision: Schema.optional(Schema.String),
+      answers: Schema.optional(CheckpointAnswers),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepRefsCaptured"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      preRef: Schema.String,
+      postRef: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepCompleted"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      output: Schema.optional(Schema.Unknown),
+      usage: Schema.optional(WorkflowStepUsage),
+      // True when a contract repair turn produced the final accepted output.
+      outputRepaired: Schema.optional(Schema.Boolean),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepFailed"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      error: Schema.String,
+      // Persisted so crash recovery cannot auto-retry user-initiated
+      // rejections/cancellations; absent means retry-eligible.
+      retryable: Schema.optional(Schema.Boolean),
+      usage: Schema.optional(WorkflowStepUsage),
+      // Discriminates projection: contract failures keep validation error list.
+      contractViolation: Schema.optional(Schema.Boolean),
+      failureClass: Schema.optional(WorkflowFailureClass),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepRetryScheduled"),
+    payload: Schema.Struct({
+      pipelineRunId: PipelineRunId,
+      stepRunId: StepRunId,
+      stepKey: StepKey,
+      failureClass: WorkflowFailureClass,
+      nextAttempt: Schema.Int,
+      maxAttempts: Schema.Int,
+      delayMs: NonNegativeInt,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepOutputInvalid"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      phase: Schema.Literals(["initial", "repair"]),
+      errors: Schema.NonEmptyArray(Schema.String),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("StepBlocked"),
+    payload: Schema.Struct({ stepRunId: StepRunId, reason: Schema.String }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("ScriptStepStarted"),
+    payload: Schema.Struct({
+      scriptRunId: ScriptRunId,
+      stepRunId: StepRunId,
+      scriptThreadId: ThreadId,
+      terminalId: TrimmedNonEmptyString,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("ScriptStepExited"),
+    payload: Schema.Struct({
+      scriptRunId: ScriptRunId,
+      exitCode: Schema.NullOr(Schema.Int),
+      signal: Schema.NullOr(Schema.Int),
+      outcome: Schema.Union([
+        Schema.Literal("exited"),
+        Schema.Literal("timeout"),
+        Schema.Literal("cancelled"),
+      ]),
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketRouted"),
+    payload: Schema.Struct({ fromLane: LaneKey, toLane: LaneKey }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketRouteDecided"),
+    payload: Schema.Struct({
+      // Absent for external events — they have no pipeline run.
+      pipelineRunId: Schema.optional(PipelineRunId),
+      fromLane: LaneKey,
+      toLane: LaneKey,
+      source: Schema.Union([
+        Schema.Literal("step_on"),
+        Schema.Literal("lane_transition"),
+        Schema.Literal("lane_on"),
+        Schema.Literal("external_event"),
+        Schema.Literal("work_source"),
+      ]),
+      matchedTransitionIndex: Schema.optional(Schema.Int),
+      contextSnapshot: Schema.Unknown,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketPrOpened"),
+    payload: Schema.Struct({
+      stepRunId: StepRunId,
+      prNumber: Schema.Int,
+      url: Schema.String,
+      branch: Schema.String,
+      remoteName: Schema.String,
+      repo: Schema.String, // owner/name resolved at open time
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketParked"),
+    payload: Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.String,
+      reason: Schema.String,
+      parkOrigin: Schema.String, // JSON per spec: {src,key?,stepKey?,name?,fp}
+      pipelineRunId: Schema.optional(PipelineRunId),
+      actionsSnapshot: Schema.Array(WorkflowLaneAction), // display-only
+    }),
+  }),
+  Schema.Struct({
+    ...EventBase,
+    type: Schema.Literal("TicketExternalEventSkipped"),
+    payload: Schema.Struct({
+      eventName: Schema.String,
+      reason: Schema.Literal("parked"), // only cause in v1
+    }),
+  }),
+]);
+export type WorkflowEvent = typeof WorkflowEvent.Type;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Time-travel replay
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One persisted event plus its GLOBAL sequence — the event store's autoincrement
+ * column. `streamVersion` on the event orders within one ticket; `sequence`
+ * orders across the whole board, which is what a board timeline scrubs by.
+ */
+export const WorkflowTimelineItem = Schema.Struct({
+  sequence: Schema.Int,
+  event: WorkflowEvent,
+});
+export type WorkflowTimelineItem = typeof WorkflowTimelineItem.Type;
+
+/**
+ * Ticket state reduced by the SERVER at a truncation boundary.
+ *
+ * A ticket timeline returns only the newest window of events, so the client
+ * cannot fold from the beginning. The server folds everything below the window
+ * and hands back the resulting state to seed the client's reducer; without it a
+ * truncated replay would start from an empty ticket and render nonsense.
+ */
+export const WorkflowTimelineBase = Schema.Struct({
+  laneKey: LaneKey,
+  title: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  tokenBudget: Schema.optional(NonNegativeInt),
+  status: TicketStatus,
+  /** The state reflects every event at or below this per-ticket version. */
+  asOfStreamVersion: Schema.Int,
+  occurredAt: IsoDateTime,
+});
+export type WorkflowTimelineBase = typeof WorkflowTimelineBase.Type;
+
+export const WorkflowGetTicketTimelineInput = Schema.Struct({
+  ticketId: TicketId,
+});
+export const WorkflowGetTicketTimelineResult = Schema.Struct({
+  /** Newest window, returned in ASCENDING order so the client folds forward. */
+  events: Schema.Array(WorkflowTimelineItem),
+  truncated: Schema.Boolean,
+  /**
+   * The state to fold forward from, present when `truncated` AND the head could
+   * be folded. It can be absent on a truncated timeline whose head contains no
+   * TicketCreated — a partial stream. Clients must render the event list without
+   * an as-of state in that case rather than assuming the pair always arrives
+   * together.
+   */
+  base: Schema.optional(WorkflowTimelineBase),
+});
+
+export const WorkflowGetBoardTimelineInput = Schema.Struct({
+  boardId: BoardId,
+  /** Exclusive lower cursor; absent means "from the oldest surviving event". */
+  afterSequence: Schema.optional(Schema.Int),
+  /**
+   * Inclusive upper bound that PINS a scrub session. Without it, events landing
+   * mid-scrub would shift the pages under the user.
+   */
+  throughSequence: Schema.optional(Schema.Int),
+  /** Server clamps to 1..200. */
+  limit: Schema.optional(Schema.Int),
+});
+export const WorkflowGetBoardTimelineResult = Schema.Struct({
+  events: Schema.Array(WorkflowTimelineItem),
+  /** Null means no further pages. */
+  nextAfterSequence: Schema.NullOr(Schema.Int),
+  /** Board MAX(sequence) at call time; 0 when the board has no events. */
+  latestSequence: Schema.Int,
+});
+
+export const WorkflowForkFromEventInput = Schema.Struct({
+  ticketId: TicketId,
+  /** Must belong to `ticketId`; the fork enters the lane held as of this event. */
+  eventId: WorkflowEventId,
+  agentOverride: Schema.optional(AgentSelection),
+  promptAddendum: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_000))),
+  /** Honored ONLY when the as-of lane no longer exists in the board definition. */
+  laneOverride: Schema.optional(LaneKey),
+});
+export const WorkflowForkFromEventResult = Schema.Union([
+  Schema.TaggedStruct("created", { ticketId: TicketId, laneKey: LaneKey }),
+  /** The as-of lane is gone; the client re-submits with a `laneOverride`. */
+  Schema.TaggedStruct("unknown_lane", {
+    asOfLane: LaneKey,
+    validLanes: Schema.Array(LaneKey),
+  }),
+]);
+
+export const StepOutcome = Schema.Union([
+  Schema.TaggedStruct("completed", {
+    output: Schema.optional(Schema.Unknown),
+    usage: Schema.optional(WorkflowStepUsage),
+    outputRepaired: Schema.optional(Schema.Boolean),
+  }),
+  Schema.TaggedStruct("failed", {
+    error: Schema.String,
+    // false marks failures that must never be auto-retried (user-initiated
+    // cancellations); absent/true failures are eligible for step retry.
+    retryable: Schema.optional(Schema.Boolean),
+    usage: Schema.optional(WorkflowStepUsage),
+    contractViolation: Schema.optional(Schema.Boolean),
+    failureClass: Schema.optional(WorkflowFailureClass),
+  }),
+  Schema.TaggedStruct("blocked", { reason: Schema.String }),
+  Schema.TaggedStruct("awaiting_user", {
+    waitingReason: Schema.String,
+    providerThreadId: Schema.optional(ThreadId),
+    providerRequestId: Schema.optional(ApprovalRequestId),
+    providerResponseKind: Schema.optional(Schema.Literals(["request", "user-input"])),
+    providerQuestionId: Schema.optional(Schema.String),
+  }),
+  Schema.TaggedStruct("awaiting_questions", {
+    // Agent asked the operator something mid-step (allowQuestions). Carries the
+    // form built from its `__questions` block, plus the dispatch that produced
+    // it so recovery can tell "already turned into a wait" from "new turn".
+    waitingReason: Schema.String,
+    form: CheckpointForm,
+    raisedFromDispatchId: Schema.String,
+  }),
+  Schema.TaggedStruct("awaiting_children", {
+    // Fork step suspended until join condition is met.
+  }),
+]);
+export type StepOutcome = typeof StepOutcome.Type;
+
+export const TicketDiffFile = Schema.Struct({
+  path: Schema.String,
+  additions: Schema.Int,
+  deletions: Schema.Int,
+});
+export type TicketDiffFile = typeof TicketDiffFile.Type;
+
+export const TicketDiff = Schema.Struct({
+  ticketId: TicketId,
+  baseRef: Schema.String,
+  patch: Schema.String,
+  files: Schema.Array(TicketDiffFile),
+  truncated: Schema.Boolean,
+});
+export type TicketDiff = typeof TicketDiff.Type;
+
+export const TicketPrView = Schema.Struct({
+  number: Schema.Int,
+  url: Schema.String,
+  state: Schema.Literals(["open", "merged", "closed"]),
+  ciState: Schema.optional(Schema.Literals(["pending", "success", "failure"])),
+});
+export type TicketPrView = typeof TicketPrView.Type;
+
+export const WorkflowLaneActionView = Schema.Struct({
+  label: Schema.String,
+  to: LaneKey,
+  hint: Schema.optional(Schema.String),
+});
+export type WorkflowLaneActionView = typeof WorkflowLaneActionView.Type;
+
+export const WorkflowCurrentLaneView = Schema.Struct({
+  key: LaneKey,
+  name: Schema.String,
+  actions: Schema.Array(WorkflowLaneActionView),
+});
+export type WorkflowCurrentLaneView = typeof WorkflowCurrentLaneView.Type;
+
+export const WorkflowStuckDiagnosisKind = Schema.Literals([
+  "wip_blocked",
+  "dependency_blocked",
+  "waiting_approval",
+  "waiting_input",
+  "agent_failed",
+  "step_blocked",
+  "idle_unstarted",
+]);
+export type WorkflowStuckDiagnosisKind = typeof WorkflowStuckDiagnosisKind.Type;
+
+/**
+ * A one-click way out of a stuck state. Every variant dispatches an EXISTING
+ * mutation or an existing client navigation handler — diagnosis adds no new
+ * server capability, so a stale click is at worst a no-op.
+ */
+export const WorkflowUnstickActionView = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("runLane"), label: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal("resolveApproval"),
+    label: Schema.String,
+    stepRunId: StepRunId,
+    approved: Schema.Boolean,
+  }),
+  Schema.Struct({ type: Schema.Literal("openTicket"), label: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal("openTicketFocusInput"),
+    label: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("openDependency"),
+    label: Schema.String,
+    ticketId: TicketId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("clearDependencies"),
+    label: Schema.String,
+    // Exact-set precondition: the client refuses if the ticket's edges changed
+    // since the diagnosis was computed, so a stale click cannot clear an edge
+    // the user never saw.
+    expectedDependsOn: Schema.Array(TicketId),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("moveToLane"),
+    label: Schema.String,
+    toLane: LaneKey,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("clearTokenBudget"),
+    label: Schema.String,
+    expectedTokenBudget: NonNegativeInt,
+  }),
+]);
+export type WorkflowUnstickActionView = typeof WorkflowUnstickActionView.Type;
+
+export const WorkflowStuckDiagnosis = Schema.Struct({
+  kind: WorkflowStuckDiagnosisKind,
+  /** One line, and deliberately TIMELESS: the server has no clock the client
+   *  shares, and a rendered relative age would freeze between pushes. Clients
+   *  append the age from `since`. */
+  summary: Schema.String,
+  detail: Schema.optional(Schema.String),
+  /** Approximately when this stuck condition began. */
+  since: IsoDateTime,
+  /** Surface the entry only once `now - since` reaches this, so intentional
+   *  short-lived states do not flood the Needs You strip. */
+  displayAfterMs: NonNegativeInt,
+  actions: Schema.Array(WorkflowUnstickActionView),
+});
+export type WorkflowStuckDiagnosis = typeof WorkflowStuckDiagnosis.Type;
+
+export const BoardTicketView = Schema.Struct({
+  // Why this ticket is stuck, re-derived at read time; absent when it is not.
+  diagnosis: Schema.optional(WorkflowStuckDiagnosis),
+  // Set when this ticket was created by forking another ticket's history.
+  forkOf: Schema.optional(
+    Schema.Struct({ sourceTicketId: TicketId, sourceEventId: WorkflowEventId }),
+  ),
+  ticketId: TicketId,
+  boardId: BoardId,
+  title: Schema.String,
+  description: Schema.optional(Schema.String),
+  currentLaneKey: LaneKey,
+  status: TicketStatus,
+  queuedAt: Schema.optional(Schema.String),
+  totalTokens: Schema.optional(NonNegativeInt),
+  totalDurationMs: Schema.optional(NonNegativeInt),
+  dependsOn: Schema.optional(Schema.Array(TicketId)),
+  // Dependencies whose ticket has not reached a terminal lane yet. Admission
+  // skips the ticket while this is > 0.
+  unresolvedDependencyCount: Schema.optional(NonNegativeInt),
+  tokenBudget: Schema.optional(NonNegativeInt),
+  // Last projection update — drives "waiting on you for N hours" aging.
+  updatedAt: Schema.optional(Schema.String),
+  pr: Schema.optional(TicketPrView),
+  // Attention fields — present when the ticket needs human attention.
+  attentionKind: Schema.optional(WorkflowTicketAttentionKind),
+  attentionReason: Schema.optional(Schema.String),
+  // Current lane detail — present when the server includes it for attention views.
+  currentLane: Schema.optional(WorkflowCurrentLaneView),
+  // Park-in-place details — present while status is "parked". `actions` is
+  // re-resolved from the current board definition at read time; absent means
+  // the definition changed and the park's actions are unavailable.
+  parked: Schema.optional(
+    Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.String,
+      reason: Schema.String,
+      parkedAt: Schema.String,
+      parkedEventId: WorkflowEventId,
+      actions: Schema.optional(Schema.Array(WorkflowLaneActionView)), // absent ⇒ unavailable
+    }),
+  ),
+  // What the agent is currently doing, for running tickets.
+  currentStepLabel: Schema.optional(Schema.String),
+  // Set while the current lane entry has an active SLA breach (not cleared by
+  // starting work — only by leaving the lane or de-SLA'ing the definition).
+  slaBreachedAt: Schema.optional(IsoDateTime),
+});
+export type BoardTicketView = typeof BoardTicketView.Type;
+
+export const WorkflowNeedsAttentionTicketView = Schema.Struct({
+  ticketId: TicketId,
+  boardId: BoardId,
+  boardName: Schema.String,
+  title: Schema.String,
+  status: TicketStatus,
+  currentLaneKey: LaneKey,
+  attentionKind: Schema.NullOr(WorkflowTicketAttentionKind),
+  attentionReason: Schema.NullOr(Schema.String),
+  updatedAt: Schema.String,
+  // Park timestamp — present (non-null) only while the ticket is parked. The
+  // projection bumps `updatedAt` on any edit, so parked rows must age from this
+  // stable clock; consumers fall back to `updatedAt` when it is null.
+  parkedAt: Schema.NullOr(Schema.String),
+  // SLA breach fields — non-null for SLA-only (and dual-signal) Needs You rows.
+  // attentionKind stays in the legacy five-literal domain (null for SLA-only).
+  slaBreachedAt: Schema.NullOr(IsoDateTime),
+  slaBreachedReason: Schema.NullOr(Schema.String),
+});
+export type WorkflowNeedsAttentionTicketView = typeof WorkflowNeedsAttentionTicketView.Type;
+
+export const WorkflowTicketMessageView = Schema.Struct({
+  messageId: MessageId,
+  ticketId: TicketId,
+  stepRunId: Schema.optional(StepRunId),
+  author: Schema.Literals(["agent", "user"]),
+  body: Schema.String,
+  attachments: Schema.Array(TicketAttachment),
+  createdAt: IsoDateTime,
+  editedAt: Schema.optional(IsoDateTime),
+  // Absent = ordinary discussion; only the server produces "steering".
+  kind: Schema.optional(Schema.Literal("steering")),
+});
+export type WorkflowTicketMessageView = typeof WorkflowTicketMessageView.Type;
+
+/** Client-minted, globally unique message id + guidance text for mid-run steer. */
+export const WorkflowSteerTicketStepInput = Schema.Struct({
+  ticketId: TicketId,
+  stepRunId: StepRunId,
+  messageId: MessageId,
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)),
+});
+export type WorkflowSteerTicketStepInput = typeof WorkflowSteerTicketStepInput.Type;
+
+export const WorkflowSteerTicketStepResult = Schema.Struct({
+  accepted: Schema.Literal(true),
+});
+export type WorkflowSteerTicketStepResult = typeof WorkflowSteerTicketStepResult.Type;
+
+export const BoardSnapshot = Schema.Struct({
+  projectId: ProjectId,
+  board: Schema.Struct({
+    boardId: BoardId,
+    name: Schema.String,
+    lanes: Schema.Array(
+      Schema.Struct({
+        key: LaneKey,
+        name: Schema.String,
+        entry: LaneEntry,
+        pipelineStepCount: Schema.Int,
+        wipLimit: Schema.optional(Schema.Int),
+        terminal: Schema.optional(Schema.Boolean),
+        actions: Schema.optional(Schema.Array(WorkflowLaneAction)),
+        sla: Schema.optional(WorkflowLaneSla),
+      }),
+    ),
+  }),
+  tickets: Schema.Array(BoardTicketView),
+});
+export type BoardSnapshot = typeof BoardSnapshot.Type;
+
+export const WorkflowSaveBoardDefinitionInput = Schema.Struct({
+  boardId: BoardId,
+  definition: WorkflowDefinitionEncoded,
+  expectedVersionHash: Schema.String,
+  source: Schema.optional(
+    Schema.Literals(["save", "revert", "self-improve", "self-improve-revert"]),
+  ),
+});
+export type WorkflowSaveBoardDefinitionInput = typeof WorkflowSaveBoardDefinitionInput.Type;
+
+// The two ok:false members share the ok:false discriminant and are disambiguated
+// only by their distinct required fields: the lint member by the required
+// `lintErrors`, the conflict member by the required `conflict: true` +
+// `currentVersionHash` (neither object validates the other member). Consumers rely
+// on this (WorkflowEditor.tsx discriminates via `"lintErrors" in` / `"conflict" in`).
+// INVARIANT: keep `lintErrors` required and `conflict`/`currentVersionHash`
+// required — making either optional would let a conflict result decode as an empty
+// lint result and silently drop the optimistic-concurrency signal.
+export const WorkflowSaveBoardDefinitionResult = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    definition: WorkflowDefinitionEncoded,
+    versionHash: Schema.String,
+    snapshot: BoardSnapshot,
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    lintErrors: Schema.Array(WorkflowLintError),
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    conflict: Schema.Literal(true),
+    currentVersionHash: Schema.String,
+  }),
+]);
+export type WorkflowSaveBoardDefinitionResult = typeof WorkflowSaveBoardDefinitionResult.Type;
+
+export const WorkflowImportBoardInput = Schema.Struct({
+  projectId: ProjectId,
+  definition: WorkflowDefinitionEncoded,
+});
+export type WorkflowImportBoardInput = typeof WorkflowImportBoardInput.Type;
+
+export const WorkflowImportBoardResult = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    boardId: BoardId,
+    warnings: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    lintErrors: Schema.Array(WorkflowLintError),
+  }),
+]);
+export type WorkflowImportBoardResult = typeof WorkflowImportBoardResult.Type;
+
+export const BoardListEntry = Schema.Struct({
+  boardId: BoardId,
+  name: Schema.String,
+  filePath: Schema.String,
+  error: Schema.NullOr(Schema.String),
+});
+export type BoardListEntry = typeof BoardListEntry.Type;
+
+export const BoardStreamItem = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("snapshot"), snapshot: BoardSnapshot }),
+  Schema.Struct({ kind: Schema.Literal("ticket"), ticket: BoardTicketView }),
+]);
+export type BoardStreamItem = typeof BoardStreamItem.Type;
+
+export const WorkflowStepRunView = Schema.Struct({
+  stepRunId: StepRunId,
+  stepKey: StepKey,
+  stepType: WorkflowStepType,
+  // Checkpoint form: `form` is the snapshot taken when the wait opened, and the
+  // other two are what the reviewer answered. Populated by the projection cache,
+  // so absence on an open approval wait means the step genuinely has no form.
+  // The StepAwaitingUser event remains the authority if the two ever disagree.
+  form: Schema.optional(CheckpointForm),
+  formDecision: Schema.optional(Schema.String),
+  formAnswers: Schema.optional(CheckpointAnswers),
+  attempt: Schema.optional(Schema.Int),
+  status: StepRunStatus,
+  waitingReason: Schema.NullOr(Schema.String),
+  blockedReason: Schema.NullOr(Schema.String),
+  error: Schema.optional(Schema.NullOr(Schema.String)),
+  providerResponseKind: Schema.optional(Schema.NullOr(Schema.Literals(["request", "user-input"]))),
+  scriptThreadId: Schema.NullOr(ThreadId),
+  terminalId: Schema.NullOr(Schema.String),
+  scriptStatus: Schema.NullOr(ScriptRunStatus),
+  exitCode: Schema.NullOr(Schema.Int),
+  signal: Schema.NullOr(Schema.Int),
+  output: Schema.optional(Schema.Unknown),
+  startedAt: Schema.optional(IsoDateTime),
+  finishedAt: Schema.optional(IsoDateTime),
+  usage: Schema.optional(WorkflowStepUsage),
+  // Latest dispatch thread for agent steps — lets the UI stream the live
+  // provider activity for a running step.
+  providerThreadId: Schema.optional(ThreadId),
+  // Projection-derived steer stats (committed StepSteered events only).
+  steerCount: Schema.optional(NonNegativeInt),
+  lastSteeredAt: Schema.optional(IsoDateTime),
+  // Server-derived eligibility for the drawer composer (advisory; engine re-checks).
+  canSteer: Schema.optional(Schema.Boolean),
+  // When set, composer is visible but disabled with a reason tooltip.
+  steerBlockedReason: Schema.optional(Schema.Literals(["awaiting_user", "delivering"])),
+  // Output-contract validation surface (repaired chip / error list).
+  outputValidation: Schema.optional(
+    Schema.Struct({
+      repaired: Schema.Boolean,
+      errors: Schema.Array(Schema.String),
+    }),
+  ),
+});
+export type WorkflowStepRunView = typeof WorkflowStepRunView.Type;
+
+export const WorkflowRouteStepSnapshotView = Schema.Struct({
+  status: Schema.String,
+  exitCode: Schema.optional(Schema.Int),
+  // Bounded highlight of the captured output — never the raw payload, which
+  // can be arbitrarily large and is already visible on the step run itself.
+  verdict: Schema.optional(Schema.String),
+});
+export type WorkflowRouteStepSnapshotView = typeof WorkflowRouteStepSnapshotView.Type;
+
+/**
+ * One entry in a ticket's routing history — why the ticket arrived in a lane.
+ * Automatic routes carry the decision source and the routing-context snapshot
+ * highlights; manual moves only record the destination.
+ */
+export const WorkflowRouteDecisionView = Schema.Struct({
+  occurredAt: IsoDateTime,
+  fromLane: Schema.optional(LaneKey),
+  // Invariant (producer-enforced): exactly one of toLane/park is present for
+  // non-SLA rows. SLA notify-only rows may have neither (ticket stays put);
+  // SLA escalation rows set toLane.
+  toLane: Schema.optional(LaneKey),
+  source: Schema.Literals([
+    "step_on",
+    "lane_transition",
+    "lane_on",
+    "manual",
+    "external_event",
+    "work_source",
+    "sla",
+  ]),
+  matchedTransitionIndex: Schema.optional(Schema.Int),
+  // For external_event decisions: the inbound event name.
+  eventName: Schema.optional(Schema.String),
+  pipelineResult: Schema.optional(Schema.Literals(["success", "failure", "blocked"])),
+  laneRunCount: Schema.optional(Schema.Int),
+  steps: Schema.optional(Schema.Record(Schema.String, WorkflowRouteStepSnapshotView)),
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
+  // Present when this entry renders a `TicketParked` event rather than a
+  // `TicketRouteDecided` one — the ticket parked in place instead of moving.
+  park: Schema.optional(
+    Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.String,
+      reason: Schema.String,
+    }),
+  ),
+  // Present when this entry renders a `TicketSlaBreached` event. Notify-only
+  // breaches omit toLane; escalations set toLane + escalatedTo.
+  sla: Schema.optional(
+    Schema.Struct({
+      budgetMs: NonNegativeInt,
+      escalatedTo: Schema.optional(LaneKey),
+    }),
+  ),
+});
+export type WorkflowRouteDecisionView = typeof WorkflowRouteDecisionView.Type;
+
+// A ticket the intake agent proposes from a braindump; the user reviews and
+// approves before anything is created.
+export const WorkflowTicketProposal = Schema.Struct({
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  description: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))),
+  // Indices of EARLIER proposals in the same intake result this one depends
+  // on — backward references only, so the proposed set can never contain a
+  // cycle. The client maps indices to created TicketIds on approval.
+  dependsOn: Schema.optional(Schema.Array(NonNegativeInt)),
+});
+export type WorkflowTicketProposal = typeof WorkflowTicketProposal.Type;
+
+export const WorkflowIntakeResult = Schema.Struct({
+  proposals: Schema.Array(WorkflowTicketProposal),
+});
+export type WorkflowIntakeResult = typeof WorkflowIntakeResult.Type;
+
+export const WorkflowIntakeBraindump = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
+export type WorkflowIntakeBraindump = typeof WorkflowIntakeBraindump.Type;
+
+/**
+ * Row kinds for scratch files. The durable `WorkflowTicketArtifactKind` is
+ * pinned to a DB column and must NOT be widened, so scratch carries its own
+ * literal — identical plus `binary`, the row for an extension the shared kind
+ * table does not recognize.
+ */
+export const WorkflowTicketScratchKind = Schema.Literals([
+  "markdown",
+  "html",
+  "image",
+  "video",
+  "text",
+  "binary",
+]);
+export type WorkflowTicketScratchKind = typeof WorkflowTicketScratchKind.Type;
+
+/**
+ * A scratch file from .t3/ticket/<id>/ in the ticket's worktree — the
+ * ticket's LEGACY case file view (working files that have not been ingested
+ * into the durable artifact store; excludes artifacts/**).
+ *
+ * Invariants the RPC guarantees (spec 2026-08-06-scratch-artifact-viewer §B),
+ * asserted in tests rather than encoded in the schema. They are CONDITIONAL —
+ * a row can legitimately lack the field its kind would normally carry, because
+ * per-row failures degrade instead of failing the whole listing:
+ * - markdown/text: never `url`; `content` only when the handle read succeeded
+ * - html/image/video: never `content`; `url` only when the file is under
+ *   `ARTIFACT_FILE_CAPS` and signing succeeded
+ * - binary: neither, always
+ * `byteSize` is always present: it comes from the same verified handle the row
+ * was opened through, and any open failure skips the row entirely.
+ */
+export const WorkflowTicketArtifact = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  kind: WorkflowTicketScratchKind,
+  byteSize: NonNegativeInt,
+  /** Present only for markdown/text. Empty string is a VALID empty document. */
+  content: Schema.optional(Schema.String),
+  truncated: Schema.optional(Schema.Boolean),
+  /** Signed scratch asset URL; html/image/video only, never binary. */
+  url: Schema.optional(Schema.String),
+});
+export type WorkflowTicketArtifact = typeof WorkflowTicketArtifact.Type;
+
+// ─── Durable ticket artifacts (spec: 2026-08-05-ticket-artifacts-design) ───
+
+export const WorkflowTicketArtifactKind = Schema.Literals([
+  "markdown",
+  "html",
+  "image",
+  "video",
+  "text",
+]);
+export type WorkflowTicketArtifactKind = typeof WorkflowTicketArtifactKind.Type;
+
+/**
+ * A durable artifact ingested from the ticket worktree's artifacts/ dir.
+ * `content` is inlined only for markdown/text within the decoded-slice
+ * budgets; the three content flags are orthogonal:
+ * - contentTruncated — the decoded content was not fully included in the slice
+ * - contentOmitted — excluded from THIS response by the aggregate budget
+ * - contentUnavailable — the blob failed verified-open (missing/mismatched)
+ */
+export const WorkflowTicketArtifactView = Schema.Struct({
+  artifactId: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  kind: WorkflowTicketArtifactKind,
+  mime: TrimmedNonEmptyString,
+  byteSize: NonNegativeInt,
+  description: Schema.optional(Schema.String),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  stepRunId: Schema.optional(StepRunId),
+  /** Signed asset URL (ticket-artifact claim, 6h TTL). */
+  url: Schema.String,
+  content: Schema.optional(Schema.String),
+  contentTruncated: Schema.optional(Schema.Boolean),
+  contentOmitted: Schema.optional(Schema.Boolean),
+  contentUnavailable: Schema.optional(Schema.Boolean),
+});
+export type WorkflowTicketArtifactView = typeof WorkflowTicketArtifactView.Type;
+
+export const WorkflowTicketArtifactsResult = Schema.Struct({
+  /** Durable store contents, in the server's canonical (name) order. */
+  artifacts: Schema.Array(WorkflowTicketArtifactView),
+  /** Legacy worktree scratch (live worktrees only; excludes artifacts/**). */
+  scratch: Schema.Array(WorkflowTicketArtifact),
+});
+export type WorkflowTicketArtifactsResult = typeof WorkflowTicketArtifactsResult.Type;
+
+export const WorkflowReadTicketArtifactResult = Schema.Struct({
+  content: Schema.String,
+});
+export type WorkflowReadTicketArtifactResult = typeof WorkflowReadTicketArtifactResult.Type;
+
+/**
+ * Stable message fragments for artifact read refusals — single source of
+ * truth shared by the server (which emits them) and clients (which
+ * branch on them). Same idiom as PARK_ACTION_DRIFT_MESSAGES.
+ */
+export const TICKET_ARTIFACT_ERROR_MESSAGES = {
+  /** Blob failed verified-open (missing, size-mismatched, or unsafe path). */
+  unavailable: "artifact content is unavailable",
+  /** readTicketArtifact called for a non-text kind (html/image/video). */
+  kindNotReadable: "artifact kind cannot be read as text",
+} as const;
+
+export const isTicketArtifactUnavailableMessage = (message: string): boolean =>
+  message.includes(TICKET_ARTIFACT_ERROR_MESSAGES.unavailable);
+
+// Webhook ingress config for a board. The plaintext token appears ONLY in
+// the response that created/rotated it; thereafter only the prefix.
+export const WorkflowWebhookConfig = Schema.Struct({
+  path: Schema.String,
+  hasToken: Schema.Boolean,
+  tokenPrefix: Schema.optional(Schema.String),
+  token: Schema.optional(Schema.String),
+});
+export type WorkflowWebhookConfig = typeof WorkflowWebhookConfig.Type;
+
+// ── Per-board metrics dashboard ──────────────────────────────────────────────
+
+export const BoardMetricsCycleTime = Schema.Struct({
+  count: Schema.Number,
+  p50Ms: Schema.Number,
+  p90Ms: Schema.Number,
+  avgMs: Schema.Number,
+});
+export type BoardMetricsCycleTime = typeof BoardMetricsCycleTime.Type;
+
+export const BoardMetricsLaneWip = Schema.Struct({
+  laneKey: Schema.String,
+  admitted: Schema.Number,
+  queued: Schema.Number,
+});
+export type BoardMetricsLaneWip = typeof BoardMetricsLaneWip.Type;
+
+export const BoardMetricsOldest = Schema.Struct({
+  ticketId: Schema.String,
+  title: Schema.String,
+  laneKey: Schema.NullOr(Schema.String),
+  ageMs: Schema.Number,
+});
+export type BoardMetricsOldest = typeof BoardMetricsOldest.Type;
+
+export const BoardMetricsRouteOutcome = Schema.Struct({
+  fromLane: Schema.NullOr(Schema.String),
+  toLane: Schema.NullOr(Schema.String),
+  source: Schema.String,
+  result: Schema.String,
+  count: Schema.Number,
+});
+export type BoardMetricsRouteOutcome = typeof BoardMetricsRouteOutcome.Type;
+
+export const BoardMetricsStep = Schema.Struct({
+  laneKey: Schema.String,
+  stepKey: Schema.String,
+  stepType: Schema.String,
+  succeeded: Schema.Number,
+  failed: Schema.Number,
+  retries: Schema.Number,
+  totalTokens: Schema.Number,
+  avgDurationMs: Schema.Number,
+});
+export type BoardMetricsStep = typeof BoardMetricsStep.Type;
+
+export const WorkflowBoardMetrics = Schema.Struct({
+  windowDays: Schema.Number,
+  generatedAt: Schema.String,
+  throughput: Schema.Struct({ created: Schema.Number, shipped: Schema.Number }),
+  cycleTime: BoardMetricsCycleTime,
+  wipByLane: Schema.Array(BoardMetricsLaneWip),
+  statusBreakdown: Schema.Record(Schema.String, Schema.Number),
+  attention: Schema.Struct({
+    blocked: Schema.Number,
+    waitingOnUser: Schema.Number,
+    parked: Schema.Number,
+    oldest: Schema.Array(BoardMetricsOldest),
+  }),
+  routeOutcomes: Schema.Array(BoardMetricsRouteOutcome),
+  manualMoveCount: Schema.Number,
+  stepStats: Schema.Array(BoardMetricsStep),
+});
+export type WorkflowBoardMetrics = typeof WorkflowBoardMetrics.Type;
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+// What happened on a board in the last window — the "stand-up" summary.
+export const WorkflowBoardDigest = Schema.Struct({
+  windowHours: NonNegativeInt,
+  createdCount: NonNegativeInt,
+  shippedCount: NonNegativeInt,
+  totalTokens: NonNegativeInt,
+  totalDurationMs: NonNegativeInt,
+  needsAttention: Schema.Array(
+    Schema.Struct({
+      ticketId: TicketId,
+      title: Schema.String,
+      status: Schema.String,
+      laneKey: LaneKey,
+      // Attention kind — present (non-null) for waiting/parked rows so the
+      // digest can distinguish a parked issue from a waiting item.
+      attentionKind: Schema.NullOr(WorkflowTicketAttentionKind),
+      // Park timestamp — present (non-null) only while parked. `sinceMs` is
+      // aged from this stable clock (not the edit-bumped `updatedAt`) for
+      // parked rows; null otherwise.
+      parkedAt: Schema.NullOr(Schema.String),
+      sinceMs: NonNegativeInt,
+    }),
+  ),
+});
+export type WorkflowBoardDigest = typeof WorkflowBoardDigest.Type;
+
+// Simulated routing for a hypothetical ticket: which lanes it would visit
+// under a uniform step-outcome scenario, and why each hop happened.
+export const WorkflowDryRunScenario = Schema.Literals(["success", "failure", "blocked"]);
+export type WorkflowDryRunScenario = typeof WorkflowDryRunScenario.Type;
+
+export const WorkflowDryRunHop = Schema.Struct({
+  fromLane: LaneKey,
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
+  // Absent for a park hop (see `park` below) — the walk stayed in `fromLane`.
+  toLane: Schema.optional(LaneKey),
+  source: Schema.Literals(["step_on", "lane_transition", "lane_on"]),
+  // Which pipeline step's on-route decided the hop (step_on only).
+  viaStepKey: Schema.optional(StepKey),
+  // Match the Schema.Int used by every other matchedTransitionIndex field
+  // (TicketRouteDecided, WorkflowRouteDecisionView) rather than the narrower
+  // NonNegativeInt, so the constraint is consistent across the conceptual field.
+  matchedTransitionIndex: Schema.optional(Schema.Int),
+  result: WorkflowDryRunScenario,
+  // Invariant (producer-enforced): exactly one of toLane/park is present.
+  // Present when this hop parks the ticket in place instead of moving it.
+  park: Schema.optional(
+    Schema.Struct({
+      substate: WorkflowParkSubstate,
+      label: Schema.optional(Schema.String),
+    }),
+  ),
+});
+export type WorkflowDryRunHop = typeof WorkflowDryRunHop.Type;
+
+export const WorkflowDryRunEnd = Schema.Literals([
+  // The walk reached a terminal lane.
+  "terminal",
+  // The walk reached a manual lane — a human (action/move/event) continues it.
+  "manual",
+  // The pipeline finished but nothing routed; the ticket would sit in the lane.
+  "no_route",
+  // The walk kept cycling and hit the hop cap — likely an unbounded loop.
+  "cycle_cap",
+  // The walk ended by parking the ticket in place in `endLane`.
+  "parked",
+]);
+export type WorkflowDryRunEnd = typeof WorkflowDryRunEnd.Type;
+
+export const WorkflowDryRunResult = Schema.Struct({
+  startLane: LaneKey,
+  scenario: WorkflowDryRunScenario,
+  hops: Schema.Array(WorkflowDryRunHop),
+  end: WorkflowDryRunEnd,
+  endLane: LaneKey,
+  // Transitions whose predicates referenced data a dry run cannot know
+  // (captured outputs, ticket fields) — evaluated against an empty context.
+  notes: Schema.Array(Schema.String),
+});
+export type WorkflowDryRunResult = typeof WorkflowDryRunResult.Type;
+
+export const WorkflowTicketDetailView = Schema.Struct({
+  ticket: BoardTicketView,
+  steps: Schema.Array(WorkflowStepRunView),
+  messages: Schema.Array(WorkflowTicketMessageView),
+  routeHistory: Schema.optional(Schema.Array(WorkflowRouteDecisionView)),
+  /** Pack whose `forLane` is the ticket's current lane, if any. */
+  contextPack: Schema.optional(WorkflowContextPackView),
+  syncedSource: Schema.optional(
+    Schema.Struct({
+      provider: WorkSourceProviderName,
+      url: TrimmedNonEmptyString,
+      assignees: Schema.optional(Schema.Array(Schema.String)),
+      labels: Schema.optional(Schema.Array(Schema.String)),
+    }),
+  ),
+});
+export type WorkflowTicketDetailView = typeof WorkflowTicketDetailView.Type;
+
+// ---------------------------------------------------------------------------
+// Self-improve: board proposal schemas
+// ---------------------------------------------------------------------------
+
+export const WorkflowProposalStatus = Schema.Literals([
+  "pending",
+  "approved",
+  "rejected",
+  "superseded",
+  "invalid",
+  "reverted",
+]);
+export type WorkflowProposalStatus = typeof WorkflowProposalStatus.Type;
+
+export const WorkflowProposalValidation = Schema.Struct({
+  preservationOk: Schema.Boolean,
+  lintOk: Schema.Boolean,
+  dryRunOk: Schema.Boolean,
+  laneDiffCount: Schema.Number,
+  lintErrors: Schema.Array(WorkflowLintError),
+  dryRunRegressions: Schema.Array(Schema.String),
+  messages: Schema.Array(Schema.String),
+});
+export type WorkflowProposalValidation = typeof WorkflowProposalValidation.Type;
+
+export const WorkflowBoardProposalView = Schema.Struct({
+  proposalId: Schema.String,
+  boardId: BoardId,
+  status: WorkflowProposalStatus,
+  rationale: Schema.String,
+  validation: WorkflowProposalValidation,
+  baseVersionHash: Schema.String,
+  appliedVersionHash: Schema.NullOr(Schema.String),
+  outdated: Schema.Boolean,
+  agent: AgentSelection,
+  createdAt: Schema.String,
+  resolvedAt: Schema.NullOr(Schema.String),
+});
+export type WorkflowBoardProposalView = typeof WorkflowBoardProposalView.Type;
+
+// RPC input shapes
+
+export const WorkflowProposeBoardImprovementInput = Schema.Struct({
+  boardId: BoardId,
+  agent: AgentSelection,
+});
+export type WorkflowProposeBoardImprovementInput = typeof WorkflowProposeBoardImprovementInput.Type;
+
+export const WorkflowListBoardProposalsInput = Schema.Struct({
+  boardId: BoardId,
+});
+export type WorkflowListBoardProposalsInput = typeof WorkflowListBoardProposalsInput.Type;
+
+export const WorkflowGetBoardProposalInput = Schema.Struct({
+  proposalId: Schema.String,
+});
+export type WorkflowGetBoardProposalInput = typeof WorkflowGetBoardProposalInput.Type;
+
+export const WorkflowResolveBoardProposalInput = Schema.Struct({
+  proposalId: Schema.String,
+  action: Schema.Literals(["approve", "reject"]),
+});
+export type WorkflowResolveBoardProposalInput = typeof WorkflowResolveBoardProposalInput.Type;
+
+export const WorkflowRevertBoardProposalInput = Schema.Struct({
+  proposalId: Schema.String,
+});
+export type WorkflowRevertBoardProposalInput = typeof WorkflowRevertBoardProposalInput.Type;
+
+// RPC result shapes
+
+export const WorkflowProposeBoardImprovementResult = Schema.Struct({
+  proposal: WorkflowBoardProposalView,
+});
+export type WorkflowProposeBoardImprovementResult =
+  typeof WorkflowProposeBoardImprovementResult.Type;
+
+export const WorkflowListBoardProposalsResult = Schema.Struct({
+  proposals: Schema.Array(WorkflowBoardProposalView),
+});
+export type WorkflowListBoardProposalsResult = typeof WorkflowListBoardProposalsResult.Type;
+
+export const WorkflowGetBoardProposalResult = Schema.Struct({
+  proposal: WorkflowBoardProposalView,
+  proposedDefinition: WorkflowDefinitionEncoded,
+  baseDefinition: WorkflowDefinitionEncoded,
+});
+export type WorkflowGetBoardProposalResult = typeof WorkflowGetBoardProposalResult.Type;
+
+export const WorkflowResolveBoardProposalResult = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    proposal: WorkflowBoardProposalView,
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    reason: Schema.Literals(["conflict", "live_tickets", "lint", "invalid"]),
+    message: Schema.String,
+    lintErrors: Schema.optional(Schema.Array(WorkflowLintError)),
+  }),
+]);
+export type WorkflowResolveBoardProposalResult = typeof WorkflowResolveBoardProposalResult.Type;
+
+export const WorkflowRevertBoardProposalResult = WorkflowResolveBoardProposalResult;
+export type WorkflowRevertBoardProposalResult = typeof WorkflowRevertBoardProposalResult.Type;
+
+// ── Create-workflow wizard ─────────────────────────────────────────────────
+
+export const BoardTemplateSummary = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  description: Schema.String,
+  requiresAgent: Schema.Boolean,
+});
+export type BoardTemplateSummary = typeof BoardTemplateSummary.Type;
+
+export const WorkflowCreateChoice = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("empty") }),
+  Schema.Struct({
+    kind: Schema.Literal("template"),
+    templateId: Schema.String,
+    agent: Schema.optional(AgentSelection),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("definition"),
+    definition: WorkflowDefinitionEncoded,
+  }),
+]);
+export type WorkflowCreateChoice = typeof WorkflowCreateChoice.Type;
+
+export const WorkflowCreateWorkflowBoardInput = Schema.Struct({
+  projectId: ProjectId,
+  name: WorkflowBoardName,
+  choice: WorkflowCreateChoice,
+});
+export type WorkflowCreateWorkflowBoardInput = typeof WorkflowCreateWorkflowBoardInput.Type;
+
+export const WorkflowCreateWorkflowBoardResult = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), boardId: BoardId }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    lintErrors: Schema.Array(WorkflowLintError),
+    message: Schema.optional(Schema.String),
+  }),
+]);
+export type WorkflowCreateWorkflowBoardResult = typeof WorkflowCreateWorkflowBoardResult.Type;
+
+export const WorkflowGenerateWorkflowDraftInput = Schema.Struct({
+  projectId: ProjectId,
+  name: WorkflowBoardName,
+  // A generous "how you work" description cap — bounds the free text sent to
+  // the LLM so a runaway client payload can't drive unbounded token cost.
+  description: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+  agent: AgentSelection,
+});
+export type WorkflowGenerateWorkflowDraftInput = typeof WorkflowGenerateWorkflowDraftInput.Type;
+
+export const WorkflowGenerateWorkflowDraftResult = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    definition: WorkflowDefinitionEncoded,
+    rationale: Schema.String,
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    lintErrors: Schema.optional(Schema.Array(WorkflowLintError)),
+    message: Schema.String,
+  }),
+]);
+export type WorkflowGenerateWorkflowDraftResult = typeof WorkflowGenerateWorkflowDraftResult.Type;
+
+export const WorkflowListBoardTemplatesResult = Schema.Struct({
+  templates: Schema.Array(BoardTemplateSummary),
+});
+export type WorkflowListBoardTemplatesResult = typeof WorkflowListBoardTemplatesResult.Type;
+
+export class WorkflowRpcError extends Schema.TaggedErrorClass<WorkflowRpcError>()(
+  "WorkflowRpcError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}

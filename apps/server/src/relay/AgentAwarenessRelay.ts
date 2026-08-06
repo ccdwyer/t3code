@@ -207,7 +207,10 @@ const makePublishProof = Effect.fn("makePublishProof")(function* (input: {
     threadId: input.threadId,
     state: input.state,
   } satisfies RelayAgentActivityPublishProofPayload;
-  return yield* signRelayAgentActivityPublishProof({ privateKey: input.privateKey, payload });
+  return yield* signRelayAgentActivityPublishProof({
+    privateKey: input.privateKey,
+    payload,
+  });
 });
 
 // Compact, log-safe view of the fields the awareness phase ladder reads.
@@ -404,7 +407,11 @@ export const make = Effect.gen(function* () {
         });
       });
 
-    const thread = yield* snapshotQuery.getThreadShellById(threadId);
+    // Hidden (workflow-internal) threads are never published externally.
+    const threadHidden = yield* snapshotQuery.isThreadHidden(threadId);
+    const thread = threadHidden
+      ? Option.none<OrchestrationThreadShell>()
+      : yield* snapshotQuery.getThreadShellById(threadId);
     const project = Option.isSome(thread)
       ? yield* snapshotQuery.getProjectShellById(thread.value.projectId)
       : Option.none<OrchestrationProjectShell>();
@@ -538,7 +545,10 @@ export const make = Effect.gen(function* () {
     yield* Effect.logInfo("publishing active agent activity snapshot", {
       count: activeThreadIds.length,
     });
-    yield* Effect.forEach(activeThreadIds, publishThread, { concurrency: 4, discard: true });
+    yield* Effect.forEach(activeThreadIds, publishThread, {
+      concurrency: 4,
+      discard: true,
+    });
     return true;
   });
 

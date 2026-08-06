@@ -341,6 +341,14 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("declares session resume support in its capabilities", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      assert.equal(adapter.capabilities.supportsSessionResume, true);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("derives bypass permission mode from full-access runtime policy", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -443,7 +451,9 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect("runs Claude SDK sessions with the configured CLAUDE_CONFIG_DIR", () => {
-    const harness = makeHarness({ claudeConfig: { homePath: "~/.claude-work" } });
+    const harness = makeHarness({
+      claudeConfig: { homePath: "~/.claude-work" },
+    });
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       yield* adapter.startSession({
@@ -2095,7 +2105,13 @@ describe("ClaudeAdapterLive", () => {
         {
           type: "system",
           subtype: "background_tasks_changed",
-          tasks: [{ task_id: "t1", task_type: "local_agent", description: "Say hi" }],
+          tasks: [
+            {
+              task_id: "t1",
+              task_type: "local_agent",
+              description: "Say hi",
+            },
+          ],
           session_id: "session",
           uuid: "roster",
         },
@@ -2125,13 +2141,48 @@ describe("ClaudeAdapterLive", () => {
           session_id: "session",
           uuid: "tu",
         },
-        { type: "system", subtype: "commands_changed", session_id: "session", uuid: "cc" },
-        { type: "system", subtype: "model_refusal_fallback", session_id: "session", uuid: "mrf" },
-        { type: "system", subtype: "local_command_output", session_id: "session", uuid: "lco" },
-        { type: "system", subtype: "plugin_install", session_id: "session", uuid: "pi" },
-        { type: "system", subtype: "memory_recall", session_id: "session", uuid: "mr" },
-        { type: "system", subtype: "elicitation_complete", session_id: "session", uuid: "ec" },
-        { type: "prompt_suggestion", suggestion: "try this", session_id: "session", uuid: "ps" },
+        {
+          type: "system",
+          subtype: "commands_changed",
+          session_id: "session",
+          uuid: "cc",
+        },
+        {
+          type: "system",
+          subtype: "model_refusal_fallback",
+          session_id: "session",
+          uuid: "mrf",
+        },
+        {
+          type: "system",
+          subtype: "local_command_output",
+          session_id: "session",
+          uuid: "lco",
+        },
+        {
+          type: "system",
+          subtype: "plugin_install",
+          session_id: "session",
+          uuid: "pi",
+        },
+        {
+          type: "system",
+          subtype: "memory_recall",
+          session_id: "session",
+          uuid: "mr",
+        },
+        {
+          type: "system",
+          subtype: "elicitation_complete",
+          session_id: "session",
+          uuid: "ec",
+        },
+        {
+          type: "prompt_suggestion",
+          suggestion: "try this",
+          session_id: "session",
+          uuid: "ps",
+        },
         {
           type: "system",
           subtype: "notification",
@@ -2484,6 +2535,90 @@ describe("ClaudeAdapterLive", () => {
   );
 
   it.effect(
+    "treats flat cumulative result usage without iterations as totals, not context usage",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+        });
+
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          attachments: [],
+        });
+
+        harness.query.emit({
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-usage-flat-total",
+          description: "Thinking through the patch",
+          usage: {
+            total_tokens: 190000,
+          },
+          session_id: "sdk-session-task-usage-flat-total",
+          uuid: "task-usage-progress-flat-total",
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 1234,
+          duration_api_ms: 1200,
+          num_turns: 1,
+          result: "done",
+          stop_reason: "end_turn",
+          session_id: "sdk-session-result-usage-flat-total",
+          usage: {
+            input_tokens: 1200,
+            cache_creation_input_tokens: 33800,
+            cache_read_input_tokens: 480000,
+            output_tokens: 20000,
+          },
+          modelUsage: {
+            "claude-opus-4-6": {
+              contextWindow: 200000,
+              maxOutputTokens: 64000,
+            },
+          },
+        } as unknown as SDKMessage);
+        harness.query.finish();
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const usageEvents = runtimeEvents.filter(
+          (event) => event.type === "thread.token-usage.updated",
+        );
+        const finalUsageEvent = usageEvents.at(-1);
+        assert.equal(finalUsageEvent?.type, "thread.token-usage.updated");
+        if (finalUsageEvent?.type === "thread.token-usage.updated") {
+          assert.deepEqual(finalUsageEvent.payload, {
+            usage: {
+              usedTokens: 190000,
+              lastUsedTokens: 190000,
+              totalProcessedTokens: 535000,
+              maxTokens: 200000,
+            },
+          });
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
     "emits completion only after turn result when assistant frames arrive before deltas",
     () => {
       const harness = makeHarness();
@@ -2515,7 +2650,12 @@ describe("ClaudeAdapterLive", () => {
           message: {
             id: "assistant-message-early",
             content: [
-              { type: "tool_use", id: "tool-early", name: "Read", input: { path: "a.ts" } },
+              {
+                type: "tool_use",
+                id: "tool-early",
+                name: "Read",
+                input: { path: "a.ts" },
+              },
             ],
           },
         } as unknown as SDKMessage);
@@ -4121,7 +4261,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal((permissionResult as PermissionResult).behavior, "allow");
       const updatedInput = (permissionResult as { updatedInput: Record<string, unknown> })
         .updatedInput;
-      assert.deepEqual(updatedInput.answers, { "Deploy to which env?": "Staging" });
+      assert.deepEqual(updatedInput.answers, {
+        "Deploy to which env?": "Staging",
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

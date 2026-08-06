@@ -22,8 +22,12 @@ import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+const encodeJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
@@ -310,6 +314,8 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
   return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
 }
 
+const WORKFLOW_STEER_COMMAND_PREFIX = "workflow-steer-";
+
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
@@ -320,6 +326,8 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const turnRepoOption = yield* Effect.serviceOption(ProjectionTurnRepository);
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -832,7 +840,11 @@ const make = Effect.gen(function* () {
       const targetBranch = buildGeneratedWorktreeBranchName(generated.branch);
       if (targetBranch === oldBranch) return;
 
-      const renamed = yield* gitWorkflow.renameBranch({ cwd, oldBranch, newBranch: targetBranch });
+      const renamed = yield* gitWorkflow.renameBranch({
+        cwd,
+        oldBranch,
+        newBranch: targetBranch,
+      });
       yield* orchestrationEngine.dispatch({
         type: "thread.meta.update",
         commandId: yield* serverCommandId("worktree-branch-rename"),
@@ -977,7 +989,10 @@ const make = Effect.gen(function* () {
   const clearInterruptedThreadTitleRegenerations = Effect.fn(
     "clearInterruptedThreadTitleRegenerations",
   )(function* (
-    interrupted: ReadonlyArray<{ readonly threadId: ThreadId; readonly requestId: CommandId }>,
+    interrupted: ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly requestId: CommandId;
+    }>,
   ) {
     yield* Effect.forEach(
       interrupted,
@@ -1125,11 +1140,139 @@ const make = Effect.gen(function* () {
       }
     }
 
+    const commandIdStr = event.commandId !== null ? String(event.commandId) : "";
+    const isWorkflowSteer = commandIdStr.startsWith(WORKFLOW_STEER_COMMAND_PREFIX);
+    const steerMessageId = isWorkflowSteer
+      ? commandIdStr.slice(WORKFLOW_STEER_COMMAND_PREFIX.length)
+      : null;
+
+    const emitSteerReceipt = (input: {
+      readonly kind: "workflow.steer.delivered" | "workflow.steer.failed";
+      readonly tone: "info" | "error";
+      readonly summary: string;
+      readonly detail?: string;
+      readonly turnId?: TurnId | null;
+    }) =>
+      Effect.gen(function* () {
+        const messageIdForPayload = steerMessageId ?? event.payload.messageId;
+        // Stable ids across retries so a partial success does not double-append.
+        const commandId = yield* serverCommandId("workflow-steer-receipt");
+        const eventId = yield* serverEventId();
+        const appendViaOrchestration = orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: event.payload.threadId,
+          activity: {
+            id: eventId,
+            tone: input.tone,
+            kind: input.kind,
+            summary: input.summary,
+            payload: {
+              messageId: messageIdForPayload,
+              commandId: commandIdStr,
+              ...(input.detail !== undefined ? { detail: input.detail } : {}),
+            },
+            turnId: input.turnId ?? null,
+            createdAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
+        // Direct SQL fallback so a durable receipt always lands even if the
+        // orchestration dispatch fails after sendTurn already succeeded.
+        const appendViaSqlFallback = Option.isSome(sqlOption)
+          ? Effect.gen(function* () {
+              const payloadJson = encodeJsonString({
+                messageId: messageIdForPayload,
+                commandId: commandIdStr,
+                ...(input.detail !== undefined ? { detail: input.detail } : {}),
+              });
+              yield* sqlOption.value`
+                INSERT OR IGNORE INTO projection_thread_activities (
+                  activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+                ) VALUES (
+                  ${eventId},
+                  ${event.payload.threadId},
+                  ${input.turnId ?? null},
+                  ${input.tone},
+                  ${input.kind},
+                  ${input.summary},
+                  ${payloadJson},
+                  ${event.payload.createdAt}
+                )
+              `.pipe(Effect.asVoid);
+            })
+          : Effect.void;
+
+        yield* appendViaOrchestration.pipe(
+          Effect.retry({ times: 2 }),
+          Effect.catchCause((cause) =>
+            appendViaSqlFallback.pipe(
+              Effect.catchCause((fallbackCause) =>
+                Effect.logError("workflow steer receipt append failed", {
+                  kind: input.kind,
+                  cause: Cause.pretty(cause),
+                  fallbackCause: Cause.pretty(fallbackCause),
+                }),
+              ),
+            ),
+          ),
+        );
+      });
+
+    // Tombstone fence: drop steers reaped by the outbox grace reaper.
+    if (isWorkflowSteer && steerMessageId !== null && Option.isSome(sqlOption)) {
+      const tombstoned = yield* sqlOption.value<{ readonly n: number }>`
+        SELECT COUNT(*) AS n
+        FROM workflow_dispatch_outbox
+        WHERE steer_tombstone_message_id = ${steerMessageId}
+      `.pipe(
+        Effect.map((rows) => (rows[0]?.n ?? 0) > 0),
+        Effect.orElseSucceed(() => false),
+      );
+      if (tombstoned) {
+        yield* emitSteerReceipt({
+          kind: "workflow.steer.failed",
+          tone: "error",
+          summary: "Workflow steer dropped (tombstoned)",
+          detail: "Steer was reaped after terminal grace; not delivered to the provider.",
+        });
+        // Clear the pending-turn-start placeholder so it does not linger.
+        if (Option.isSome(turnRepoOption)) {
+          yield* turnRepoOption.value
+            .deletePendingTurnStartByThreadId({
+              threadId: event.payload.threadId,
+            })
+            .pipe(Effect.catch(() => Effect.void));
+        }
+        return;
+      }
+    }
+
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
         return Effect.void;
       }
       const detail = formatFailureDetail(cause);
+      // Steer failures must NOT project the whole session as error (would
+      // cause premature routing of a still-healthy turn).
+      if (isWorkflowSteer) {
+        return emitSteerReceipt({
+          kind: "workflow.steer.failed",
+          tone: "error",
+          summary: "Workflow steer failed",
+          detail,
+        }).pipe(
+          Effect.flatMap(() =>
+            Option.isSome(turnRepoOption)
+              ? turnRepoOption.value
+                  .deletePendingTurnStartByThreadId({
+                    threadId: event.payload.threadId,
+                  })
+                  .pipe(Effect.catch(() => Effect.void))
+              : Effect.void,
+          ),
+        );
+      }
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
@@ -1176,6 +1319,37 @@ const make = Effect.gen(function* () {
     );
 
     if (Option.isNone(sendTurnRequest)) {
+      return;
+    }
+
+    if (isWorkflowSteer) {
+      // Await sendTurn so we can emit a durable receipt and bind/delete the
+      // pending-turn-start placeholder for same-turn adapters.
+      yield* providerService.sendTurn(sendTurnRequest.value).pipe(
+        Effect.flatMap((result) =>
+          Effect.gen(function* () {
+            const returnedTurnId = result.turnId as TurnId | undefined;
+            // Same-turn: delete the pending placeholder so it is not a ghost
+            // "latest running turn". New-turn providers create a real turn
+            // row via ingestion; still delete the null-turnId placeholder.
+            if (Option.isSome(turnRepoOption)) {
+              yield* turnRepoOption.value
+                .deletePendingTurnStartByThreadId({
+                  threadId: event.payload.threadId,
+                })
+                .pipe(Effect.catch(() => Effect.void));
+            }
+            yield* emitSteerReceipt({
+              kind: "workflow.steer.delivered",
+              tone: "info",
+              summary: "Workflow steer delivered",
+              turnId: returnedTurnId ?? null,
+            });
+          }),
+        ),
+        Effect.catchCause(recoverTurnStartFailure),
+        Effect.forkScoped,
+      );
       return;
     }
 

@@ -6,6 +6,7 @@ import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hos
 
 import {
   AuthAccessTokenType,
+  AuthAdministrativeScopes,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
   CommandId,
@@ -98,6 +99,7 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
     }),
   );
 });
+const administrativeScopeText = AuthAdministrativeScopes.join(" ");
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
@@ -125,6 +127,7 @@ import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
+import { ProjectScriptTrust } from "./workflow/Services/ProjectScriptTrust.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -149,6 +152,23 @@ import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryR
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import { BoardRegistry } from "./workflow/Services/BoardRegistry.ts";
+import { BoardDiscovery } from "./workflow/Services/BoardDiscovery.ts";
+import { ProjectWorkspaceResolver } from "./workflow/Services/ProjectWorkspaceResolver.ts";
+import { TicketDiffQuery } from "./workflow/Services/TicketDiffQuery.ts";
+import { WorkflowBoardEvents } from "./workflow/Services/WorkflowBoardEvents.ts";
+import { WorkflowBoardSaveLocks } from "./workflow/Services/WorkflowBoardSaveLocks.ts";
+import { WorkflowBoardVersionStore } from "./workflow/Services/WorkflowBoardVersionStore.ts";
+import { WorkflowEngine } from "./workflow/Services/WorkflowEngine.ts";
+import { WorkflowEventStore } from "./workflow/Services/WorkflowEventStore.ts";
+import { WorkflowFileLoader } from "./workflow/Services/WorkflowFileLoader.ts";
+import { WorkflowReadModel } from "./workflow/Services/WorkflowReadModel.ts";
+import { WorkSourceConnectionStore } from "./workflow/Services/WorkSourceConnectionStore.ts";
+import {
+  WorkSourceAuthError,
+  WorkSourceProviderRegistry,
+} from "./workflow/Services/WorkSourceProvider.ts";
+import { WorkflowSourceCommitter } from "./workflow/Services/WorkflowSourceCommitter.ts";
 import * as Data from "effect/Data";
 
 import { makeOrchestrationIntegrationHarness } from "../integration/OrchestrationEngineHarness.integration.ts";
@@ -422,7 +442,9 @@ const buildAppUnderTest = (options?: {
 }) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const tempBaseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-test-" });
+    const tempBaseDir = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "t3-router-test-",
+    });
     const baseDir = options?.config?.baseDir ?? tempBaseDir;
     const devUrl = options?.config?.devUrl;
     const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl);
@@ -446,6 +468,7 @@ const buildAppUnderTest = (options?: {
       staticDir: undefined,
       devUrl,
       devAllowedOrigins: [],
+      webBaseUrl: undefined,
       noBrowser: true,
       startupPresentation: "browser",
       desktopBootstrapToken: defaultDesktopBootstrapToken,
@@ -606,222 +629,322 @@ const buildAppUnderTest = (options?: {
     const serviceLauncherClientLayer = ServiceLauncherClient.layer.pipe(
       Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     );
+    const workflowRouteServicesLayer = Layer.mergeAll(
+      Layer.mock(WorkflowEngine)({
+        createTicket: () => Effect.die("unused workflow createTicket"),
+        moveTicket: () => Effect.die("unused workflow moveTicket"),
+        escalateTicketSla: () => Effect.succeed("stale" as const),
+        runLane: () => Effect.die("unused workflow runLane"),
+        resolveApproval: () => Effect.die("unused workflow resolveApproval"),
+        cancelStep: () => Effect.die("unused workflow cancelStep"),
+        cancelBoardPipelines: () => Effect.void,
+        completeRecoveredStep: () => Effect.die("unused workflow completeRecoveredStep"),
+      }),
+      Layer.mock(WorkflowReadModel)({
+        registerBoard: () => Effect.void,
+        deleteBoard: () => Effect.void,
+        deleteBoardTicketState: () => Effect.void,
+        getBoard: () => Effect.succeed(null),
+        listTickets: () => Effect.succeed([]),
+        clearSlaBreachesForLanesWithoutSla: () => Effect.void,
+        getTicketDetail: () => Effect.succeed(null),
+        listBoardsForProject: () => Effect.succeed([]),
+      }),
+      Layer.mock(WorkflowEventStore)({
+        append: () => Effect.die("unused workflow event append"),
+        readByTicket: () => Stream.empty,
+        readFromSequence: () => Stream.empty,
+        readByBoard: () => Stream.empty,
+        readTicketTail: () => Stream.empty,
+        readTicketRange: () => Stream.empty,
+        maxSequenceForBoard: () => Effect.succeed(0),
+        readAll: () => Stream.empty,
+        deleteForBoard: () => Effect.void,
+      }),
+      Layer.mock(BoardRegistry)({
+        register: () => Effect.die("unused workflow board register"),
+        getDefinition: () => Effect.succeed(null),
+        getLane: () => Effect.succeed(null),
+      }),
+      Layer.mock(TicketDiffQuery)({
+        getTicketDiff: () => Effect.die("unused workflow ticket diff"),
+      }),
+      Layer.mock(WorkflowBoardEvents)({
+        publish: () => Effect.void,
+        stream: () => Stream.empty,
+      }),
+      Layer.mock(WorkflowBoardSaveLocks)({
+        withSaveLock: (_boardId, effect) => effect,
+      }),
+      Layer.mock(WorkflowBoardVersionStore)({
+        record: () => Effect.void,
+        list: () => Effect.succeed([]),
+        get: () => Effect.succeed(null),
+        deleteForBoard: () => Effect.void,
+      }),
+      Layer.mock(WorkflowFileLoader)({
+        loadAndRegister: () => Effect.die("unused workflow file load"),
+      }),
+      Layer.mock(BoardDiscovery)({
+        discover: () => Effect.succeed([]),
+        list: () => Effect.succeed([]),
+      }),
+      Layer.mock(ProjectWorkspaceResolver)({
+        resolve: () => Effect.succeed("/tmp/default-project"),
+      }),
+      Layer.mock(ProjectScriptTrust)({
+        isTrusted: () => Effect.succeed(false),
+        setTrusted: () => Effect.void,
+      }),
+      Layer.mock(WorkSourceConnectionStore)({
+        getToken: (connectionRef) => Effect.fail(new WorkSourceAuthError({ connectionRef })),
+        getConnectionAuth: (connectionRef) =>
+          Effect.fail(new WorkSourceAuthError({ connectionRef })),
+        create: () => Effect.die("unused work-source connection create"),
+        list: () => Effect.succeed([]),
+        remove: () => Effect.void,
+      }),
+      Layer.mock(WorkSourceProviderRegistry)({
+        get: () => {
+          throw new Error("unused work-source provider registry get");
+        },
+      }),
+      Layer.mock(WorkflowSourceCommitter)({
+        reconcileChunk: () => Effect.die("unused work-source committer reconcileChunk"),
+      }),
+    );
 
+    // @effect-diagnostics-next-line unnecessaryPipeChain:off — split because a single pipe caps at 20 args; merging re-introduces TS2554
     const servedRoutesLayer = HttpRouter.serve(
       makeRoutesLayer.pipe(Layer.provide(serviceLauncherClientLayer)),
       {
         disableListenLog: true,
         disableLogger: true,
       },
-    ).pipe(
-      Layer.provide(
-        Layer.mock(Keybindings.Keybindings)({
-          loadConfigState: Effect.succeed({
-            keybindings: [],
-            issues: [],
-          }),
-          streamChanges: Stream.empty,
-          ...options?.layers?.keybindings,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-          refresh: () => Effect.succeed([]),
-          refreshInstance: () => Effect.succeed([]),
-          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-            Effect.succeed(
-              makeManualOnlyProviderMaintenanceCapabilities({ provider, packageName: null }),
-            ),
-          setProviderMaintenanceActionState: () => Effect.succeed([]),
-          streamChanges: Stream.empty,
-          ...options?.layers?.providerRegistry,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ServerSettings.ServerSettingsService)({
-          start: Effect.void,
-          ready: Effect.void,
-          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
-          updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
-          streamChanges: Stream.empty,
-          ...options?.layers?.serverSettings,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ExternalLauncher.ExternalLauncher)({
-          resolveAvailableEditors: () => Effect.succeed([]),
-          ...options?.layers?.externalLauncher,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
-          read: Effect.succeed({
-            serverPid: process.pid,
-            readAt: TEST_EPOCH,
-            processCount: 0,
-            totalRssBytes: 0,
-            totalCpuPercent: 0,
-            processes: [],
-            error: Option.none(),
-          }),
-          signal: (input) =>
-            Effect.succeed({
-              pid: input.pid,
-              signal: input.signal,
-              signaled: true,
-              message: Option.none(),
+    )
+      .pipe(
+        Layer.provide(
+          Layer.mock(Keybindings.Keybindings)({
+            loadConfigState: Effect.succeed({
+              keybindings: [],
+              issues: [],
             }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
-          readHistory: (input) =>
-            Effect.succeed({
-              readAt: TEST_EPOCH,
-              windowMs: input.windowMs,
-              bucketMs: input.bucketMs,
-              sampleIntervalMs: 5_000,
-              retainedSampleCount: 0,
-              totalCpuSecondsApprox: 0,
-              buckets: [],
-              topProcesses: [],
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TraceDiagnostics.TraceDiagnostics)({
-          read: () =>
-            Effect.succeed({
-              traceFilePath: "",
-              scannedFilePaths: [],
-              readAt: TEST_EPOCH,
-              recordCount: 0,
-              parseErrorCount: 0,
-              firstSpanAt: Option.none(),
-              lastSpanAt: Option.none(),
-              failureCount: 0,
-              interruptionCount: 0,
-              slowSpanThresholdMs: 1_000,
-              slowSpanCount: 0,
-              logLevelCounts: {},
-              topSpansByCount: [],
-              slowestSpans: [],
-              commonFailures: [],
-              latestFailures: [],
-              latestWarningAndErrorLogs: [],
-              partialFailure: Option.none(),
-              error: Option.none(),
-            }),
-        }),
-      ),
-      Layer.provide(gitManagerLayer),
-      Layer.provide(gitVcsDriverLayer),
-      Layer.provide(gitWorkflowLayer),
-      Layer.provide(reviewLayer),
-      Layer.provide(vcsProvisioningLayer),
-      Layer.provide(
-        Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
-          ...options?.layers?.sourceControlRepositoryService,
-        }),
-      ),
-      Layer.provideMerge(vcsStatusBroadcasterLayer),
-      Layer.provide(
-        Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
-          runForThread: () => Effect.succeed({ status: "no-script" as const }),
-          ...options?.layers?.projectSetupScriptRunner,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(TerminalManager.TerminalManager)({
-          ...options?.layers?.terminalManager,
-        }),
-      ),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(PreviewManager.PreviewManager)({
-            open: () => Effect.die("PreviewManager not stubbed in this test"),
-            navigate: () => Effect.die("PreviewManager not stubbed in this test"),
-            resize: () => Effect.die("PreviewManager not stubbed in this test"),
-            reportStatus: () => Effect.void,
-            refresh: () => Effect.void,
-            close: () => Effect.void,
-            list: () => Effect.succeed({ sessions: [], serverEpoch: "test-server", revision: 0 }),
-            events: Stream.empty,
-            subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
-              PubSub.subscribe(pubsub),
-            ),
-          }),
-          Layer.mock(PortScanner.PortDiscovery)({
-            scan: () => Effect.succeed([]),
-            subscribe: () => Effect.void,
-            retain: Effect.void,
-            registerTerminalProcesses: () => Effect.void,
-            unregisterTerminal: () => Effect.void,
+            streamChanges: Stream.empty,
+            ...options?.layers?.keybindings,
           }),
         ),
-      ),
-      Layer.provide(
-        Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-          readEvents: () => Stream.empty,
-          dispatch: () => Effect.succeed({ sequence: 0 }),
-          streamDomainEvents: Stream.empty,
-          latestSequence: Effect.succeed(0),
-          ...options?.layers?.orchestrationEngine,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
-          getShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
+        Layer.provide(
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+            refresh: () => Effect.succeed([]),
+            refreshInstance: () => Effect.succeed([]),
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({
+                  provider,
+                  packageName: null,
+                }),
+              ),
+            setProviderMaintenanceActionState: () => Effect.succeed([]),
+            streamChanges: Stream.empty,
+            ...options?.layers?.providerRegistry,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            start: Effect.void,
+            ready: Effect.void,
+            getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            updateSettings: () => Effect.succeed(DEFAULT_SERVER_SETTINGS),
+            streamChanges: Stream.empty,
+            ...options?.layers?.serverSettings,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ExternalLauncher.ExternalLauncher)({
+            resolveAvailableEditors: () => Effect.succeed([]),
+            ...options?.layers?.externalLauncher,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({
+            read: Effect.succeed({
+              serverPid: process.pid,
+              readAt: TEST_EPOCH,
+              processCount: 0,
+              totalRssBytes: 0,
+              totalCpuPercent: 0,
+              processes: [],
+              error: Option.none(),
             }),
-          getArchivedShellSnapshot: () =>
-            Effect.succeed({
-              snapshotSequence: 0,
-              projects: [],
-              threads: [],
-              updatedAt: "1970-01-01T00:00:00.000Z",
+            signal: (input) =>
+              Effect.succeed({
+                pid: input.pid,
+                signal: input.signal,
+                signaled: true,
+                message: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({
+            readHistory: (input) =>
+              Effect.succeed({
+                readAt: TEST_EPOCH,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 5_000,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TraceDiagnostics.TraceDiagnostics)({
+            read: () =>
+              Effect.succeed({
+                traceFilePath: "",
+                scannedFilePaths: [],
+                readAt: TEST_EPOCH,
+                recordCount: 0,
+                parseErrorCount: 0,
+                firstSpanAt: Option.none(),
+                lastSpanAt: Option.none(),
+                failureCount: 0,
+                interruptionCount: 0,
+                slowSpanThresholdMs: 1_000,
+                slowSpanCount: 0,
+                logLevelCounts: {},
+                topSpansByCount: [],
+                slowestSpans: [],
+                commonFailures: [],
+                latestFailures: [],
+                latestWarningAndErrorLogs: [],
+                partialFailure: Option.none(),
+                error: Option.none(),
+              }),
+          }),
+        ),
+        Layer.provide(gitManagerLayer),
+        Layer.provide(gitVcsDriverLayer),
+        Layer.provide(gitWorkflowLayer),
+        Layer.provide(reviewLayer),
+        Layer.provide(vcsProvisioningLayer),
+        Layer.provide(
+          Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+            ...options?.layers?.sourceControlRepositoryService,
+          }),
+        ),
+        Layer.provideMerge(vcsStatusBroadcasterLayer),
+        Layer.provide(
+          Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+            runForThread: () => Effect.succeed({ status: "no-script" as const }),
+            ...options?.layers?.projectSetupScriptRunner,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(TerminalManager.TerminalManager)({
+            ...options?.layers?.terminalManager,
+          }),
+        ),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PreviewManager.PreviewManager)({
+              open: () => Effect.die("PreviewManager not stubbed in this test"),
+              navigate: () => Effect.die("PreviewManager not stubbed in this test"),
+              resize: () => Effect.die("PreviewManager not stubbed in this test"),
+              reportStatus: () => Effect.void,
+              refresh: () => Effect.void,
+              close: () => Effect.void,
+              list: () =>
+                Effect.succeed({
+                  sessions: [],
+                  serverEpoch: "test-server",
+                  revision: 0,
+                }),
+              events: Stream.empty,
+              subscribeEvents: Effect.flatMap(PubSub.unbounded<PreviewEvent>(), (pubsub) =>
+                PubSub.subscribe(pubsub),
+              ),
             }),
-          searchThreads: () => Effect.succeed({ matches: [] }),
-          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
-          getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
-          ...options?.layers?.projectionSnapshotQuery,
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
-          getTurnDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
+            Layer.mock(PortScanner.PortDiscovery)({
+              scan: () => Effect.succeed([]),
+              subscribe: () => Effect.void,
+              retain: Effect.void,
+              registerTerminalProcesses: () => Effect.void,
+              unregisterTerminal: () => Effect.void,
             }),
-          getFullThreadDiff: () =>
-            Effect.succeed({
-              threadId: defaultThreadId,
-              fromTurnCount: 0,
-              toTurnCount: 0,
-              diff: "",
-            }),
-          ...options?.layers?.checkpointDiffQuery,
-        }),
-      ),
-    );
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.succeed({ sequence: 0 }),
+            streamDomainEvents: Stream.empty,
+            latestSequence: Effect.succeed(0),
+            ...options?.layers?.orchestrationEngine,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getCommandReadModel: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getSnapshot: () => Effect.succeed(makeDefaultOrchestrationReadModel()),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            getArchivedShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 0,
+                projects: [],
+                threads: [],
+                updatedAt: "1970-01-01T00:00:00.000Z",
+              }),
+            searchThreads: () => Effect.succeed({ matches: [] }),
+            getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
+            getProjectShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadDetailById: () => Effect.succeed(Option.none()),
+            getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+            getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+            getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+            getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+            // Workflow dispatch threads are hidden; default mock keeps them public
+            // so existing shell-stream tests exercise the normal upsert path.
+            isThreadHidden: () => Effect.succeed(false),
+            ...options?.layers?.projectionSnapshotQuery,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({
+            getTurnDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            getFullThreadDiff: () =>
+              Effect.succeed({
+                threadId: defaultThreadId,
+                fromTurnCount: 0,
+                toTurnCount: 0,
+                diff: "",
+              }),
+            ...options?.layers?.checkpointDiffQuery,
+          }),
+        ),
+        // Split into a second `.pipe()`: a single pipe caps at 20 args, and
+        // upstream + the workflow provides together exceed that.
+      )
+      .pipe(Layer.provide(workflowRouteServicesLayer));
 
     const appLayer = servedRoutesLayer.pipe(
       Layer.provide(resourceTelemetryLayer),
@@ -842,6 +965,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({
           awaitCommandReady: Effect.void,
+          awaitWorkflowReady: Effect.void,
           markHttpListening: Effect.void,
           enqueueCommand: (effect) => effect,
           ...options?.layers?.serverRuntimeStartup,
@@ -1065,9 +1189,7 @@ const exchangeAccessToken = (
         subject_token: credential,
         subject_token_type: AuthEnvironmentBootstrapTokenType,
         requested_token_type: AuthAccessTokenType,
-        scope:
-          options?.scope ??
-          "orchestration:read orchestration:operate terminal:operate review:write relay:read access:read access:write relay:write",
+        scope: options?.scope ?? administrativeScopeText,
         ...(options?.clientMetadata?.label ? { client_label: options.clientMetadata.label } : {}),
         ...(options?.clientMetadata?.deviceType
           ? { client_device_type: options.clientMetadata.deviceType }
@@ -1108,7 +1230,10 @@ const makeDpopProof = (input: {
           const { privateKey, publicKey } = NodeCrypto.generateKeyPairSync("ec", {
             namedCurve: "P-256",
           });
-          return { privateKey, publicJwk: publicKey.export({ format: "jwk" }) as DpopPublicJwk };
+          return {
+            privateKey,
+            publicJwk: publicKey.export({ format: "jwk" }) as DpopPublicJwk,
+          };
         })();
   const header = Buffer.from(
     JSON.stringify({
@@ -1252,7 +1377,11 @@ const fetchEffect = (input: Parameters<typeof fetch>[0], init?: RequestInit) => 
   const effect = HttpClient.execute(request);
   return (
     init?.redirect === "manual"
-      ? effect.pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }))
+      ? effect.pipe(
+          Effect.provideService(FetchHttpClient.RequestInit, {
+            redirect: "manual",
+          }),
+        )
       : effect
   ).pipe(Effect.mapError((cause) => new TestHttpRequestError({ cause })));
 };
@@ -1403,7 +1532,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-gate-" });
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-router-gate-",
+      });
       yield* fileSystem.writeFileString(path.join(staticDir, "index.html"), "ready");
       const entered = yield* Deferred.make<void>();
       const ready = yield* Deferred.make<void>();
@@ -1436,7 +1567,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const staticDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-static-" });
+      const staticDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-router-static-",
+      });
       const indexPath = path.join(staticDir, "index.html");
       yield* fileSystem.writeFileString(indexPath, "<html>router-static-ok</html>");
 
@@ -1595,10 +1728,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(tokenResponse.status, 200);
       assert.equal(tokenBody.issued_token_type, AuthAccessTokenType);
       assert.equal(tokenBody.token_type, "Bearer");
-      assert.equal(
-        tokenBody.scope,
-        "orchestration:read orchestration:operate terminal:operate review:write relay:read access:read access:write relay:write",
-      );
+      assert.equal(tokenBody.scope, administrativeScopeText);
       assert.equal(typeof tokenBody.access_token, "string");
 
       const sessionUrl = yield* getHttpServerUrl("/api/auth/session");
@@ -1616,16 +1746,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(sessionResponse.status, 200);
       assert.equal(sessionBody.authenticated, true);
       assert.equal(sessionBody.sessionMethod, "bearer-access-token");
-      assert.deepEqual(sessionBody.scopes, [
-        "orchestration:read",
-        "orchestration:operate",
-        "terminal:operate",
-        "review:write",
-        "relay:read",
-        "access:read",
-        "access:write",
-        "relay:write",
-      ]);
+      assert.deepEqual(sessionBody.scopes, [...AuthAdministrativeScopes]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -1701,7 +1822,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           headers: { cookie: ownerCookie },
           body: yield* HttpBody.json({}),
         });
-        const credential = (yield* credentialResponse.json) as { readonly credential: string };
+        const credential = (yield* credentialResponse.json) as {
+          readonly credential: string;
+        };
         const tokenUrl = yield* getHttpServerUrl("/oauth/token");
         const now = yield* DateTime.now;
         const tokenProof = makeDpopProof({
@@ -1737,9 +1860,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const bearerResponse = yield* fetchEffect(sessionUrl, {
           headers: { authorization: `Bearer ${token.access_token}` },
         });
-        const bearerState = yield* responseJsonEffect<{ readonly authenticated: boolean }>(
-          bearerResponse,
-        );
+        const bearerState = yield* responseJsonEffect<{
+          readonly authenticated: boolean;
+        }>(bearerResponse);
         assert.equal(bearerState.authenticated, false);
 
         const sessionProof = makeDpopProof({
@@ -2147,7 +2270,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         headers: { cookie: ownerCookie },
         body: yield* HttpBody.json({}),
       });
-      const credential = (yield* credentialResponse.json) as { readonly credential: string };
+      const credential = (yield* credentialResponse.json) as {
+        readonly credential: string;
+      };
       const pairedCookie = yield* getAuthenticatedSessionCookieHeader(credential.credential);
       const linkStateUrl = yield* getHttpServerUrl("/api/connect/link-state");
       const response = yield* fetchEffect(linkStateUrl, {
@@ -2234,7 +2359,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         headers: { cookie: ownerCookie },
         body: yield* HttpBody.json({}),
       });
-      const credential = (yield* credentialResponse.json) as { readonly credential: string };
+      const credential = (yield* credentialResponse.json) as {
+        readonly credential: string;
+      };
       const pairedCookie = yield* getAuthenticatedSessionCookieHeader(credential.credential);
       const pairedResponse = yield* fetchEffect(preferencesUrl, {
         method: "POST",
@@ -2335,18 +2462,18 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         cloudUserId: "user_123",
         environmentCredential: "   ",
       });
-      const insecureRelayUrlBody = yield* responseJsonEffect<{ readonly message?: string }>(
-        insecureRelayUrl,
-      );
-      const insecureRelayIssuerBody = yield* responseJsonEffect<{ readonly message?: string }>(
-        insecureRelayIssuer,
-      );
-      const nonOriginRelayUrlBody = yield* responseJsonEffect<{ readonly message?: string }>(
-        nonOriginRelayUrl,
-      );
-      const emptyCredentialBody = yield* responseJsonEffect<{ readonly message?: string }>(
-        emptyCredential,
-      );
+      const insecureRelayUrlBody = yield* responseJsonEffect<{
+        readonly message?: string;
+      }>(insecureRelayUrl);
+      const insecureRelayIssuerBody = yield* responseJsonEffect<{
+        readonly message?: string;
+      }>(insecureRelayIssuer);
+      const nonOriginRelayUrlBody = yield* responseJsonEffect<{
+        readonly message?: string;
+      }>(nonOriginRelayUrl);
+      const emptyCredentialBody = yield* responseJsonEffect<{
+        readonly message?: string;
+      }>(emptyCredential);
 
       assert.equal(insecureRelayUrl.status, 400);
       assert.equal(insecureRelayUrlBody.message, "Relay URL must be a secure absolute HTTPS URL.");
@@ -3356,7 +3483,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const { response: exchangeResponse, body: tokenBody } = yield* exchangeAccessToken(
         defaultDesktopBootstrapToken,
-        { scope: "access:write" },
+        {
+          scope: "access:write",
+        },
       );
       assert.equal(exchangeResponse.status, 200);
       assert.equal(tokenBody.scope, "access:write");
@@ -3382,7 +3511,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           authorization: `Bearer ${tokenBody.access_token ?? ""}`,
         },
       });
-      const wsTicketBody = (yield* wsTicketResponse.json) as { readonly ticket: string };
+      const wsTicketBody = (yield* wsTicketResponse.json) as {
+        readonly ticket: string;
+      };
       assert.equal(overbroadPairingResponse.status, 403);
       assert.equal(overbroadPairingBody.requiredScope, "orchestration:read");
       assert.equal(pairingResponse.status, 200);
@@ -4479,7 +4610,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-auth-required-" });
+      const workspaceDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-auth-required-",
+      });
       yield* fs.writeFileString(
         path.join(workspaceDir, "needle-file.ts"),
         "export const needle = 1;",
@@ -4672,7 +4805,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           version: 1 as const,
           sequence: 2,
           type: "ready" as const,
-          payload: { at: "2026-01-01T00:00:00.000Z", environment: testEnvironmentDescriptor },
+          payload: {
+            at: "2026-01-01T00:00:00.000Z",
+            environment: testEnvironmentDescriptor,
+          },
         });
 
         yield* buildAppUnderTest({
@@ -4706,7 +4842,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-search-" });
+      const workspaceDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-search-",
+      });
       yield* fs.writeFileString(
         path.join(workspaceDir, "needle-file.ts"),
         "export const needle = 1;",
@@ -4735,8 +4873,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-files-" });
-      yield* fs.makeDirectory(path.join(workspaceDir, "src"), { recursive: true });
+      const workspaceDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-files-",
+      });
+      yield* fs.makeDirectory(path.join(workspaceDir, "src"), {
+        recursive: true,
+      });
       yield* fs.writeFileString(
         path.join(workspaceDir, "src", "index.ts"),
         "export const answer = 42;\n",
@@ -4748,7 +4890,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.all({
-            listing: client[WS_METHODS.projectsListEntries]({ cwd: workspaceDir }),
+            listing: client[WS_METHODS.projectsListEntries]({
+              cwd: workspaceDir,
+            }),
             file: client[WS_METHODS.projectsReadFile]({
               cwd: workspaceDir,
               relativePath: "src/index.ts",
@@ -4775,12 +4919,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         prefix: "t3-ws-project-search-gitignored-",
       });
       yield* fs.writeFileString(path.join(workspaceDir, ".gitignore"), ".venv/\n");
-      yield* fs.makeDirectory(path.join(workspaceDir, ".venv", "lib"), { recursive: true });
+      yield* fs.makeDirectory(path.join(workspaceDir, ".venv", "lib"), {
+        recursive: true,
+      });
       yield* fs.writeFileString(
         path.join(workspaceDir, ".venv", "lib", "ignored-search-target.ts"),
         "export const ignored = true;",
       );
-      yield* fs.makeDirectory(path.join(workspaceDir, "src"), { recursive: true });
+      yield* fs.makeDirectory(path.join(workspaceDir, "src"), {
+        recursive: true,
+      });
       yield* fs.writeFileString(
         path.join(workspaceDir, "src", "tracked.ts"),
         "export const ok = 1;",
@@ -4853,9 +5001,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               query: sensitiveQuery,
               limit: 10,
             }).pipe(Effect.result),
-            list: client[WS_METHODS.projectsListEntries]({ cwd: invalidWorkspace }).pipe(
-              Effect.result,
-            ),
+            list: client[WS_METHODS.projectsListEntries]({
+              cwd: invalidWorkspace,
+            }).pipe(Effect.result),
             read: client[WS_METHODS.projectsReadFile]({
               cwd: workspaceDir,
               relativePath: "linked-outside.txt",
@@ -4953,7 +5101,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         const wsUrl = yield* getWsServerUrl("/ws");
         return yield* Effect.scoped(
           withWsRpcClient(wsUrl, (client) =>
-            client[WS_METHODS.projectsListEntries]({ cwd: workspaceRoot }).pipe(Effect.result),
+            client[WS_METHODS.projectsListEntries]({
+              cwd: workspaceRoot,
+            }).pipe(Effect.result),
           ),
         );
       }).pipe(Effect.ensuring(fs.chmod(blockedRoot, 0o700).pipe(Effect.ignore)));
@@ -4972,7 +5122,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-write-" });
+      const workspaceDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-write-",
+      });
 
       yield* buildAppUnderTest();
 
@@ -4997,7 +5149,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const parentDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-create-" });
+      const parentDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-create-",
+      });
       const missingWorkspaceRoot = path.join(parentDir, "nested", "new-project");
 
       yield* buildAppUnderTest();
@@ -5030,7 +5184,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("routes websocket rpc projects.writeFile errors", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-write-" });
+      const workspaceDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-write-",
+      });
 
       yield* buildAppUnderTest();
 
@@ -5996,7 +6152,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
 
-      assert.deepEqual(Option.getOrThrow(firstItem), { kind: "synchronized" });
+      assert.deepEqual(Option.getOrThrow(firstItem), {
+        kind: "synchronized",
+      });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6317,7 +6475,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               Effect.succeed({
                 snapshotSequence: 100_000,
                 projects: [],
-                threads: [makeDefaultOrchestrationThreadShell({ id: snapshotThreadId })],
+                threads: [
+                  makeDefaultOrchestrationThreadShell({
+                    id: snapshotThreadId,
+                  }),
+                ],
                 updatedAt: now,
               }),
           },
@@ -6374,9 +6536,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = yield* getWsServerUrl("/ws");
       const first = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 10 }).pipe(
-            Stream.runHead,
-          ),
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 10,
+          }).pipe(Stream.runHead),
         ),
       );
 
@@ -6617,16 +6779,78 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
-            Stream.take(1),
-            Stream.runCollect,
-          ),
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 0,
+          }).pipe(Stream.take(1), Stream.runCollect),
         ),
       );
 
       const [first] = Array.from(items);
       assert.equal(first?.kind, "thread-removed");
       assert.equal(first?.kind === "thread-removed" ? first.threadId : null, goneThreadId);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeShell excludes hidden workflow threads from live shell upserts", () =>
+    Effect.gen(function* () {
+      const hiddenThreadId = ThreadId.make("thread-workflow-hidden");
+      const visibleThreadId = ThreadId.make("thread-user-visible");
+      const now = "2026-01-01T00:00:00.000Z";
+
+      const makeCreatedEvent = (sequence: number, threadId: ThreadId): OrchestrationEvent =>
+        ({
+          sequence,
+          eventId: EventId.make(`event-created-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.created",
+          payload: {} as never,
+        }) satisfies OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(2),
+            readEvents: () =>
+              Stream.fromIterable([
+                makeCreatedEvent(1, hiddenThreadId),
+                makeCreatedEvent(2, visibleThreadId),
+              ]),
+          },
+          projectionSnapshotQuery: {
+            // By-id still resolves hidden rows (agent session viewing); the
+            // shell stream must not treat that as a public upsert.
+            getThreadShellById: (threadId) =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }))),
+            isThreadHidden: (threadId) => Effect.succeed(threadId === hiddenThreadId),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 0,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      const collected = Array.from(items);
+      const upsertedIds = collected.flatMap((item) =>
+        item.kind === "thread-upserted" ? [item.thread.id] : [],
+      );
+      const removedIds = collected.flatMap((item) =>
+        item.kind === "thread-removed" ? [item.threadId] : [],
+      );
+      assert.include(upsertedIds, visibleThreadId);
+      assert.notInclude(upsertedIds, hiddenThreadId);
+      assert.include(removedIds, hiddenThreadId);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -6678,10 +6902,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
-            Stream.take(1),
-            Stream.runCollect,
-          ),
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 0,
+          }).pipe(Stream.take(1), Stream.runCollect),
         ),
       );
 
@@ -6737,10 +6960,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = yield* getWsServerUrl("/ws");
       const items = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({ afterSequence: 0 }).pipe(
-            Stream.take(1),
-            Stream.runCollect,
-          ),
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 0,
+          }).pipe(Stream.take(1), Stream.runCollect),
         ),
       );
 
@@ -6924,7 +7146,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getThreadShellById: () =>
               Effect.succeed(
-                Option.some(makeDefaultOrchestrationThreadShell({ id: threadId, session: null })),
+                Option.some(
+                  makeDefaultOrchestrationThreadShell({
+                    id: threadId,
+                    session: null,
+                  }),
+                ),
               ),
           },
         },

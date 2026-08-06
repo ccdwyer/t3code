@@ -73,6 +73,11 @@ export class ServerConfig extends Context.Service<
     readonly staticDir: string | undefined;
     readonly devUrl: URL | undefined;
     readonly devAllowedOrigins: ReadonlyArray<string>;
+    /** Optional base URL for building absolute ticket links in outbound deliveries
+     * (e.g. the Slack "View ticket" button, which requires an absolute URL).
+     * Undefined when unset → outbound links are omitted. Sourced from
+     * T3CODE_WEB_BASE_URL. */
+    readonly webBaseUrl: URL | undefined;
     readonly noBrowser: boolean;
     readonly startupPresentation: StartupPresentation;
     readonly desktopBootstrapToken: string | undefined;
@@ -144,11 +149,21 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
       fs.makeDirectory(derivedPaths.terminalLogsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.attachmentsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.worktreesDir, { recursive: true }),
-      fs.makeDirectory(path.dirname(derivedPaths.keybindingsConfigPath), { recursive: true }),
-      fs.makeDirectory(path.dirname(derivedPaths.settingsPath), { recursive: true }),
-      fs.makeDirectory(derivedPaths.providerStatusCacheDir, { recursive: true }),
-      fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), { recursive: true }),
-      fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), { recursive: true }),
+      fs.makeDirectory(path.dirname(derivedPaths.keybindingsConfigPath), {
+        recursive: true,
+      }),
+      fs.makeDirectory(path.dirname(derivedPaths.settingsPath), {
+        recursive: true,
+      }),
+      fs.makeDirectory(derivedPaths.providerStatusCacheDir, {
+        recursive: true,
+      }),
+      fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), {
+        recursive: true,
+      }),
+      fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), {
+        recursive: true,
+      }),
     ],
     { concurrency: "unbounded" },
   );
@@ -195,6 +210,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     staticDir: undefined,
     devUrl,
     devAllowedOrigins: [],
+    webBaseUrl: undefined,
     noBrowser: false,
     startupPresentation: "browser",
   });

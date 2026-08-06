@@ -70,7 +70,10 @@ export const DEFAULT_GLASS_OPACITY: GlassOpacity = 80;
 export const MIN_INTERFACE_FONT_SIZE = 12;
 export const MAX_INTERFACE_FONT_SIZE = 20;
 export const InterfaceFontSize = Schema.Int.check(
-  Schema.isBetween({ minimum: MIN_INTERFACE_FONT_SIZE, maximum: MAX_INTERFACE_FONT_SIZE }),
+  Schema.isBetween({
+    minimum: MIN_INTERFACE_FONT_SIZE,
+    maximum: MAX_INTERFACE_FONT_SIZE,
+  }),
 );
 export type InterfaceFontSize = typeof InterfaceFontSize.Type;
 export const DEFAULT_INTERFACE_FONT_SIZE: InterfaceFontSize = 16;
@@ -78,7 +81,10 @@ export const DEFAULT_INTERFACE_FONT_SIZE: InterfaceFontSize = 16;
 export const MIN_PROMPT_FONT_SIZE = 12;
 export const MAX_PROMPT_FONT_SIZE = 20;
 export const PromptFontSize = Schema.Int.check(
-  Schema.isBetween({ minimum: MIN_PROMPT_FONT_SIZE, maximum: MAX_PROMPT_FONT_SIZE }),
+  Schema.isBetween({
+    minimum: MIN_PROMPT_FONT_SIZE,
+    maximum: MAX_PROMPT_FONT_SIZE,
+  }),
 );
 export type PromptFontSize = typeof PromptFontSize.Type;
 export const DEFAULT_PROMPT_FONT_SIZE: PromptFontSize = 14;
@@ -86,7 +92,10 @@ export const DEFAULT_PROMPT_FONT_SIZE: PromptFontSize = 14;
 export const MIN_CODE_FONT_SIZE = 10;
 export const MAX_CODE_FONT_SIZE = 18;
 export const CodeFontSize = Schema.Int.check(
-  Schema.isBetween({ minimum: MIN_CODE_FONT_SIZE, maximum: MAX_CODE_FONT_SIZE }),
+  Schema.isBetween({
+    minimum: MIN_CODE_FONT_SIZE,
+    maximum: MAX_CODE_FONT_SIZE,
+  }),
 );
 export type CodeFontSize = typeof CodeFontSize.Type;
 export const DEFAULT_CODE_FONT_SIZE: CodeFontSize = 13;
@@ -94,7 +103,10 @@ export const DEFAULT_CODE_FONT_SIZE: CodeFontSize = 13;
 export const MIN_TERMINAL_FONT_SIZE = 8;
 export const MAX_TERMINAL_FONT_SIZE = 20;
 export const TerminalFontSize = Schema.Int.check(
-  Schema.isBetween({ minimum: MIN_TERMINAL_FONT_SIZE, maximum: MAX_TERMINAL_FONT_SIZE }),
+  Schema.isBetween({
+    minimum: MIN_TERMINAL_FONT_SIZE,
+    maximum: MAX_TERMINAL_FONT_SIZE,
+  }),
 );
 export type TerminalFontSize = typeof TerminalFontSize.Type;
 export const DEFAULT_TERMINAL_FONT_SIZE: TerminalFontSize = 12;
@@ -110,9 +122,43 @@ export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationM
 export const FontFamilyPreference = Schema.String.check(Schema.isMaxLength(200));
 export type FontFamilyPreference = typeof FontFamilyPreference.Type;
 
+// ── Codex Micro (local-only device prefs) ─────────────────────────────
+
+export const CodexMicroBrightnessValue = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: 100 }),
+);
+export type CodexMicroBrightnessValue = typeof CodexMicroBrightnessValue.Type;
+export const DEFAULT_CODEX_MICRO_BRIGHTNESS: CodexMicroBrightnessValue = 70;
+
+export const CodexMicroAgentKeysSource = Schema.Literals(["recentChats"]);
+export type CodexMicroAgentKeysSource = typeof CodexMicroAgentKeysSource.Type;
+export const DEFAULT_CODEX_MICRO_AGENT_KEYS_SOURCE: CodexMicroAgentKeysSource = "recentChats";
+
+export const SidebarV2Mode = Schema.Literals(["threads", "workflows"]);
+export type SidebarV2Mode = typeof SidebarV2Mode.Type;
+export const DEFAULT_SIDEBAR_V2_MODE: SidebarV2Mode = "threads";
+
 export const ClientSettingsSchema = Schema.Struct({
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Codex Micro macro-pad prefs. LED sync stays off until D1 hardware capture
+  // proves the ledWrite capability; the other prefs are inert until then.
+  codexMicroLedSyncEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  codexMicroBrightness: CodexMicroBrightnessValue.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODEX_MICRO_BRIGHTNESS)),
+  ),
+  codexMicroAutoDim: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Environments whose server keybindings have already received the Codex
+  // Micro seeded layout. Keyed per environment because keybindings are
+  // server-owned: one machine-local boolean would let environment A's seeding
+  // suppress environment B's (or a settings wipe re-seed over user edits —
+  // seeding must additionally never replace existing rules).
+  codexMicroKeybindingsSeededEnvironments: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  codexMicroAgentKeysSource: CodexMicroAgentKeysSource.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODEX_MICRO_AGENT_KEYS_SOURCE)),
+  ),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -179,6 +225,7 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.NullOr(SidebarAutoSettleAfterDays).pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
+  renderHtmlEmbeds: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -194,6 +241,11 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
+  ),
+  // Sidebar v2 list mode (threads vs workflows). The legacy sidebar keeps
+  // per-project board rows.
+  sidebarV2Mode: SidebarV2Mode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_V2_MODE)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -335,7 +387,10 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         title: "CLAUDE_CONFIG_DIR path",
         description:
           "Custom Claude home and config directory. Keeps .claude.json and .claude separate.",
-        providerSettingsForm: { placeholder: "~/.claude", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          placeholder: "~/.claude",
+          clearWhenEmpty: "omit",
+        },
       }),
     ),
     customModels: Schema.Array(Schema.String).pipe(
@@ -370,7 +425,10 @@ export const CursorSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Binary path",
         description: "Path to the Cursor agent binary.",
-        providerSettingsForm: { placeholder: "cursor-agent", clearWhenEmpty: "omit" },
+        providerSettingsForm: {
+          placeholder: "cursor-agent",
+          clearWhenEmpty: "omit",
+        },
       }),
     ),
     apiEndpoint: TrimmedString.pipe(
@@ -755,6 +813,11 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  codexMicroLedSyncEnabled: Schema.optionalKey(Schema.Boolean),
+  codexMicroBrightness: Schema.optionalKey(CodexMicroBrightnessValue),
+  codexMicroAutoDim: Schema.optionalKey(Schema.Boolean),
+  codexMicroKeybindingsSeededEnvironments: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  codexMicroAgentKeysSource: Schema.optionalKey(CodexMicroAgentKeysSource),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
   glassOpacity: Schema.optionalKey(GlassOpacity),
@@ -791,6 +854,7 @@ export const ClientSettingsPatch = Schema.Struct({
   planModeEnabled: Schema.optionalKey(Schema.Boolean),
   legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
+  renderHtmlEmbeds: Schema.optionalKey(Schema.Boolean),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
@@ -798,6 +862,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
+  sidebarV2Mode: Schema.optionalKey(SidebarV2Mode),
   timestampFormat: Schema.optionalKey(TimestampFormat),
   wordWrap: Schema.optionalKey(Schema.Boolean),
 });

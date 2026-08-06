@@ -1,9 +1,12 @@
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as Path from "effect/Path";
+import * as FileSystem from "effect/FileSystem";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -51,10 +54,15 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
+  type TicketId,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
+  type TerminalHistoryAttachStreamEvent,
   type TerminalMetadataStreamEvent,
+  TICKET_NO_WORKTREE_MESSAGE,
+  WORKFLOW_WS_METHODS,
+  WorkflowRpcError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -64,6 +72,8 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
+import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import {
@@ -79,6 +89,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import { ProviderService } from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -87,7 +98,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
-import { issueAssetUrl } from "./assets/AssetAccess.ts";
+import { issueAssetUrl, issueTicketScratchUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -102,6 +113,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
+export { RPC_REQUIRED_SCOPE } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -120,6 +132,32 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import { BoardDiscovery } from "./workflow/Services/BoardDiscovery.ts";
+import { BoardRegistry } from "./workflow/Services/BoardRegistry.ts";
+import { ProjectScriptTrust } from "./workflow/Services/ProjectScriptTrust.ts";
+import { ProjectWorkspaceResolver } from "./workflow/Services/ProjectWorkspaceResolver.ts";
+import { TicketDiffQuery } from "./workflow/Services/TicketDiffQuery.ts";
+import { WorkflowBoardEvents } from "./workflow/Services/WorkflowBoardEvents.ts";
+import { WorkflowBoardSaveLocks } from "./workflow/Services/WorkflowBoardSaveLocks.ts";
+import { WorkflowBoardVersionStore } from "./workflow/Services/WorkflowBoardVersionStore.ts";
+import { WorkflowEngine } from "./workflow/Services/WorkflowEngine.ts";
+import { WorkflowAgentSessionStore } from "./workflow/Services/WorkflowAgentSessionStore.ts";
+import { WorkflowEventStore } from "./workflow/Services/WorkflowEventStore.ts";
+import { WorkflowIntakeService } from "./workflow/Services/WorkflowIntake.ts";
+import { WorkflowThreadJanitor } from "./workflow/Services/WorkflowThreadJanitor.ts";
+import { PredicateEvaluator } from "./workflow/Services/PredicateEvaluator.ts";
+import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
+import { WorkflowWorktreeJanitor } from "./workflow/Services/WorkflowWorktreeJanitor.ts";
+import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
+import { WorkflowFileLoader } from "./workflow/Services/WorkflowFileLoader.ts";
+import { WorkflowReadModel } from "./workflow/Services/WorkflowReadModel.ts";
+import { TextGeneration } from "./textGeneration/TextGeneration.ts";
+import { WorkSourceConnectionStore } from "./workflow/Services/WorkSourceConnectionStore.ts";
+import { WorkSourceProviderRegistry } from "./workflow/Services/WorkSourceProvider.ts";
+import { WorkflowSourceCommitter } from "./workflow/Services/WorkflowSourceCommitter.ts";
+import { WorkflowOutboundConnectionStore } from "./workflow/Services/WorkflowOutboundConnectionStore.ts";
+import { workflowRpcHandlers } from "./workflow/Layers/WorkflowRpcHandlers.ts";
+import { ticketBaseRef } from "./workflow/ticketRefs.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
@@ -233,13 +271,26 @@ function projectFileFailureContext(
   switch (error._tag) {
     case "WorkspacePathOutsideRootError":
       return { failure: "workspace_path_outside_root" };
-    case "WorkspaceFileSystemOperationError":
+    case "WorkspaceFileSystemOperationError": {
+      const knownOperations = new Set<string>([
+        "realpath-workspace-root",
+        "realpath-target",
+        "open",
+        "stat",
+        "read",
+        "close",
+        "make-directory",
+        "write-file",
+      ]);
       return {
         failure: "operation_failed",
         resolvedPath: error.resolvedPath,
-        operation: error.operation,
+        ...(knownOperations.has(error.operation)
+          ? { operation: error.operation as ProjectFileOperation }
+          : {}),
         operationPath: error.operationPath,
       };
+    }
     case "WorkspaceFilePathEscapeError":
       return {
         failure: "resolved_path_outside_root",
@@ -413,6 +464,78 @@ const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const relayClient = yield* RelayClient.RelayClient;
+      const workflowEngine = yield* WorkflowEngine;
+      const workflowEventStore = yield* WorkflowEventStore;
+      const workflowWorktreeJanitor = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowWorktreeJanitor>,
+        WorkflowWorktreeJanitor,
+      );
+      const workflowArtifactStore = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<TicketArtifactStore>,
+        TicketArtifactStore,
+      );
+      // Captured once so the workflow handlers' URL-signing dep can run with
+      // the asset services without leaking them into the handler types (the
+      // surrounding getOption calls use the same as-cast idiom on Context).
+      const assetSigningContext = (yield* Effect.context<never>()) as Context.Context<
+        | Crypto.Crypto
+        | FileSystem.FileSystem
+        | Path.Path
+        | ProjectFaviconResolver.ProjectFaviconResolver
+        | ServerConfig.ServerConfig
+        | ServerSecretStore.ServerSecretStore
+        | WorkspacePaths.WorkspacePaths
+      >;
+      const workflowIntake = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowIntakeService>,
+        WorkflowIntakeService,
+      );
+      const workflowThreadJanitor = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowThreadJanitor>,
+        WorkflowThreadJanitor,
+      );
+      const workflowWebhook = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowWebhook>,
+        WorkflowWebhook,
+      );
+      const workflowAgentSessions = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowAgentSessionStore>,
+        WorkflowAgentSessionStore,
+      );
+      const workflowProviderService = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<ProviderService>,
+        ProviderService,
+      );
+      const workflowPredicates = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<PredicateEvaluator>,
+        PredicateEvaluator,
+      );
+      const workflowTextGeneration = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<TextGeneration>,
+        TextGeneration,
+      );
+      const workflowReadModel = yield* WorkflowReadModel;
+      const workflowBoardRegistry = yield* BoardRegistry;
+      const workflowTicketDiff = yield* TicketDiffQuery;
+      const workflowBoardEvents = yield* WorkflowBoardEvents;
+      const workflowBoardSaveLocks = yield* WorkflowBoardSaveLocks;
+      const workflowBoardVersions = yield* WorkflowBoardVersionStore;
+      const workflowFileLoader = yield* WorkflowFileLoader;
+      const workflowBoardDiscovery = yield* BoardDiscovery;
+      const workflowProjectWorkspaceResolver = yield* ProjectWorkspaceResolver;
+      const projectScriptTrust = yield* ProjectScriptTrust;
+      // WorkSourceConnectionStoreLive is provided by WorkflowServerRuntimeLive
+      // (via WorkSourceLive), so resolve it as a required service — the
+      // connection RPCs need a real store, not a standby no-op.
+      const workflowConnectionStore = yield* WorkSourceConnectionStore;
+      const workflowSourceProviders = yield* WorkSourceProviderRegistry;
+      const workflowSourceCommitter = yield* WorkflowSourceCommitter;
+      // WorkflowOutboundConnectionStore is optional — only available when the
+      // outbound feature is wired up by WorkflowServerRuntimeLive.
+      const workflowOutboundConnectionStore = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<WorkflowOutboundConnectionStore>,
+        WorkflowOutboundConnectionStore,
+      );
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -633,6 +756,13 @@ const makeWsRpcLayer = (
       // projection commits in the same transaction before the event publishes,
       // so a `none` reliably means the thread is deleted or archived, not
       // not-yet-persisted.
+      //
+      // Hidden (workflow-internal) threads are also treated as absent: shell
+      // snapshots already filter `hidden = 0`, but `getThreadShellById`
+      // intentionally resolves hidden rows so board "View agent session" can
+      // open them by id. Without this gate, live `thread.created` / turn
+      // events for workflow dispatches would still upsert into Sidebar v2's
+      // threads list.
       const threadUpsertOrRemove = (
         threadId: ThreadId,
         sequence: number,
@@ -640,7 +770,13 @@ const makeWsRpcLayer = (
         retryShellProjectionRead(
           "thread",
           threadId,
-          projectionSnapshotQuery.getThreadShellById(threadId),
+          Effect.gen(function* () {
+            const hidden = yield* projectionSnapshotQuery.isThreadHidden(threadId);
+            if (hidden) {
+              return Option.none();
+            }
+            return yield* projectionSnapshotQuery.getThreadShellById(threadId);
+          }),
         ).pipe(
           Effect.map(
             Option.flatMap((thread) =>
@@ -1028,7 +1164,146 @@ const makeWsRpcLayer = (
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+      const ticketWorktrees = {
+        resolveForTicket: (ticketId: TicketId) =>
+          Effect.gen(function* () {
+            const refName = `workflow/${ticketId as string}`;
+            const refs = yield* gitWorkflow
+              .listRefs({
+                cwd: config.cwd,
+                query: refName,
+                limit: 100,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new WorkflowRpcError({
+                      message: "Failed to resolve workflow ticket worktree refs",
+                      cause,
+                    }),
+                ),
+              );
+            const ref = refs.refs.find(
+              (candidate) =>
+                candidate.name === refName &&
+                candidate.isRemote !== true &&
+                candidate.worktreePath !== null,
+            );
+            if (!ref?.worktreePath) {
+              return yield* new WorkflowRpcError({
+                message: `Workflow ticket ${ticketId} ${TICKET_NO_WORKTREE_MESSAGE}`,
+              });
+            }
+            return {
+              cwd: ref.worktreePath,
+              baseRef: ticketBaseRef(ticketId),
+            };
+          }),
+      };
+
+      const workflowHandlers = workflowRpcHandlers({
+        engine: workflowEngine,
+        eventStore: workflowEventStore,
+        readModel: workflowReadModel,
+        boardRegistry: workflowBoardRegistry,
+        boardDiscovery: workflowBoardDiscovery,
+        projectWorkspaceResolver: workflowProjectWorkspaceResolver,
+        workspaceFileSystem,
+        ticketDiff: workflowTicketDiff,
+        ticketWorktrees,
+        boardEvents: workflowBoardEvents,
+        saveLocks: workflowBoardSaveLocks,
+        versionStore: workflowBoardVersions,
+        ...(Option.isSome(workflowWorktreeJanitor)
+          ? { worktreeJanitor: workflowWorktreeJanitor.value }
+          : {}),
+        ...(Option.isSome(workflowArtifactStore)
+          ? { artifactStore: workflowArtifactStore.value }
+          : {}),
+        issueArtifactUrl: (input) =>
+          issueAssetUrl({
+            resource: {
+              _tag: "ticket-artifact",
+              ticketId: input.ticketId as never,
+              artifactId: input.artifactId as never,
+              fileName: input.fileName as never,
+            },
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowRpcError({
+                  message: "Failed to sign ticket artifact URL",
+                  cause,
+                }),
+            ),
+            Effect.provide(assetSigningContext),
+          ),
+        issueScratchUrl: (input) =>
+          issueTicketScratchUrl({
+            _tag: "ticket-scratch",
+            workspaceRoot: input.workspaceRoot,
+            ticketId: input.ticketId,
+            relativePath: input.relativePath,
+            mime: input.mime,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowRpcError({
+                  message: "Failed to sign ticket scratch URL",
+                  cause,
+                }),
+            ),
+            Effect.provide(assetSigningContext),
+          ),
+        ...(Option.isSome(workflowIntake) ? { intake: workflowIntake.value } : {}),
+        ...(Option.isSome(workflowThreadJanitor)
+          ? { threadJanitor: workflowThreadJanitor.value }
+          : {}),
+        ...(Option.isSome(workflowWebhook) ? { webhook: workflowWebhook.value } : {}),
+        ...(Option.isSome(workflowAgentSessions)
+          ? { agentSessions: workflowAgentSessions.value }
+          : {}),
+        ...(Option.isSome(workflowProviderService)
+          ? { provider: workflowProviderService.value }
+          : {}),
+        ...(Option.isSome(workflowPredicates) ? { predicates: workflowPredicates.value } : {}),
+        ...(Option.isSome(workflowTextGeneration)
+          ? { textGeneration: workflowTextGeneration.value }
+          : {}),
+        fileLoader: workflowFileLoader,
+        projectScriptTrust,
+        connectionStore: workflowConnectionStore,
+        workSourceProviders: workflowSourceProviders,
+        sourceCommitter: workflowSourceCommitter,
+        ...(Option.isSome(workflowOutboundConnectionStore)
+          ? { outboundConnectionStore: workflowOutboundConnectionStore.value }
+          : {}),
+        observeRpcEffect,
+        observeRpcStreamEffect,
+        // Gate mutating workflow RPCs behind startup + workflow-recovery
+        // readiness (mirrors how orchestration commands go through
+        // startup.enqueueCommand): defer the effect until recovery is done, and
+        // fail it as a retryable WorkflowRpcError if startup/recovery failed.
+        // awaitWorkflowReady specifically rejects when recovery failed, so a
+        // half-recovered projection is never mutated.
+        gate: <A, E, R>(
+          effect: Effect.Effect<A, E, R>,
+        ): Effect.Effect<A, E | WorkflowRpcError, R> =>
+          Effect.all([startup.awaitCommandReady, startup.awaitWorkflowReady]).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowRpcError({
+                  message:
+                    "Workflow runtime is not ready (server is starting up or recovery failed)",
+                  cause,
+                }),
+            ),
+            Effect.andThen(effect),
+          ),
+      });
+
       return WsRpcGroup.of({
+        ...workflowHandlers,
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
@@ -1189,7 +1464,9 @@ const makeWsRpcLayer = (
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }).pipe(
+                        Queue.offer(liveBuffer, {
+                          kind: "synchronized" as const,
+                        }).pipe(
                           Effect.andThen(Queue.takeAll(liveBuffer)),
                           Effect.flatMap(coalesceShellLiveInputs),
                         ),
@@ -1305,15 +1582,6 @@ const makeWsRpcLayer = (
               // catch-up followed by the buffered/ongoing live events. Overlapping
               // events are deduped by sequence on the client.
               //
-              // The replay is bounded to the projection head captured below. The
-              // catch-up range is normally tiny (a fresh HTTP snapshot sequence),
-              // but a stale cached cursor can sit hundreds of thousands of global
-              // events behind — replaying that decodes every intervening event
-              // (including every other thread's tool payloads) only to discard
-              // almost all of them, which has OOM-killed servers on large
-              // databases. A truncated replay would silently drop this thread's
-              // events, so past the gap cap we reset the client with a fresh
-              // thread snapshot instead, exactly like subscribeShell above.
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
@@ -1339,7 +1607,9 @@ const makeWsRpcLayer = (
                     input.requestCompletionMarker === true
                       ? Stream.concat(
                           Stream.fromEffect(
-                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                            Queue.offer(liveBuffer, {
+                              kind: "synchronized" as const,
+                            }),
                           ).pipe(Stream.drain),
                           bufferedLiveStream,
                         )
@@ -1381,7 +1651,9 @@ const makeWsRpcLayer = (
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                        Queue.offer(liveBuffer, {
+                          kind: "synchronized" as const,
+                        }),
                       ).pipe(Stream.drain),
                       bufferedLiveStream,
                     )
@@ -1727,6 +1999,15 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
+              // Ticket-artifact URLs are minted ONLY by the workflow list
+              // handler (workflow:read scope, ticket-bound rows). The generic
+              // asset RPC runs under orchestration:read and must never become
+              // a refresh oracle for artifact claims.
+              if (input.resource._tag === "ticket-artifact") {
+                return yield* new AssetWorkspaceContextNotFoundError({
+                  resource: input.resource,
+                });
+              }
               if (input.resource._tag !== "workspace-file") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
@@ -1894,6 +2175,17 @@ const makeWsRpcLayer = (
             Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
               Effect.acquireRelease(
                 terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
+                (unsubscribe) => Effect.sync(unsubscribe),
+              ),
+            ),
+            { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.terminalAttachHistory]: (input) =>
+          observeRpcStream(
+            WS_METHODS.terminalAttachHistory,
+            Stream.callback<TerminalHistoryAttachStreamEvent, TerminalError>((queue) =>
+              Effect.acquireRelease(
+                terminalManager.attachHistoryStream(input, (event) => Queue.offer(queue, event)),
                 (unsubscribe) => Effect.sync(unsubscribe),
               ),
             ),

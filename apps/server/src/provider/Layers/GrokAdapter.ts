@@ -235,7 +235,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
-        ? yield* makeEventNdjsonLogger(options.nativeEventLogPath, { stream: "native" })
+        ? yield* makeEventNdjsonLogger(options.nativeEventLogPath, {
+            stream: "native",
+          })
         : undefined);
     const managedNativeEventLogger =
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
@@ -501,7 +503,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       const ctx = sessions.get(threadId);
       if (!ctx || ctx.stopped) {
         return Effect.fail(
-          new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }),
+          new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId,
+          }),
         );
       }
       return Effect.succeed(ctx);
@@ -628,7 +633,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         threadId: input.threadId,
                         turnId,
                         requestId: runtimeRequestId,
-                        payload: { questions: extractXAiAskUserQuestions(params) },
+                        payload: {
+                          questions: extractXAiAskUserQuestions(params),
+                        },
                         raw: {
                           source: "acp.grok.extension",
                           method,
@@ -874,7 +881,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ),
           ).pipe(
             Effect.catch((cause) =>
-              Effect.logError("Failed to process Grok runtime notification.", { cause }),
+              Effect.logError("Failed to process Grok runtime notification.", {
+                cause,
+              }),
             ),
             Effect.forkChild,
           );
@@ -1388,7 +1397,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             detail: `Unknown pending user-input request: ${requestId}`,
           });
         }
-        yield* Deferred.succeed(pending.resolution, { _tag: "answered", answers });
+        yield* Deferred.succeed(pending.resolution, {
+          _tag: "answered",
+          answers,
+        });
       });
 
     const readThread: GrokAdapterShape["readThread"] = (threadId) =>
@@ -1433,7 +1445,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       });
 
     const stopAll: GrokAdapterShape["stopAll"] = () =>
-      Effect.forEach(Array.from(sessions.values()), stopSessionInternal, { discard: true });
+      Effect.forEach(Array.from(sessions.values()), stopSessionInternal, {
+        discard: true,
+      });
 
     yield* Effect.addFinalizer(() =>
       Effect.ignore(stopAll()).pipe(
@@ -1446,7 +1460,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        supportsSessionResume: true,
+      },
       startSession,
       sendTurn,
       interruptTurn,

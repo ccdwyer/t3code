@@ -15,6 +15,13 @@ export const AssetResource = Schema.Union([
   Schema.TaggedStruct("project-favicon", {
     cwd: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
+  // Durable ticket artifact (spec 2026-08-05): DB-authoritative id pair; the
+  // fileName is only the cosmetic URL tail / Content-Disposition basename.
+  Schema.TaggedStruct("ticket-artifact", {
+    ticketId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    artifactId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    fileName: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
 ]);
 export type AssetResource = typeof AssetResource.Type;
 

@@ -36,3 +36,7 @@ node_modules/
 *.log
 .env*
 !.env.example
+.superpowers/
+
+# Sol's rolling audit state — local only, never committed
+.audit/

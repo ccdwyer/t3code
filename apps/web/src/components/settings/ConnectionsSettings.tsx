@@ -18,6 +18,8 @@ import {
   AuthReviewWriteScope,
   AuthStandardClientScopes,
   AuthTerminalOperateScope,
+  AuthWorkflowOperateScope,
+  AuthWorkflowReadScope,
   type AuthClientSession,
   type AuthEnvironmentScope,
   type AuthPairingLink,
@@ -154,7 +156,11 @@ function formatAccessTimestamp(value: string): string {
   return accessTimestampFormatter.format(parsed);
 }
 
-const PAIRING_SCOPE_OPTIONS: ReadonlyArray<{
+// Exported for the drift-guard test: this picker MUST cover every scope an
+// administrator can delegate (AuthAdministrativeScopes). A scope added to the
+// scope set but forgotten here becomes invisible/unmanageable in the pairing UI
+// (the bug that hid workflow:read/operate). The guard test asserts exact parity.
+export const PAIRING_SCOPE_OPTIONS: ReadonlyArray<{
   readonly scope: AuthEnvironmentScope;
   readonly title: string;
   readonly description: string;
@@ -168,6 +174,16 @@ const PAIRING_SCOPE_OPTIONS: ReadonlyArray<{
     scope: AuthOrchestrationOperateScope,
     title: "Operate tasks",
     description: "Start tasks and perform changes in the environment.",
+  },
+  {
+    scope: AuthWorkflowReadScope,
+    title: "View workflow boards",
+    description: "Read workflow boards, lanes, tickets, and templates.",
+  },
+  {
+    scope: AuthWorkflowOperateScope,
+    title: "Operate workflow boards",
+    description: "Create boards and tickets, move tickets, and answer steps.",
   },
   {
     scope: AuthTerminalOperateScope,
@@ -984,7 +1000,10 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
   const handleCreatePairingLink = useCallback(async () => {
     setIsCreatingPairingLink(true);
     try {
-      await createServerPairingCredential({ label: pairingLabel, scopes: pairingScopes });
+      await createServerPairingCredential({
+        label: pairingLabel,
+        scopes: pairingScopes,
+      });
       setPairingLabel("");
       setPairingScopes([...AuthStandardClientScopes]);
       setDialogOpen(false);
@@ -1358,7 +1377,9 @@ function SavedBackendListRow({
           : "bg-muted-foreground/40";
   const statusTooltip = connectionStatusText(environment.connection);
   const errorTraceId = environment.connection.traceId;
-  const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{ traceId: string }>({
+  const { copyToClipboard: copyTraceIdToClipboard } = useCopyToClipboard<{
+    traceId: string;
+  }>({
     target: "trace ID",
     onCopy: ({ traceId }) => {
       toastManager.add({
@@ -1612,7 +1633,10 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
 
   const updateManagedTunnel = async (enabled: boolean) => {
     setIsUpdating(true);
-    const ok = await reconcileCloudState({ managedTunnel: enabled, publish: publishAgentActivity });
+    const ok = await reconcileCloudState({
+      managedTunnel: enabled,
+      publish: publishAgentActivity,
+    });
     if (ok) {
       // Turning the tunnel off while publishing stays on downgrades the link
       // rather than removing it — say so instead of claiming an unlink.
@@ -1635,7 +1659,10 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
 
   const updatePublishAgentActivity = async (enabled: boolean) => {
     setIsUpdatingPreference(true);
-    const ok = await reconcileCloudState({ managedTunnel: managedTunnelActive, publish: enabled });
+    const ok = await reconcileCloudState({
+      managedTunnel: managedTunnelActive,
+      publish: enabled,
+    });
     if (ok) {
       toastManager.add({
         type: "success",
@@ -1728,12 +1755,18 @@ export function ConnectionsSettings() {
   const desktopBridge = window.desktopBridge;
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
-  const connectPairing = useAtomCommand(connectPairingAtom, { reportFailure: false });
+  const connectPairing = useAtomCommand(connectPairingAtom, {
+    reportFailure: false,
+  });
   const connectSshEnvironment = useAtomCommand(connectSshEnvironmentAtom, {
     reportFailure: false,
   });
-  const removeEnvironment = useAtomCommand(environmentCatalog.remove, { reportFailure: false });
-  const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
+  const removeEnvironment = useAtomCommand(environmentCatalog.remove, {
+    reportFailure: false,
+  });
+  const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, {
+    reportFailure: false,
+  });
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
   const primarySessionState = usePrimarySessionState();
   const currentSessionScopes = desktopBridge

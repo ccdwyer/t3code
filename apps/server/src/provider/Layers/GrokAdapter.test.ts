@@ -123,6 +123,13 @@ it("requires a settlement to match the live Grok turn", () => {
 });
 
 it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
+  it.effect("declares session resume support in its capabilities", () =>
+    Effect.gen(function* () {
+      const wrapperPath = yield* Effect.promise(() => makeMockGrokWrapper());
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      assert.equal(adapter.capabilities.supportsSessionResume, true);
+    }),
+  );
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-mock-thread");
@@ -148,7 +155,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-mock-alt" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-mock-alt",
+        },
       });
 
       assert.equal(session.provider, "grok");
@@ -208,7 +218,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       yield* adapter.stopSession(threadId);
@@ -240,7 +253,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -288,7 +304,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const error = yield* Effect.flip(
@@ -357,7 +376,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const sendTurnResult = yield* adapter.sendTurn({
@@ -437,7 +459,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -496,7 +521,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       yield* adapter.sendTurn({
@@ -541,7 +569,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       yield* Effect.gen(function* () {
@@ -648,7 +679,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
 
       yield* adapter.interruptTurn(threadId, firstTurnId).pipe(Effect.timeout("2 seconds"));
       const followUp = yield* adapter
-        .sendTurn({ threadId, input: "complete the follow-up", attachments: [] })
+        .sendTurn({
+          threadId,
+          input: "complete the follow-up",
+          attachments: [],
+        })
         .pipe(Effect.timeout("2 seconds"));
       yield* Fiber.join(firstSendTurnFiber).pipe(Effect.timeout("2 seconds"));
       yield* Deferred.await(twoTurnsCompleted).pipe(Effect.timeout("2 seconds"));
@@ -721,7 +756,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       });
 
       const sendTurnFiber = yield* adapter
-        .sendTurn({ threadId, input: "cancel before the late update", attachments: [] })
+        .sendTurn({
+          threadId,
+          input: "cancel before the late update",
+          attachments: [],
+        })
         .pipe(Effect.forkChild);
       const turnId = yield* Deferred.await(turnStarted).pipe(Effect.timeout("2 seconds"));
       yield* adapter.interruptTurn(threadId, turnId).pipe(Effect.timeout("2 seconds"));
@@ -797,7 +836,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -869,7 +911,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       yield* adapter.sendTurn({
@@ -913,7 +958,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const error = yield* Effect.flip(
@@ -964,7 +1012,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
         resumeCursor: { schemaVersion: 1, sessionId: "mock-session-1" },
       });
 
@@ -1007,7 +1058,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
           provider: ProviderDriverKind.make("cursor"),
           cwd: process.cwd(),
           runtimeMode: "full-access",
-          modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("grok"),
+            model: "grok-build",
+          },
         }),
       );
 
@@ -1027,7 +1081,10 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         provider: ProviderDriverKind.make("grok"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("grok"),
+          model: "grok-build",
+        },
       });
 
       const error = yield* Effect.flip(
@@ -1075,7 +1132,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         cwd: process.cwd(),
         runtimeMode: "approval-required",
       });
-      yield* adapter.sendTurn({ threadId, input: "approve this", attachments: [] });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "approve this",
+        attachments: [],
+      });
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
       assert.isTrue(
@@ -1190,7 +1251,11 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         cwd: process.cwd(),
         runtimeMode: "full-access",
       });
-      yield* adapter.sendTurn({ threadId, input: "keep streaming", attachments: [] });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "keep streaming",
+        attachments: [],
+      });
       yield* Deferred.await(contentDelta);
 
       yield* Fiber.interrupt(eventsFiber);

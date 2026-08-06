@@ -24,7 +24,7 @@ export const ADDON_ICON_CLASS = "size-4";
 export type SearchOverlayMode = "command" | "files" | "content";
 
 export interface CommandPaletteOpenIntent {
-  readonly kind: "add-project" | "new-thread-in";
+  readonly kind: "add-project" | "new-thread-in" | "new-workflow-in";
 }
 
 export interface CommandPaletteUiState {
@@ -38,6 +38,7 @@ export type CommandPaletteUiAction =
   | { readonly _tag: "ToggleMode"; readonly mode: SearchOverlayMode }
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
+  | { readonly _tag: "OpenNewWorkflowIn" }
   | { readonly _tag: "ClearOpenIntent" };
 
 export function reduceCommandPaletteUiState(
@@ -56,9 +57,23 @@ export function reduceCommandPaletteUiState(
         ? { open: false, mode: "command", openIntent: null }
         : { open: true, mode: action.mode, openIntent: null };
     case "OpenAddProject":
-      return { open: true, mode: "command", openIntent: { kind: "add-project" } };
+      return {
+        open: true,
+        mode: "command",
+        openIntent: { kind: "add-project" },
+      };
     case "OpenNewThreadIn":
-      return { open: true, mode: "command", openIntent: { kind: "new-thread-in" } };
+      return {
+        open: true,
+        mode: "command",
+        openIntent: { kind: "new-thread-in" },
+      };
+    case "OpenNewWorkflowIn":
+      return {
+        open: true,
+        mode: "command",
+        openIntent: { kind: "new-workflow-in" },
+      };
     case "ClearOpenIntent":
       return state.openIntent ? { ...state, openIntent: null } : state;
   }
@@ -386,7 +401,11 @@ export function buildRootGroups(input: {
 }): CommandPaletteGroup[] {
   const groups: CommandPaletteGroup[] = [];
   if (input.actionItems.length > 0) {
-    groups.push({ value: "actions", label: "Actions", items: input.actionItems });
+    groups.push({
+      value: "actions",
+      label: "Actions",
+      items: input.actionItems,
+    });
   }
   if (input.recentThreadItems.length > 0) {
     groups.push({

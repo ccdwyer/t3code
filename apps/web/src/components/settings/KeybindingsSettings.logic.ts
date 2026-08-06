@@ -137,7 +137,11 @@ function conflictsWithWhen(leftWhen: string, rightWhen: string): boolean {
 
 export function keybindingConflictLabels(
   rows: ReadonlyArray<KeybindingRow>,
-  input: { readonly rowId: string; readonly key: string; readonly when: string },
+  input: {
+    readonly rowId: string;
+    readonly key: string;
+    readonly when: string;
+  },
 ): ReadonlyArray<string> {
   if (input.key.trim().length === 0) return [];
   const conflicts: Array<string> = [];
@@ -182,7 +186,9 @@ export function buildKeybindingRows(
       when: row.when,
     });
     return conflicts.length > 0
-      ? Object.assign({}, row, { conflicts: [...new Set(conflicts)].toSorted() })
+      ? Object.assign({}, row, {
+          conflicts: [...new Set(conflicts)].toSorted(),
+        })
       : row;
   });
 
@@ -332,9 +338,19 @@ export function keybindingFromKeyboardEvent(
   }
   if (event.altKey) parts.push("alt");
   if (event.shiftKey) parts.push("shift");
-  if (parts.length === 0) {
+  if (parts.length === 0 && !isModifierlessFunctionKeyToken(keyToken)) {
     return null;
   }
   parts.push(keyToken);
   return parts.join("+");
+}
+
+/**
+ * F13-F24 are not present on standard keyboards and are commonly sent by
+ * macro pads / programmable keyboards. Accepting them bare is an intentional
+ * recorder allowance (not a guarantee that no OS or user mapping uses them);
+ * every other modifierless key stays rejected.
+ */
+function isModifierlessFunctionKeyToken(keyToken: string): boolean {
+  return /^f(1[3-9]|2[0-4])$/.test(keyToken);
 }

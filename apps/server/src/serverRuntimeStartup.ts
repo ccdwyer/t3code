@@ -22,6 +22,16 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import * as Schedule from "effect/Schedule";
+import { WorkflowBoardNotificationDispatcher } from "./workflow/Services/WorkflowBoardNotificationDispatcher.ts";
+import { TicketArtifactStore } from "./workflow/Services/TicketArtifactStore.ts";
+import { WorkflowSourceSyncer } from "./workflow/Services/WorkflowSourceSyncer.ts";
+import { WorkflowOutboundDispatcher } from "./workflow/Services/WorkflowOutboundDispatcher.ts";
+import { WorkflowGitHubPoller } from "./workflow/Services/WorkflowGitHubPoller.ts";
+import { WorkflowRecovery } from "./workflow/Services/WorkflowRecovery.ts";
+import { WorkflowTerminalRetentionSweeper } from "./workflow/Services/WorkflowTerminalRetentionSweeper.ts";
+import { WorkflowSlaSweeper } from "./workflow/Services/WorkflowSlaSweeper.ts";
+import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -49,23 +59,35 @@ export class ServerRuntimeStartupError extends Schema.TaggedErrorClass<ServerRun
     mode: ServerConfig.RuntimeMode,
     host: Schema.NullOr(Schema.String),
     port: Schema.Number,
-    cause: Schema.Defect(),
+    stage: Schema.optional(Schema.Literals(["command-readiness", "workflow-recovery"])),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
+    if (this.stage === "workflow-recovery") {
+      return "Workflow recovery failed; mutating workflow RPCs are gated until restart.";
+    }
     return "Server runtime startup failed before command readiness.";
   }
 }
 
+export interface ServerRuntimeStartupShape {
+  readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
+  // Workflow-specific readiness: resolves only after workflow recovery SUCCEEDS,
+  // and fails if recovery (or startup) failed. Mutating workflow RPCs await this in
+  // addition to command readiness so a failed recovery surfaces as a retryable error
+  // rather than mutating a half-recovered projection. Kept separate from command
+  // readiness so a workflow-recovery failure does NOT block core orchestration.
+  readonly awaitWorkflowReady: Effect.Effect<void, ServerRuntimeStartupError>;
+  readonly markHttpListening: Effect.Effect<void>;
+  readonly enqueueCommand: <A, E>(
+    effect: Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
+}
+
 export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
-  {
-    readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
-    readonly markHttpListening: Effect.Effect<void>;
-    readonly enqueueCommand: <A, E>(
-      effect: Effect.Effect<A, E>,
-    ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
-  }
+  ServerRuntimeStartupShape
 >()("t3/serverRuntimeStartup") {}
 
 interface QueuedCommand {
@@ -78,6 +100,9 @@ interface CommandGate {
   readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
   readonly signalCommandReady: Effect.Effect<void>;
   readonly failCommandReady: (error: ServerRuntimeStartupError) => Effect.Effect<void>;
+  readonly awaitWorkflowReady: Effect.Effect<void, ServerRuntimeStartupError>;
+  readonly signalWorkflowReady: Effect.Effect<void>;
+  readonly failWorkflowReady: (error: ServerRuntimeStartupError) => Effect.Effect<void>;
   readonly enqueueCommand: <A, E>(
     effect: Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
@@ -90,6 +115,10 @@ const settleQueuedCommand = <A, E>(deferred: Deferred.Deferred<A, E>, exit: Exit
 
 export const makeCommandGate = Effect.gen(function* () {
   const commandReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
+  // Workflow readiness is SEPARATE from command readiness: a failed workflow
+  // recovery must surface to workflow RPCs as retryable without blocking core
+  // orchestration.
+  const workflowReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
   const commandQueue = yield* Queue.unbounded<QueuedCommand>();
   const commandReadinessState = yield* Ref.make<CommandReadinessState>("pending");
 
@@ -100,6 +129,9 @@ export const makeCommandGate = Effect.gen(function* () {
 
   return {
     awaitCommandReady: Deferred.await(commandReady),
+    awaitWorkflowReady: Deferred.await(workflowReady),
+    signalWorkflowReady: Deferred.succeed(workflowReady, undefined).pipe(Effect.asVoid),
+    failWorkflowReady: (error) => Deferred.fail(workflowReady, error).pipe(Effect.asVoid),
     signalCommandReady: Effect.gen(function* () {
       yield* Ref.set(commandReadinessState, "ready");
       yield* Deferred.succeed(commandReady, undefined).pipe(Effect.orDie);
@@ -302,6 +334,15 @@ export const make = (options?: StartupOptions) =>
     const keybindings = yield* Keybindings.Keybindings;
     const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
     const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
+    const workflowReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
+    const workflowTerminalRetentionSweeper = yield* WorkflowTerminalRetentionSweeper;
+    const workflowSlaSweeper = yield* WorkflowSlaSweeper;
+    const workflowWebhook = yield* WorkflowWebhook;
+    const workflowGitHubPoller = yield* WorkflowGitHubPoller;
+    const workflowRecovery = yield* WorkflowRecovery;
+    const workflowBoardNotificationDispatcher = yield* WorkflowBoardNotificationDispatcher;
+    const workflowSourceSyncer = yield* WorkflowSourceSyncer;
+    const workflowOutboundDispatcher = yield* WorkflowOutboundDispatcher;
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -351,12 +392,141 @@ export const make = (options?: StartupOptions) =>
         Effect.gen(function* () {
           yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
           yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
+          yield* workflowTerminalRetentionSweeper.start().pipe(Scope.provide(reactorScope));
+          // Periodic prune of stale webhook dedup rows so the table cannot grow
+          // unbounded.
+          yield* workflowWebhook.start().pipe(Scope.provide(reactorScope));
         }),
       );
 
       const welcomeBase = yield* resolveWelcomeBase;
       const environment = yield* serverEnvironment.getDescriptor;
       yield* Effect.logDebug("startup phase: preparing welcome payload");
+
+      // Durable-artifact orphan reconciliation runs strictly BEFORE the
+      // workflow engine starts any recovery finalizations (spec 2026-08-05
+      // reconcileOrphans contract): never concurrent with ingestion. Best-effort.
+      const artifactStoreOption = yield* Effect.serviceOption(TicketArtifactStore);
+      if (Option.isSome(artifactStoreOption)) {
+        yield* runStartupPhase(
+          "workflow.artifact-reconcile",
+          artifactStoreOption.value
+            .reconcileOrphans()
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("ticket-artifact orphan reconciliation failed", { cause }),
+              ),
+            ),
+        );
+      }
+
+      yield* Effect.logDebug("startup phase: recovering workflow runtime");
+      // Recovery is non-fatal for the rest of startup (the server must still
+      // boot), but we capture whether it SUCCEEDED so we can gate the board
+      // notification dispatcher on it below.
+      const recovered = yield* runStartupPhase(
+        "workflow.recover",
+        workflowRecovery.recover().pipe(
+          Effect.retry(Schedule.max([Schedule.exponential("500 millis"), Schedule.recurs(3)])),
+          Effect.as(true),
+          Effect.catch((cause) =>
+            Effect.logWarning("workflow recovery failed during startup", {
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        ),
+      );
+
+      // Publish workflow-recovery readiness so the WS gate can fail mutating
+      // workflow RPCs with a retryable error when recovery failed, instead of
+      // letting them mutate a half-recovered projection. Recovery failure stays
+      // non-fatal for the rest of startup (and does NOT block core orchestration).
+      if (recovered) {
+        yield* commandGate.signalWorkflowReady;
+      } else {
+        yield* commandGate.failWorkflowReady(
+          new ServerRuntimeStartupError({
+            mode: serverConfig.mode,
+            host: serverConfig.host ?? null,
+            port: serverConfig.port,
+            stage: "workflow-recovery",
+            // cause is omitted: recovery logged its own warning; no Cause to attach here
+          }),
+        );
+      }
+
+      // Start the board notification dispatcher AFTER recovery SUCCEEDS:
+      // recovery may write outbox rows / fix projections that the dispatcher then
+      // drains, so starting before (or after a failed) recovery risks draining a
+      // half-recovered state — wrongly superseding a needed notification or
+      // publishing stale content.
+      if (recovered) {
+        yield* Effect.logDebug("startup phase: starting workflow board notification dispatcher");
+        yield* runStartupPhase(
+          "workflow.board-notifications.start",
+          workflowBoardNotificationDispatcher.start().pipe(Scope.provide(reactorScope)),
+        );
+        // SLA sweeper commits events — must not run against an unrecovered
+        // projection. Same post-recovery phase as the notification dispatcher
+        // (NOT next to the retention sweeper, which starts pre-recovery).
+        yield* Effect.logDebug("startup phase: starting workflow SLA sweeper");
+        yield* runStartupPhase(
+          "workflow.sla-sweeper.start",
+          workflowSlaSweeper.start().pipe(Scope.provide(reactorScope)),
+        );
+      } else {
+        yield* Effect.logWarning(
+          "skipping board-notification dispatcher start: workflow recovery failed",
+        );
+        yield* Effect.logWarning("skipping SLA sweeper start: workflow recovery failed");
+      }
+
+      // Start the work-source syncer ONLY after recovery succeeds: the syncer
+      // creates/admits tickets from upstream sources, so it must not run against a
+      // half-recovered projection. Same recovery gate as the notification
+      // dispatcher above.
+      if (recovered) {
+        yield* Effect.logDebug("startup phase: starting workflow source syncer");
+        yield* runStartupPhase(
+          "workflow.source-sync.start",
+          workflowSourceSyncer.start().pipe(Scope.provide(reactorScope)),
+        );
+      } else {
+        yield* Effect.logWarning("skipping work-source syncer start: workflow recovery failed");
+      }
+
+      // Start the outbound-webhook dispatcher ONLY after recovery succeeds: the
+      // dispatcher drains durable `workflow_outbound_delivery` rows and POSTs
+      // them, so starting before (or after a failed) recovery risks draining a
+      // half-recovered state. Same recovery gate as the notification dispatcher
+      // and work-source syncer above.
+      if (recovered) {
+        yield* Effect.logDebug("startup phase: starting workflow outbound dispatcher");
+        yield* runStartupPhase(
+          "workflow.outbound.start",
+          workflowOutboundDispatcher.start().pipe(Scope.provide(reactorScope)),
+        );
+      } else {
+        yield* Effect.logWarning("skipping outbound dispatcher start: workflow recovery failed");
+      }
+
+      // Start the GitHub poller ONLY after recovery succeeds: its sweep drains
+      // pending `workflow_pr_observation` rows and calls engine.ingestExternalEvent,
+      // which moves tickets between lanes and starts/supersedes pipelines. Running
+      // it against a half-recovered projection (stranded pipelines not yet resumed,
+      // confirmed-running steps not yet settled, board WIP not yet recovered)
+      // corrupts lane/pipeline state — the same hazard that gates the dispatcher and
+      // syncer above. Previously this started in the pre-recovery `reactors.start`
+      // phase, ungated.
+      if (recovered) {
+        yield* Effect.logDebug("startup phase: starting workflow github poller");
+        yield* runStartupPhase(
+          "workflow.github-poller.start",
+          workflowGitHubPoller.start().pipe(Scope.provide(reactorScope)),
+        );
+      } else {
+        yield* Effect.logWarning("skipping github poller start: workflow recovery failed");
+      }
 
       if (serverConfig.autoBootstrapProjectFromCwd) {
         yield* forkParked(
@@ -489,6 +659,7 @@ export const make = (options?: StartupOptions) =>
 
     return {
       awaitCommandReady: commandGate.awaitCommandReady,
+      awaitWorkflowReady: commandGate.awaitWorkflowReady,
       markHttpListening: Deferred.succeed(httpListening, undefined),
       enqueueCommand: commandGate.enqueueCommand,
     } satisfies ServerRuntimeStartup["Service"];

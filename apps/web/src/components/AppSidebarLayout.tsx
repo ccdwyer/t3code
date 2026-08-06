@@ -20,6 +20,7 @@ import ThreadSidebar from "./Sidebar";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
+import { WorkflowCreateCoordinator } from "./WorkflowCreateCoordinator";
 import {
   resolveInitialThreadSidebarWidth,
   resolveThreadSidebarMaximumWidth,
@@ -211,6 +212,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         )}
         <SidebarRail />
       </Sidebar>
+      {/* Outside both sidebar variants so create survives mode/variant swaps. */}
+      <WorkflowCreateCoordinator />
       {children}
       <SidebarControl />
     </SidebarProvider>

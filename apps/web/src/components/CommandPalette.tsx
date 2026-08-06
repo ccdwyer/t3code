@@ -37,6 +37,7 @@ import {
   MessageSquareIcon,
   PaletteIcon,
   SettingsIcon,
+  SquareKanbanIcon,
   SquarePenIcon,
   TextSearchIcon,
 } from "lucide-react";
@@ -82,7 +83,7 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
-import { onOpenCommandPalette } from "../commandPaletteBus";
+import { onOpenCommandPalette, requestCreateWorkflow } from "../commandPaletteBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
@@ -387,6 +388,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   );
   const openAddProject = useCallback(() => dispatch({ _tag: "OpenAddProject" }), []);
   const openNewThreadIn = useCallback(() => dispatch({ _tag: "OpenNewThreadIn" }), []);
+  const openNewWorkflowIn = useCallback(() => dispatch({ _tag: "OpenNewWorkflowIn" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const { theme, themeHalves, resolvedTheme } = useTheme();
@@ -459,13 +461,15 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       onOpenCommandPalette((detail) => {
         if (detail.open === "new-thread-in") {
           openNewThreadIn();
+        } else if (detail.open === "new-workflow-in") {
+          openNewWorkflowIn();
         } else if (detail.open === "add-project") {
           openAddProject();
         } else {
           setOpen(true);
         }
       }),
-    [openAddProject, openNewThreadIn, setOpen],
+    [openAddProject, openNewThreadIn, openNewWorkflowIn, setOpen],
   );
 
   return (
@@ -989,6 +993,41 @@ function OpenCommandPaletteDialog(props: {
     [contextualProjectRef, handleNewThread, pickerProjects, projectGroupByTargetKey],
   );
 
+  // Workflow boards are primary-environment only (providers + create dialog).
+  const primaryProjects = useMemo(
+    () =>
+      primaryEnvironmentId === null
+        ? []
+        : projects.filter((project) => project.environmentId === primaryEnvironmentId),
+    [primaryEnvironmentId, projects],
+  );
+
+  const projectWorkflowItems = useMemo(
+    () =>
+      enumerateCommandPaletteItems(
+        buildProjectActionItems({
+          projects: primaryProjects,
+          valuePrefix: "new-workflow-in",
+          icon: (project) => (
+            <ProjectFavicon
+              environmentId={project.environmentId}
+              cwd={project.workspaceRoot}
+              className={ITEM_ICON_CLASS}
+            />
+          ),
+          runProject: async (project) => {
+            // Palette closes before running; the coordinator (outside the
+            // sidebar) opens CreateWorkflowDialog for this project.
+            requestCreateWorkflow({
+              projectId: project.id,
+              environmentId: project.environmentId,
+            });
+          },
+        }),
+      ),
+    [primaryProjects],
+  );
+
   const allThreadItems = useMemo(
     () =>
       buildThreadActionItems({
@@ -1217,7 +1256,13 @@ function OpenCommandPaletteDialog(props: {
         });
       }
 
-      return [{ value: `sources:${environmentId}`, label: "Sources", items: sourceItems }];
+      return [
+        {
+          value: `sources:${environmentId}`,
+          label: "Sources",
+          items: sourceItems,
+        },
+      ];
     },
     [openSourceControlSettings, startAddProjectBrowse, startAddProjectClone],
   );
@@ -1366,6 +1411,42 @@ function OpenCommandPaletteDialog(props: {
     pushPaletteView,
   ]);
 
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "new-workflow-in" || projectWorkflowItems.length === 0) {
+      return;
+    }
+    clearOpenIntent();
+    setAddProjectCloneFlow(null);
+    setViewStack([]);
+    setQuery("");
+    const currentPrefix =
+      currentProjectEnvironmentId && currentProjectId
+        ? `new-workflow-in:${currentProjectEnvironmentId}:${currentProjectId}`
+        : null;
+    const prioritized = currentPrefix
+      ? [
+          ...projectWorkflowItems.filter((item) => item.value === currentPrefix),
+          ...projectWorkflowItems.filter((item) => item.value !== currentPrefix),
+        ]
+      : projectWorkflowItems;
+    pushPaletteView({
+      addonIcon: <SquareKanbanIcon className={ADDON_ICON_CLASS} />,
+      groups: [
+        {
+          value: "projects",
+          label: "Projects",
+          items: enumerateCommandPaletteItems(prioritized),
+        },
+      ],
+    });
+  }, [
+    clearOpenIntent,
+    currentProjectEnvironmentId,
+    currentProjectId,
+    openIntent,
+    projectWorkflowItems,
+  ]);
+
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
   if (projects.length > 0) {
@@ -1405,6 +1486,18 @@ function OpenCommandPaletteDialog(props: {
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
     });
+
+    if (projectWorkflowItems.length > 0) {
+      actionItems.push({
+        kind: "submenu",
+        value: "action:new-workflow-in",
+        searchTerms: ["new workflow", "board", "project", "pick", "choose", "select", "kanban"],
+        title: "New workflow in...",
+        icon: <SquareKanbanIcon className={ITEM_ICON_CLASS} />,
+        addonIcon: <SquareKanbanIcon className={ADDON_ICON_CLASS} />,
+        groups: [{ value: "projects", label: "Projects", items: projectWorkflowItems }],
+      });
+    }
   }
 
   actionItems.push({
@@ -2125,7 +2218,13 @@ function OpenCommandPaletteDialog(props: {
               (candidate) => candidate.httpBaseUrl === environment.displayUrl,
             );
             const runningDistro = bootstrap?.runningDistro ?? null;
-            return [{ environmentId: environment.environmentId, backendId, runningDistro }];
+            return [
+              {
+                environmentId: environment.environmentId,
+                backendId,
+                runningDistro,
+              },
+            ];
           }),
           primaryEnvironmentId,
           desktopWslState ?? null,
@@ -2337,9 +2436,13 @@ function OpenCommandPaletteDialog(props: {
                   : "Enter a repository path and press Enter to look it up.",
             }
           : addProjectCloneFlow?.step === "confirm"
-            ? { emptyStateMessage: "Choose a destination path and press Enter to clone." }
+            ? {
+                emptyStateMessage: "Choose a destination path and press Enter to clone.",
+              }
             : relativePathNeedsActiveProject
-              ? { emptyStateMessage: "Relative paths require an active project." }
+              ? {
+                  emptyStateMessage: "Relative paths require an active project.",
+                }
               : willCreateProjectPath
                 ? {
                     emptyStateMessage: "Press Enter to create this folder and add it as a project.",

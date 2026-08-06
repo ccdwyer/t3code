@@ -651,7 +651,11 @@ function mapCollabAgentEvent(
           {
             ...base,
             type: "task.updated",
-            payload: { taskId, status: waiting ? "waiting" : "running", ...statusLinkage },
+            payload: {
+              taskId,
+              status: waiting ? "waiting" : "running",
+              ...statusLinkage,
+            },
           },
         ];
       }
@@ -1971,6 +1975,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      supportsSessionResume: true,
     },
     startSession,
     sendTurn,

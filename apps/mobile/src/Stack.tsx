@@ -17,6 +17,8 @@ import { useResolveClassNames } from "uniwind";
 import { AppText as Text } from "./components/AppText";
 import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
+import { NeedsYouInboxScreen } from "./features/board/NeedsYouInboxScreen";
+import { TicketActionSheetScreen } from "./features/board/TicketActionSheetScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ClerkSettingsSheetDetentProvider } from "./features/cloud/ClerkSettingsSheetDetent";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
@@ -70,7 +72,10 @@ const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Pl
 // background stay STATIC config while still adapting to appearance changes.
 const SHEET_BACKGROUND_COLOR =
   Platform.OS === "ios"
-    ? DynamicColorIOS({ light: "rgba(242, 242, 247, 0.98)", dark: "rgba(14, 14, 14, 0.98)" })
+    ? DynamicColorIOS({
+        light: "rgba(242, 242, 247, 0.98)",
+        dark: "rgba(14, 14, 14, 0.98)",
+      })
     : undefined;
 
 type AppScreenOptions = NativeStackNavigationOptions & {
@@ -273,6 +278,7 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitCommit",
   "GitConfirm",
   "GitOverview",
+  "NeedsYou",
   "NewTaskSheet",
   "SettingsLegal",
   "SettingsSheet",
@@ -566,6 +572,33 @@ export const RootStack = createNativeStackNavigator({
               sheetAllowedDetents: [0.92],
               sheetGrabberVisible: true,
             }),
+      },
+    }),
+    NeedsYou: createNativeStackScreen({
+      screen: NeedsYouInboxScreen,
+      linking: "needs-you",
+      options: {
+        gestureEnabled: true,
+        headerShown: false,
+        // Same presentation split as SettingsSheet: Android pushes a full page,
+        // iOS keeps the detented form sheet.
+        ...(Platform.OS === "android"
+          ? { presentation: "card" as const }
+          : {
+              presentation: "formSheet" as const,
+              sheetAllowedDetents: [0.7, 0.92],
+              sheetGrabberVisible: true,
+            }),
+      },
+    }),
+    Ticket: createNativeStackScreen({
+      screen: TicketActionSheetScreen,
+      linking: "tickets/:environmentId/:boardId/:ticketId",
+      options: {
+        animation: "slide_from_right",
+        contentStyle: { backgroundColor: "transparent" },
+        gestureEnabled: true,
+        headerShown: false,
       },
     }),
     NotFound: createNativeStackScreen({

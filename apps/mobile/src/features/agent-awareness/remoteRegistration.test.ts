@@ -258,6 +258,7 @@ describe("makeRelayDeviceRegistrationRequest", () => {
         notifyOnInput: true,
         notifyOnCompletion: true,
         notifyOnFailure: true,
+        notifyOnBlocked: true,
       },
     });
   });
@@ -334,6 +335,7 @@ describe("makeRelayDeviceRegistrationRequest", () => {
         notifyOnInput: true,
         notifyOnCompletion: true,
         notifyOnFailure: true,
+        notifyOnBlocked: true,
       },
     });
   });
@@ -707,7 +709,10 @@ describe("makeRelayDeviceRegistrationRequest", () => {
         url: "https://relay.example.test/",
       },
     };
-    registrationRecordStore.current = { identity: "someone-else", signature: "stale" };
+    registrationRecordStore.current = {
+      identity: "someone-else",
+      signature: "stale",
+    };
     setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
 
     return Effect.gen(function* () {

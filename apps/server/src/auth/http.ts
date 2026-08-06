@@ -4,6 +4,8 @@ import {
   AuthStandardClientScopes,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthWorkflowOperateScope,
+  AuthWorkflowReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
   AuthReviewWriteScope,
@@ -86,7 +88,10 @@ export function annotateEnvironmentRequest(endpoint: string) {
           })
         : Effect.void,
     );
-    yield* Effect.annotateLogsScoped({ "environment.endpoint": endpoint, traceId });
+    yield* Effect.annotateLogsScoped({
+      "environment.endpoint": endpoint,
+      traceId,
+    });
     yield* Effect.annotateCurrentSpan({
       "environment.endpoint": endpoint,
       "http.request.method": request.method,
@@ -98,7 +103,13 @@ export function annotateEnvironmentRequest(endpoint: string) {
 export function failEnvironmentAuthInvalid(reason: EnvironmentAuthInvalidReason) {
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
-      Effect.fail(new EnvironmentAuthInvalidError({ code: "auth_invalid", reason, traceId })),
+      Effect.fail(
+        new EnvironmentAuthInvalidError({
+          code: "auth_invalid",
+          reason,
+          traceId,
+        }),
+      ),
     ),
   );
 }
@@ -106,7 +117,13 @@ export function failEnvironmentAuthInvalid(reason: EnvironmentAuthInvalidReason)
 export function failEnvironmentInvalidRequest(reason: EnvironmentRequestInvalidReason) {
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
-      Effect.fail(new EnvironmentRequestInvalidError({ code: "invalid_request", reason, traceId })),
+      Effect.fail(
+        new EnvironmentRequestInvalidError({
+          code: "invalid_request",
+          reason,
+          traceId,
+        }),
+      ),
     ),
   );
 }
@@ -142,7 +159,13 @@ function failEnvironmentOperationForbidden(reason: "current_session_revoke_not_a
 export function failEnvironmentNotFound(reason: EnvironmentResourceNotFoundReason) {
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
-      Effect.fail(new EnvironmentResourceNotFoundError({ code: "not_found", reason, traceId })),
+      Effect.fail(
+        new EnvironmentResourceNotFoundError({
+          code: "not_found",
+          reason,
+          traceId,
+        }),
+      ),
     ),
   );
 }
@@ -157,7 +180,11 @@ export function failEnvironmentInternal(reason: EnvironmentInternalErrorReason, 
         cause: error,
       });
     }
-    return yield* new EnvironmentInternalError({ code: "internal_error", reason, traceId });
+    return yield* new EnvironmentInternalError({
+      code: "internal_error",
+      reason,
+      traceId,
+    });
   });
 }
 
@@ -265,6 +292,8 @@ export const authHttpApiLayer = HttpApiBuilder.group(
                     allowedScopes: new Set<AuthEnvironmentScope>([
                       AuthOrchestrationReadScope,
                       AuthOrchestrationOperateScope,
+                      AuthWorkflowReadScope,
+                      AuthWorkflowOperateScope,
                       AuthTerminalOperateScope,
                       AuthReviewWriteScope,
                       AuthAccessReadScope,

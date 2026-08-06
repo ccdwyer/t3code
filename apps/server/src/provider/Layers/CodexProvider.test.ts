@@ -83,6 +83,59 @@ it("maps current Codex model capability fields", () => {
   ]);
 });
 
+it("does not duplicate the default option when the catalog carries a 'default' tier", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "medium",
+    defaultServiceTier: "default",
+    description: "Test model",
+    displayName: "GPT Test",
+    hidden: false,
+    id: "gpt-test",
+    isDefault: true,
+    model: "gpt-test",
+    serviceTiers: [
+      {
+        id: "default",
+        name: "Standard",
+        description: "Balanced speed and cost.",
+      },
+      {
+        id: "priority",
+        name: "Fast",
+        description: "Lower latency responses.",
+      },
+    ],
+    supportedReasoningEfforts: [],
+  });
+
+  const serviceTier = capabilities.optionDescriptors?.find(
+    (descriptor) => descriptor.id === "serviceTier",
+  );
+  assert.deepStrictEqual(serviceTier, {
+    id: "serviceTier",
+    label: "Service Tier",
+    type: "select",
+    options: [
+      {
+        id: "default",
+        label: "Standard",
+        description: "Balanced speed and cost.",
+        isDefault: true,
+      },
+      {
+        id: "priority",
+        label: "Fast",
+        description: "Lower latency responses.",
+      },
+    ],
+    currentValue: "default",
+  });
+  const options = serviceTier?.type === "select" ? serviceTier.options : [];
+  assert.strictEqual(options.filter((option) => option.id === "default").length, 1);
+  assert.strictEqual(options.filter((option) => option.isDefault === true).length, 1);
+});
+
 it("uses standard routing when the catalog has no default service tier", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: ["fast"],
@@ -124,8 +177,19 @@ it("uses standard routing when the catalog has no default service tier", () => {
 
 it("marks the most preferred available model as default", () => {
   const models = applyPreferredCodexDefaultModel([
-    { slug: "gpt-5.6-terra", name: "GPT-5.6-Terra", isCustom: false, capabilities: null },
-    { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, isDefault: true, capabilities: null },
+    {
+      slug: "gpt-5.6-terra",
+      name: "GPT-5.6-Terra",
+      isCustom: false,
+      capabilities: null,
+    },
+    {
+      slug: "gpt-5.4",
+      name: "GPT-5.4",
+      isCustom: false,
+      isDefault: true,
+      capabilities: null,
+    },
   ]);
 
   assert.deepStrictEqual(
@@ -139,8 +203,18 @@ it("marks the most preferred available model as default", () => {
 
 it("prefers sol over terra when both are available", () => {
   const models = applyPreferredCodexDefaultModel([
-    { slug: "gpt-5.6-terra", name: "GPT-5.6-Terra", isCustom: false, capabilities: null },
-    { slug: "gpt-5.6-sol", name: "GPT-5.6-Sol", isCustom: false, capabilities: null },
+    {
+      slug: "gpt-5.6-terra",
+      name: "GPT-5.6-Terra",
+      isCustom: false,
+      capabilities: null,
+    },
+    {
+      slug: "gpt-5.6-sol",
+      name: "GPT-5.6-Sol",
+      isCustom: false,
+      capabilities: null,
+    },
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.6-sol");
@@ -149,7 +223,13 @@ it("prefers sol over terra when both are available", () => {
 it("keeps Codex's own default when no preferred model is available", () => {
   const models = applyPreferredCodexDefaultModel([
     { slug: "gpt-5.5", name: "GPT-5.5", isCustom: false, capabilities: null },
-    { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, isDefault: true, capabilities: null },
+    {
+      slug: "gpt-5.4",
+      name: "GPT-5.4",
+      isCustom: false,
+      isDefault: true,
+      capabilities: null,
+    },
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");
@@ -157,8 +237,19 @@ it("keeps Codex's own default when no preferred model is available", () => {
 
 it("ignores custom models that shadow a preferred slug", () => {
   const models = applyPreferredCodexDefaultModel([
-    { slug: "gpt-5.6-sol", name: "gpt-5.6-sol", isCustom: true, capabilities: null },
-    { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, isDefault: true, capabilities: null },
+    {
+      slug: "gpt-5.6-sol",
+      name: "gpt-5.6-sol",
+      isCustom: true,
+      capabilities: null,
+    },
+    {
+      slug: "gpt-5.4",
+      name: "GPT-5.4",
+      isCustom: false,
+      isDefault: true,
+      capabilities: null,
+    },
   ]);
 
   assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-5.4");

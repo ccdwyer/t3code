@@ -76,6 +76,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
+import { T3_CODE_HTML_PREVIEW_INSTRUCTIONS } from "../UiCapabilityInstructions.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -812,6 +813,7 @@ function applyClaudeTaskToolResult(
     if (!Array.isArray(resultTasks)) {
       return false;
     }
+    const hadTasks = tasks.size > 0;
     tasks.clear();
     for (const entry of resultTasks) {
       if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
@@ -830,7 +832,7 @@ function applyClaudeTaskToolResult(
         blockedBy: new Set(readStringArray(task.blockedBy)),
       });
     }
-    return tasks.size > 0;
+    return tasks.size > 0 || hadTasks;
   }
 
   if (tool.toolName === "TaskCreate") {
@@ -2192,13 +2194,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         : undefined;
     const hasResultUsageIteration =
       resultUsageRecord !== undefined && lastClaudeUsageIteration(resultUsageRecord) !== undefined;
-    const resultHasActiveUsage =
-      resultUsageRecord !== undefined &&
-      (hasResultUsageIteration ||
-        claudeUsageInputTokens(resultUsageRecord) + claudeUsageOutputTokens(resultUsageRecord) > 0);
+    // Without an `iterations` array, result.usage carries turn-cumulative
+    // totals (flat fields included), not the active context size — only an
+    // iteration snapshot is trusted for `usedTokens`.
     const resultTotalOnly =
       resultUsageRecord !== undefined &&
-      !resultHasActiveUsage &&
+      !hasResultUsageIteration &&
       claudeTotalProcessedTokens(resultUsageRecord) !== undefined;
     const resultIterationSnapshot = resultUsageRecord
       ? normalizeClaudeActiveTokenUsage(
@@ -4094,7 +4095,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: T3_CODE_HTML_PREVIEW_INSTRUCTIONS,
+        },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
@@ -4273,7 +4278,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             }
             return handleStreamExit(context, exit).pipe(
               Effect.catch((cause) =>
-                Effect.logError("Failed to close Claude runtime stream.", { cause }),
+                Effect.logError("Failed to close Claude runtime stream.", {
+                  cause,
+                }),
               ),
             );
           }),
@@ -4553,7 +4560,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       { discard: true },
     ).pipe(
       Effect.catch((cause) =>
-        Effect.logError("Failed to emit Claude session shutdown event.", { cause }),
+        Effect.logError("Failed to emit Claude session shutdown event.", {
+          cause,
+        }),
       ),
       Effect.tap(() => Queue.shutdown(runtimeEventQueue)),
       Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
@@ -4564,6 +4573,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      supportsSessionResume: true,
     },
     startSession,
     sendTurn,

@@ -25,6 +25,16 @@ export const RelayAgentAwarenessPhase = Schema.Literals([
 ]);
 export type RelayAgentAwarenessPhase = typeof RelayAgentAwarenessPhase.Type;
 
+// Intentional copy — keep in sync with WorkflowTicketAttentionKind in workflow.ts.
+export const WorkflowTicketAttentionKind = Schema.Literals([
+  "waiting_for_approval",
+  "waiting_for_input",
+  "blocked",
+  "parked_issue",
+  "parked_waiting",
+]);
+export type WorkflowTicketAttentionKind = typeof WorkflowTicketAttentionKind.Type;
+
 export const RelayAgentAwarenessPreferences = Schema.Struct({
   liveActivitiesEnabled: Schema.Boolean,
   notificationsEnabled: Schema.Boolean,
@@ -32,6 +42,7 @@ export const RelayAgentAwarenessPreferences = Schema.Struct({
   notifyOnInput: Schema.Boolean,
   notifyOnCompletion: Schema.Boolean,
   notifyOnFailure: Schema.Boolean,
+  notifyOnBlocked: Schema.optional(Schema.Boolean),
 });
 export type RelayAgentAwarenessPreferences = typeof RelayAgentAwarenessPreferences.Type;
 
@@ -68,6 +79,7 @@ export const RelayClientDeviceRecord = Schema.Struct({
     notifyOnInput: Schema.Boolean,
     notifyOnCompletion: Schema.Boolean,
     notifyOnFailure: Schema.Boolean,
+    notifyOnBlocked: Schema.Boolean,
   }),
   liveActivities: Schema.Struct({
     enabled: Schema.Boolean,
@@ -203,8 +215,39 @@ export const RelayAgentActivityPublishRequest = Schema.Struct({
   proof: TrimmedNonEmptyString.annotate({
     description: "Environment-signed JWT covering this published activity state.",
   }),
-}).annotate({ description: "Publishes a signed agent-awareness update from an environment." });
+}).annotate({
+  description: "Publishes a signed agent-awareness update from an environment.",
+});
 export type RelayAgentActivityPublishRequest = typeof RelayAgentActivityPublishRequest.Type;
+
+export const RELAY_BOARD_TICKET_PUBLISH_TYP = "t3-relay-board-ticket-publish+jwt" as const;
+
+export const RelayBoardTicketState = Schema.Struct({
+  environmentId: EnvironmentId,
+  boardId: TrimmedNonEmptyString,
+  ticketId: TrimmedNonEmptyString,
+  attentionKind: WorkflowTicketAttentionKind,
+  title: TrimmedNonEmptyString,
+  body: TrimmedNonEmptyString,
+  deepLink: TrimmedNonEmptyString,
+  transitionId: TrimmedNonEmptyString,
+});
+export type RelayBoardTicketState = typeof RelayBoardTicketState.Type;
+
+export const RelayBoardTicketPublishProofPayload = Schema.Struct({
+  ...RelaySignedJwtRegisteredClaims,
+  environmentId: EnvironmentId,
+  boardId: TrimmedNonEmptyString,
+  ticketId: TrimmedNonEmptyString,
+  state: Schema.NullOr(RelayBoardTicketState),
+});
+export type RelayBoardTicketPublishProofPayload = typeof RelayBoardTicketPublishProofPayload.Type;
+
+export const RelayBoardTicketPublishRequest = Schema.Struct({
+  state: Schema.NullOr(RelayBoardTicketState),
+  proof: TrimmedNonEmptyString,
+});
+export type RelayBoardTicketPublishRequest = typeof RelayBoardTicketPublishRequest.Type;
 
 export const RelayEnvironmentLinkScope = Schema.Literals([
   "agent_activity_notifications",
@@ -237,7 +280,9 @@ export const RelayEnvironmentLinkChallengeRequest = Schema.Struct({
   managedTunnelsEnabled: Schema.Boolean.annotate({
     description: "Whether the relay should provision a managed tunnel for this environment.",
   }),
-}).annotate({ description: "Requested capabilities for a new environment-link challenge." });
+}).annotate({
+  description: "Requested capabilities for a new environment-link challenge.",
+});
 export type RelayEnvironmentLinkChallengeRequest = typeof RelayEnvironmentLinkChallengeRequest.Type;
 
 export const RelayEnvironmentLinkChallengeResponse = Schema.Struct({
@@ -259,7 +304,9 @@ export const RelayEnvironmentLinkRequest = Schema.Struct({
   notificationsEnabled: Schema.Boolean,
   liveActivitiesEnabled: Schema.Boolean,
   managedTunnelsEnabled: Schema.Boolean,
-}).annotate({ description: "Links an authenticated cloud user to a T3 environment." });
+}).annotate({
+  description: "Links an authenticated cloud user to a T3 environment.",
+});
 export type RelayEnvironmentLinkRequest = typeof RelayEnvironmentLinkRequest.Type;
 
 export const RelayEnvironmentLinkResponse = Schema.Struct({
@@ -573,7 +620,9 @@ export class RelayEnvironmentPrincipal extends Context.Service<
   }
 >()("@t3tools/contracts/relay/RelayEnvironmentPrincipal") {}
 
-const RelayClientBearerAuthorization = HttpApiSecurity.http({ scheme: "bearer" }).pipe(
+const RelayClientBearerAuthorization = HttpApiSecurity.http({
+  scheme: "bearer",
+}).pipe(
   HttpApiSecurity.annotate(
     OpenApi.Description,
     "Clerk session or OAuth bearer token for the signed-in T3 Connect user.",
@@ -588,7 +637,9 @@ export class RelayClientAuth extends HttpApiMiddleware.Service<
   security: { clientBearer: RelayClientBearerAuthorization },
 }) {}
 
-const RelayEnvironmentBearerAuthorization = HttpApiSecurity.http({ scheme: "bearer" }).pipe(
+const RelayEnvironmentBearerAuthorization = HttpApiSecurity.http({
+  scheme: "bearer",
+}).pipe(
   HttpApiSecurity.annotate(
     OpenApi.Description,
     "Relay-issued environment credential installed when the environment is linked.",
@@ -647,7 +698,9 @@ export const RelayEnvironmentConnectRequest = Schema.Struct({
       description: "JWK thumbprint that the minted environment credential must be bound to.",
     }),
   ),
-}).annotate({ description: "Requests a short-lived credential for connecting to an environment." });
+}).annotate({
+  description: "Requests a short-lived credential for connecting to an environment.",
+});
 export type RelayEnvironmentConnectRequest = typeof RelayEnvironmentConnectRequest.Type;
 
 export const RelayEnvironmentConnectScope = "environment:connect" as const;
@@ -684,7 +737,9 @@ export const RelayDpopAccessTokenRequest = Schema.Struct({
   }),
   client_id: RelayPublicClientId,
 })
-  .annotate({ description: "OAuth token exchange request for a DPoP-bound relay access token." })
+  .annotate({
+    description: "OAuth token exchange request for a DPoP-bound relay access token.",
+  })
   .pipe(HttpApiSchema.asFormUrlEncoded());
 export type RelayDpopAccessTokenRequest = typeof RelayDpopAccessTokenRequest.Type;
 
@@ -1066,6 +1121,19 @@ export const RelayServerGroup = HttpApiGroup.make("server")
         error: RelayAgentActivityPublishErrors,
       },
     ).annotate(OpenApi.Summary, "Publish agent activity"),
+    HttpApiEndpoint.post(
+      "publishBoardTicket",
+      "/v1/environments/:environmentId/tickets/:ticketId/board-activity",
+      {
+        params: Schema.Struct({
+          environmentId: EnvironmentId,
+          ticketId: TrimmedNonEmptyString,
+        }),
+        payload: RelayBoardTicketPublishRequest,
+        success: RelayPublishResponse,
+        error: RelayAgentActivityPublishErrors,
+      },
+    ).annotate(OpenApi.Summary, "Publish board ticket attention"),
   )
   .annotate(OpenApi.Description, "Environment-authenticated activity publication.")
   .middleware(RelayEnvironmentAuth);

@@ -168,6 +168,12 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("declares session resume support in its capabilities", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      assert.equal(adapter.capabilities.supportsSessionResume, true);
+    }),
+  );
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -175,7 +181,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const threadId = ThreadId.make("cursor-mock-thread");
 
       const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper());
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* settings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 9).pipe(
         Stream.runCollect,
@@ -187,7 +195,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       assert.equal(session.provider, "cursor");
@@ -260,7 +271,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({ T3_ACP_PROMPT_DELAY_MS: "1500" }),
       );
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* settings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.threadId === threadId),
@@ -274,7 +287,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const firstTurnFiber = yield* adapter
@@ -341,14 +357,19 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           T3_ACP_EXIT_LOG_PATH: exitLogPath,
         }),
       );
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* settings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* adapter.startSession({
         threadId,
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       yield* adapter.stopSession(threadId);
@@ -378,7 +399,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             { initialDelaySeconds: 0.2 },
           ),
         );
-        yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+        yield* settings.updateSettings({
+          providers: { cursor: { binaryPath: wrapperPath } },
+        });
 
         const [firstSession, secondSession] = yield* Effect.all(
           [
@@ -387,14 +410,20 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
               provider: ProviderDriverKind.make("cursor"),
               cwd: process.cwd(),
               runtimeMode: "full-access",
-              modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("cursor"),
+                model: "default",
+              },
             }),
             adapter.startSession({
               threadId,
               provider: ProviderDriverKind.make("cursor"),
               cwd: process.cwd(),
               runtimeMode: "full-access",
-              modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("cursor"),
+                model: "default",
+              },
             }),
           ],
           { concurrency: "unbounded" },
@@ -440,14 +469,19 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeProbeWrapper(requestLogPath, argvLogPath),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* adapter.startSession({
         threadId,
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "composer-2",
+        },
       });
 
       yield* adapter.sendTurn({
@@ -607,7 +641,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             provider: ProviderDriverKind.make("cursor"),
             cwd: process.cwd(),
             runtimeMode: "approval-required",
-            modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("cursor"),
+              model: "default",
+            },
           });
 
           const turn = yield* adapter.sendTurn({
@@ -712,7 +749,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
             Effect.gen(function* () {
               const cursorConfig = decodeCursorSettings({});
               const resolveSettings = yield* makeResolveCursorSettings;
-              return yield* makeCursorAdapter(cursorConfig, { resolveSettings });
+              return yield* makeCursorAdapter(cursorConfig, {
+                resolveSettings,
+              });
             }),
           ).pipe(
             Layer.provideMerge(ServerSettingsService.layerTest()),
@@ -744,7 +783,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const argvLogPath = NodePath.join(tempDir, "argv.txt");
         yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
         const wrapperPath = yield* Effect.promise(() =>
-          makeProbeWrapper(requestLogPath, argvLogPath, { T3_ACP_EMIT_TOOL_CALLS: "1" }),
+          makeProbeWrapper(requestLogPath, argvLogPath, {
+            T3_ACP_EMIT_TOOL_CALLS: "1",
+          }),
         );
         yield* serverSettings.updateSettings({
           providers: { cursor: { binaryPath: wrapperPath } },
@@ -774,7 +815,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           provider: ProviderDriverKind.make("cursor"),
           cwd: process.cwd(),
           runtimeMode: "full-access",
-          modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("cursor"),
+            model: "default",
+          },
         });
 
         const turn = yield* adapter.sendTurn({
@@ -834,7 +878,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const settledEventsReady = yield* Deferred.make<void>();
 
       const wrapperPath = yield* Effect.promise(() =>
-        makeMockAgentWrapper({ T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: "1" }),
+        makeMockAgentWrapper({
+          T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS: "1",
+        }),
       );
       yield* serverSettings.updateSettings({
         providers: { cursor: { binaryPath: wrapperPath } },
@@ -873,7 +919,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const turn = yield* adapter.sendTurn({
@@ -964,9 +1013,13 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const argvLogPath = NodePath.join(tempDir, "argv.txt");
       yield* Effect.promise(() => NodeFSP.writeFile(requestLogPath, "", "utf8"));
       const wrapperPath = yield* Effect.promise(() =>
-        makeProbeWrapper(requestLogPath, argvLogPath, { T3_ACP_EMIT_TOOL_CALLS: "1" }),
+        makeProbeWrapper(requestLogPath, argvLogPath, {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+        }),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       const requestResolvedReady = yield* Deferred.make<ProviderRuntimeEvent>();
       const turnCompletedReady = yield* Deferred.make<ProviderRuntimeEvent>();
@@ -1002,7 +1055,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -1057,7 +1113,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({ T3_ACP_EMIT_TOOL_CALLS: "1" }),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* Stream.runForEach(adapter.streamEvents, (event) => {
         if (String(event.threadId) !== String(threadId) || event.type !== "request.opened") {
@@ -1071,7 +1129,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -1100,7 +1161,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({ T3_ACP_EMIT_ASK_QUESTION: "1" }),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* Stream.runForEach(adapter.streamEvents, (event) => {
         if (String(event.threadId) !== String(threadId) || event.type !== "user-input.requested") {
@@ -1114,7 +1177,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -1143,7 +1209,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeMockAgentWrapper({ T3_ACP_EMIT_ASK_QUESTION: "1" }),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* Stream.runForEach(adapter.streamEvents, (event) => {
         if (String(event.threadId) !== String(threadId) || event.type !== "user-input.requested") {
@@ -1157,7 +1225,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const sendTurnFiber = yield* adapter
@@ -1184,7 +1255,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const threadId = ThreadId.make("cursor-runtime-event-broadcast");
 
       const wrapperPath = yield* Effect.promise(() => makeMockAgentWrapper());
-      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* settings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       const firstConsumer = yield* Stream.take(adapter.streamEvents, 3).pipe(
         Stream.runCollect,
@@ -1200,7 +1273,10 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "default",
+        },
       });
 
       const firstEvents = Array.from(yield* Fiber.join(firstConsumer));
@@ -1233,14 +1309,19 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeProbeWrapper(requestLogPath, argvLogPath),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* adapter.startSession({
         threadId,
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "composer-2",
+        },
       });
 
       yield* adapter.sendTurn({
@@ -1298,14 +1379,19 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
       const wrapperPath = yield* Effect.promise(() =>
         makeProbeWrapper(requestLogPath, argvLogPath),
       );
-      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* serverSettings.updateSettings({
+        providers: { cursor: { binaryPath: wrapperPath } },
+      });
 
       yield* adapter.startSession({
         threadId,
         provider: ProviderDriverKind.make("cursor"),
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "composer-2" },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("cursor"),
+          model: "composer-2",
+        },
       });
 
       yield* adapter.sendTurn({

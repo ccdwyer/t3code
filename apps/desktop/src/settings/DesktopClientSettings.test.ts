@@ -15,6 +15,11 @@ import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 const clientSettings: ClientSettings = {
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  codexMicroLedSyncEnabled: false,
+  codexMicroBrightness: 70,
+  codexMicroAutoDim: true,
+  codexMicroKeybindingsSeededEnvironments: [],
+  codexMicroAgentKeysSource: "recentChats",
   dismissedProviderUpdateNotificationKeys: [],
   diffIgnoreWhitespace: true,
   environmentIdentificationMode: "artwork",
@@ -32,6 +37,7 @@ const clientSettings: ClientSettings = {
   planModeEnabled: false,
   providerModelPreferences: {},
   sidebarAutoSettleAfterDays: 3,
+  renderHtmlEmbeds: true,
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",
@@ -40,6 +46,7 @@ const clientSettings: ClientSettings = {
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
   legacySidebarEnabled: false,
+  sidebarV2Mode: "threads",
   timestampFormat: "24-hour",
   wordWrap: true,
 };
@@ -125,7 +132,9 @@ describe("DesktopClientSettings", () => {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        yield* fileSystem.makeDirectory(environment.clientSettingsPath, { recursive: true });
+        yield* fileSystem.makeDirectory(environment.clientSettingsPath, {
+          recursive: true,
+        });
 
         const error = yield* settings.set(clientSettings).pipe(Effect.flip);
         assert.instanceOf(error, DesktopClientSettings.DesktopClientSettingsWriteError);
@@ -148,7 +157,9 @@ describe("DesktopClientSettings", () => {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.makeDirectory(environment.stateDir, {
+          recursive: true,
+        });
         yield* fileSystem.writeFileString(
           environment.clientSettingsPath,
           `{
@@ -172,7 +183,9 @@ describe("DesktopClientSettings", () => {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.makeDirectory(environment.stateDir, {
+          recursive: true,
+        });
         yield* fileSystem.writeFileString(
           environment.clientSettingsPath,
           `{
@@ -197,7 +210,9 @@ describe("DesktopClientSettings", () => {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.makeDirectory(environment.stateDir, {
+          recursive: true,
+        });
         yield* fileSystem.writeFileString(environment.clientSettingsPath, "{}\n");
 
         assert.deepEqual(yield* settings.get, Option.some(yield* decodeClientSettingsJson("{}")));
@@ -211,7 +226,9 @@ describe("DesktopClientSettings", () => {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const settings = yield* DesktopClientSettings.DesktopClientSettings;
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
+        yield* fileSystem.makeDirectory(environment.stateDir, {
+          recursive: true,
+        });
         yield* fileSystem.writeFileString(environment.clientSettingsPath, "{not-json");
 
         assert.isTrue(Option.isNone(yield* settings.get));

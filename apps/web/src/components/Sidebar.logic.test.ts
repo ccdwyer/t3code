@@ -4,8 +4,10 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
   createThreadJumpHintVisibilityController,
+  getSidebarBoardRowKey,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarThreadIds,
+  nextDefaultBoardName,
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
   getVisibleThreadsForProject,
@@ -13,6 +15,7 @@ import {
   hasUnseenCompletion,
   isContextMenuPointerDown,
   isTrailingDoubleClick,
+  isSidebarBoardRouteActive,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
@@ -242,6 +245,46 @@ describe("resolveSidebarStageBadgeLabel", () => {
   });
 });
 
+describe("sidebar board identity", () => {
+  it("includes environment in board row keys", () => {
+    expect(
+      getSidebarBoardRowKey({
+        environmentId: "environment-local",
+        projectId: "project-1",
+        boardId: "project-1__delivery",
+      }),
+    ).not.toBe(
+      getSidebarBoardRowKey({
+        environmentId: "environment-remote",
+        projectId: "project-1",
+        boardId: "project-1__delivery",
+      }),
+    );
+  });
+
+  it("matches active board routes by environment and board id", () => {
+    const activeRouteBoard = {
+      environmentId: "environment-local",
+      boardId: "project-1__delivery",
+    };
+
+    expect(
+      isSidebarBoardRouteActive(activeRouteBoard, {
+        environmentId: "environment-local",
+        projectId: "project-1",
+        boardId: "project-1__delivery",
+      }),
+    ).toBe(true);
+    expect(
+      isSidebarBoardRouteActive(activeRouteBoard, {
+        environmentId: "environment-remote",
+        projectId: "project-1",
+        boardId: "project-1__delivery",
+      }),
+    ).toBe(false);
+  });
+});
+
 function makeLatestTurn(overrides?: {
   completedAt?: string | null;
   startedAt?: string | null;
@@ -407,6 +450,14 @@ describe("isTrailingDoubleClick", () => {
 
   it("ignores further clicks of a triple-click", () => {
     expect(isTrailingDoubleClick(3)).toBe(true);
+  });
+});
+
+describe("nextDefaultBoardName", () => {
+  it("chooses the first unused Workflow board name", () => {
+    expect(nextDefaultBoardName([])).toBe("Workflow board");
+    expect(nextDefaultBoardName(["Workflow board"])).toBe("Workflow board 2");
+    expect(nextDefaultBoardName(["Workflow board", "Workflow board 2"])).toBe("Workflow board 3");
   });
 });
 

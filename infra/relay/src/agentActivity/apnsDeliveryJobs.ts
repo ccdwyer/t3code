@@ -40,7 +40,11 @@ export const ApnsNotificationPayload = Schema.Struct({
   title: Schema.String,
   body: Schema.String,
   environmentId: Schema.String,
-  threadId: Schema.String,
+  // Thread notifications carry threadId; ticket notifications carry boardId + ticketId.
+  // deepLink is the routing key used by the mobile app for both notification kinds.
+  threadId: Schema.optional(Schema.String),
+  boardId: Schema.optional(Schema.String),
+  ticketId: Schema.optional(Schema.String),
   deepLink: Schema.String,
   // Optional so delivery jobs queued by older relay builds still decode.
   // New jobs use these fields to avoid delivering a stale Done/attention

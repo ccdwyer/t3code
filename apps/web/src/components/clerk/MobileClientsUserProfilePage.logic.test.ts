@@ -20,6 +20,7 @@ function device(overrides: Partial<RelayClientDeviceRecord> = {}): RelayClientDe
       notifyOnInput: false,
       notifyOnCompletion: true,
       notifyOnFailure: false,
+      notifyOnBlocked: false,
     },
     liveActivities: { enabled: true },
     updatedAt: "2026-06-21T12:00:00.000Z",
@@ -40,7 +41,9 @@ describe("mobile client presentation", () => {
   it("distinguishes disabled notifications from an empty event selection", () => {
     expect(
       mobileClientNotificationDetail(
-        device({ notifications: { ...device().notifications, enabled: false } }),
+        device({
+          notifications: { ...device().notifications, enabled: false },
+        }),
       ),
     ).toBe("Push notifications are disabled on this device.");
     expect(
@@ -52,6 +55,7 @@ describe("mobile client presentation", () => {
             notifyOnInput: false,
             notifyOnCompletion: false,
             notifyOnFailure: false,
+            notifyOnBlocked: false,
           },
         }),
       ),

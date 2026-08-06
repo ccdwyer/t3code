@@ -112,6 +112,9 @@ import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
 import { forkParked, ServerActivation } from "./serverActivation.ts";
+import { workflowHooksRouteLayer } from "./workflow/webhookRoute.ts";
+import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
+import { WorkflowServerRuntimeLive } from "./workflow/WorkflowRuntimeLive.ts";
 
 // Effect's default preemptive shutdown waits 20s before finalizing request scopes.
 // T3's primary transport is long-lived WebSocket RPC, whose Effect scope finalizer
@@ -269,6 +272,15 @@ const SourceControlProviderRegistryLayerLive = SourceControlProviderRegistry.lay
   Layer.provideMerge(VcsDriverRegistryLayerLive),
 );
 
+// The workflow PR steps need GitHubCli alongside the registry. Re-export
+// GitHubCli as a peer output of the registry layer (which consumes it
+// internally but does not surface it); GitHubCli's VcsProcess requirement is
+// satisfied by the single VcsProcess.layer provided at makeServerLayer level,
+// so no second ProcessRunner pool is created.
+const SourceControlForWorkflowLive = SourceControlProviderRegistryLayerLive.pipe(
+  Layer.provideMerge(GitHubCli.layer),
+);
+
 const GitManagerLayerLive = GitManager.layer.pipe(
   Layer.provideMerge(ProjectSetupScriptRunner.layer),
   Layer.provideMerge(GitVcsDriver.layer),
@@ -359,7 +371,20 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const WorkflowRuntimeLayerLive = WorkflowServerRuntimeLive.pipe(
+  Layer.provideMerge(CheckpointingLayerLive),
+  Layer.provideMerge(SourceControlForWorkflowLive),
+  Layer.provideMerge(GitLayerLive),
+  Layer.provideMerge(GitWorkflowLayerLive),
+  Layer.provideMerge(ProjectSetupScriptRunner.layer),
+  Layer.provideMerge(TerminalLayerLive),
+  Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(ProjectionTurnRepositoryLive),
+  Layer.provideMerge(PersistenceLayerLive),
+  Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+);
+
+const RuntimeCoreEngineLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CheckpointingLayerLive),
@@ -367,6 +392,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(WorkflowRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(Keybindings.layer),
@@ -393,6 +419,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
   Layer.provideMerge(ServerEnvironment.layer),
+);
+
+const RuntimeCoreDependenciesLive = RuntimeCoreEngineLive.pipe(
   Layer.provideMerge(AuthLayerLive),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(
@@ -426,6 +455,7 @@ const commandReadinessLayer = HttpRouter.middleware(
 );
 
 export const makeRoutesLayer = Layer.mergeAll(
+  workflowHooksRouteLayer,
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(authHttpApiLayer),
@@ -489,14 +519,18 @@ export const makeServerLayer = Layer.unwrap(
             state,
           }).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to persist server runtime state", { cause }),
+              Effect.logWarning("Failed to persist server runtime state", {
+                cause,
+              }),
             ),
           );
         }),
         () =>
           clearPersistedServerRuntimeState(config.serverRuntimeStatePath).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to clear server runtime state", { cause }),
+              Effect.logWarning("Failed to clear server runtime state", {
+                cause,
+              }),
             ),
           ),
       ),
@@ -537,7 +571,9 @@ export const makeServerLayer = Layer.unwrap(
             }),
             (configured) =>
               configured
-                ? disableTailscaleServe({ servePort: configured.servePort }).pipe(
+                ? disableTailscaleServe({
+                    servePort: configured.servePort,
+                  }).pipe(
                     Effect.tap(() =>
                       Effect.logInfo("Tailscale Serve disabled", {
                         servePort: configured.servePort,

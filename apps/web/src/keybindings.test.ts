@@ -7,6 +7,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import {
+  agentKeySlotIndexFromCommand,
   formatShortcutLabel,
   isChatNewShortcut,
   isChatNewLocalShortcut,
@@ -87,7 +88,10 @@ function compile(bindings: TestBinding[]): ResolvedKeybindingsConfig {
 const DEFAULT_BINDINGS = compile([
   { shortcut: modShortcut("b"), command: "sidebar.toggle" },
   { shortcut: modShortcut("j"), command: "terminal.toggle" },
-  { shortcut: modShortcut("b", { altKey: true }), command: "rightPanel.toggle" },
+  {
+    shortcut: modShortcut("b", { altKey: true }),
+    command: "rightPanel.toggle",
+  },
   {
     shortcut: modShortcut("d"),
     command: "terminal.split",
@@ -140,7 +144,10 @@ const DEFAULT_BINDINGS = compile([
   { shortcut: modShortcut("o", { shiftKey: true }), command: "chat.new" },
   { shortcut: modShortcut("n", { shiftKey: true }), command: "chat.newLocal" },
   { shortcut: modShortcut("o"), command: "editor.openFavorite" },
-  { shortcut: modShortcut("[", { shiftKey: true }), command: "thread.previous" },
+  {
+    shortcut: modShortcut("[", { shiftKey: true }),
+    command: "thread.previous",
+  },
   { shortcut: modShortcut("]", { shiftKey: true }), command: "thread.next" },
   { shortcut: modShortcut("1"), command: "thread.jump.1" },
   { shortcut: modShortcut("2"), command: "thread.jump.2" },
@@ -173,7 +180,9 @@ describe("isTerminalToggleShortcut", () => {
 
   it("matches Ctrl+J on non-macOS", () => {
     assert.isTrue(
-      isTerminalToggleShortcut(event({ ctrlKey: true }), DEFAULT_BINDINGS, { platform: "Win32" }),
+      isTerminalToggleShortcut(event({ ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Win32",
+      }),
     );
   });
 
@@ -286,8 +295,16 @@ describe("split/new/close terminal shortcuts", () => {
 
   it("supports when boolean literals", () => {
     const keybindings = compile([
-      { shortcut: modShortcut("n"), command: "terminal.new", whenAst: whenIdentifier("true") },
-      { shortcut: modShortcut("m"), command: "terminal.new", whenAst: whenIdentifier("false") },
+      {
+        shortcut: modShortcut("n"),
+        command: "terminal.new",
+        whenAst: whenIdentifier("true"),
+      },
+      {
+        shortcut: modShortcut("m"),
+        command: "terminal.new",
+        whenAst: whenIdentifier("false"),
+      },
     ]);
 
     assert.isTrue(
@@ -376,8 +393,14 @@ describe("shortcutLabelForCommand", () => {
 
   it("returns null for commands shadowed by a later conflicting shortcut", () => {
     const bindings = compile([
-      { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.jump.1" },
-      { shortcut: modShortcut("1", { shiftKey: true }), command: "thread.jump.7" },
+      {
+        shortcut: modShortcut("1", { shiftKey: true }),
+        command: "thread.jump.1",
+      },
+      {
+        shortcut: modShortcut("1", { shiftKey: true }),
+        command: "thread.jump.7",
+      },
     ]);
 
     assert.isNull(shortcutLabelForCommand(bindings, "thread.jump.1", "MacIntel"));
@@ -692,7 +715,12 @@ describe("resolveShortcutCommand", () => {
     );
     assert.strictEqual(
       resolveShortcutCommand(
-        event({ key: "}", code: "BracketRight", ctrlKey: true, shiftKey: true }),
+        event({
+          key: "}",
+          code: "BracketRight",
+          ctrlKey: true,
+          shiftKey: true,
+        }),
         DEFAULT_BINDINGS,
         {
           platform: "Linux",
@@ -850,5 +878,19 @@ describe("plus key parsing", () => {
         platform: "Linux",
       }),
     );
+  });
+});
+
+describe("agentKeySlotIndexFromCommand", () => {
+  it("maps agentKey.open.1..6 to 0-based slot indices", () => {
+    assert.strictEqual(agentKeySlotIndexFromCommand("agentKey.open.1"), 0);
+    assert.strictEqual(agentKeySlotIndexFromCommand("agentKey.open.6"), 5);
+  });
+
+  it("returns null for non-agent-key commands", () => {
+    assert.isNull(agentKeySlotIndexFromCommand("thread.jump.1"));
+    assert.isNull(agentKeySlotIndexFromCommand("agentKey.open.7"));
+    assert.isNull(agentKeySlotIndexFromCommand("agentKey.open.0"));
+    assert.isNull(agentKeySlotIndexFromCommand(""));
   });
 });

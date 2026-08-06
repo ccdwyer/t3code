@@ -202,7 +202,10 @@ export function alertForAttentionTransition(input: {
     return null;
   }
   if (newlyAttention.length === 1) {
-    return { title: first.threadTitle, body: `${first.status}: ${first.projectTitle}` };
+    return {
+      title: first.threadTitle,
+      body: `${first.status}: ${first.projectTitle}`,
+    };
   }
   return {
     title: `${newlyAttention.length} agents need attention`,
@@ -265,7 +268,10 @@ export function alertForNewlyTerminal(input: {
     return null;
   }
   if (newlyTerminal.length === 1) {
-    return { title: first.threadTitle, body: `${first.status}: ${first.projectTitle}` };
+    return {
+      title: first.threadTitle,
+      body: `${first.status}: ${first.projectTitle}`,
+    };
   }
   return {
     title: `${newlyTerminal.length} agents finished`,
@@ -717,9 +723,9 @@ export const make = Effect.gen(function* () {
         ),
       ),
       Effect.catchCause((cause) =>
-        Effect.logWarning("live-work recheck failed; allowing queued start", { cause }).pipe(
-          Effect.as(true),
-        ),
+        Effect.logWarning("live-work recheck failed; allowing queued start", {
+          cause,
+        }).pipe(Effect.as(true)),
       ),
     );
   });
@@ -792,8 +798,14 @@ export const make = Effect.gen(function* () {
     readonly notification: ApnsNotificationPayload;
   }) {
     // Jobs from older relay versions do not carry a state identity. Preserve
-    // backwards compatibility and only revalidate newly queued jobs.
-    if (input.notification.phase === undefined || input.notification.updatedAt === undefined) {
+    // backwards compatibility and only revalidate newly queued jobs. Ticket
+    // pushes carry no threadId (boardId+ticketId instead) — the state-identity
+    // check is thread-scoped, so there is nothing to revalidate for them.
+    if (
+      input.notification.phase === undefined ||
+      input.notification.updatedAt === undefined ||
+      input.notification.threadId === undefined
+    ) {
       return true;
     }
     return yield* stateIdentityIsCurrent({
@@ -815,7 +827,10 @@ export const make = Effect.gen(function* () {
         const currentTarget = targets.find((row) => row.device_id === input.target.device_id);
         return (
           currentTarget !== undefined &&
-          expectedCurrentToken({ target: currentTarget, kind: input.kind }) === input.token
+          expectedCurrentToken({
+            target: currentTarget,
+            kind: input.kind,
+          }) === input.token
         );
       }),
     );
@@ -857,10 +872,15 @@ export const make = Effect.gen(function* () {
         token: input.token,
       });
       if (claim === "completed") {
-        return duplicateJobResult({ deviceId: input.target.device_id, kind: input.kind });
+        return duplicateJobResult({
+          deviceId: input.target.device_id,
+          kind: input.kind,
+        });
       }
       if (claim === "in_flight") {
-        return yield* new ApnsDeliveryJobClaimInFlight({ sourceJobId: input.sourceJobId });
+        return yield* new ApnsDeliveryJobClaimInFlight({
+          sourceJobId: input.sourceJobId,
+        });
       }
       const tokenIsCurrent = yield* isCurrentSignedJobToken({
         target: input.target,
@@ -872,7 +892,10 @@ export const make = Effect.gen(function* () {
           sourceJobId: input.sourceJobId,
           apnsReason: "Stale APNs delivery job skipped.",
         });
-        return staleJobResult({ deviceId: input.target.device_id, kind: input.kind });
+        return staleJobResult({
+          deviceId: input.target.device_id,
+          kind: input.kind,
+        });
       }
       if (
         input.kind !== "live_activity_start" &&
@@ -886,7 +909,10 @@ export const make = Effect.gen(function* () {
           sourceJobId: input.sourceJobId,
           apnsReason: "Stale agent activity state skipped.",
         });
-        return staleJobResult({ deviceId: input.target.device_id, kind: input.kind });
+        return staleJobResult({
+          deviceId: input.target.device_id,
+          kind: input.kind,
+        });
       }
     }
     if (
@@ -903,7 +929,10 @@ export const make = Effect.gen(function* () {
           apnsReason: "Stale APNs start job skipped.",
         });
       }
-      return staleJobResult({ deviceId: input.target.device_id, kind: input.kind });
+      return staleJobResult({
+        deviceId: input.target.device_id,
+        kind: input.kind,
+      });
     }
     const result = yield* apns
       .sendLiveActivityRequest({
@@ -978,7 +1007,7 @@ export const make = Effect.gen(function* () {
     const notification = sanitizeApnsNotificationPayload(input.notification);
     yield* Effect.annotateCurrentSpan({
       "relay.environment_id": notification.environmentId,
-      "relay.thread_id": notification.threadId,
+      ...(notification.threadId !== undefined ? { "relay.thread_id": notification.threadId } : {}),
     });
     const request = apns.makePushNotificationRequest({
       token: input.token,
@@ -997,7 +1026,7 @@ export const make = Effect.gen(function* () {
       const claim = yield* attempts.claimSourceJob({
         userId: input.target.user_id,
         environmentId: notification.environmentId,
-        threadId: notification.threadId,
+        threadId: notification.threadId ?? null,
         deviceId: input.target.device_id,
         kind: "push_notification",
         sourceJobId: input.sourceJobId,
@@ -1010,7 +1039,9 @@ export const make = Effect.gen(function* () {
         });
       }
       if (claim === "in_flight") {
-        return yield* new ApnsDeliveryJobClaimInFlight({ sourceJobId: input.sourceJobId });
+        return yield* new ApnsDeliveryJobClaimInFlight({
+          sourceJobId: input.sourceJobId,
+        });
       }
       const tokenIsCurrent = yield* isCurrentSignedJobToken({
         target: input.target,
@@ -1073,7 +1104,7 @@ export const make = Effect.gen(function* () {
       yield* attempts.record({
         userId: input.target.user_id,
         environmentId: notification.environmentId,
-        threadId: notification.threadId,
+        threadId: notification.threadId ?? null,
         deviceId: input.target.device_id,
         kind: "push_notification",
         token: input.token,

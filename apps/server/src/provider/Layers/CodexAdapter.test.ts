@@ -262,6 +262,12 @@ validationLayer("CodexAdapterLive validation", (it) => {
       NodeAssert.equal(validationRuntimeFactory.factory.mock.calls.length, 0);
     }),
   );
+  it.effect("declares session resume support in its capabilities", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      NodeAssert.equal(adapter.capabilities.supportsSessionResume, true);
+    }),
+  );
   it.effect("maps codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationRuntimeFactory.factory.mockClear();
@@ -365,7 +371,9 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     const layer = Layer.effect(
       CodexAdapter,
       Effect.gen(function* () {
-        const codexConfig = decodeCodexSettings({ launchArgs: "--strict-config --enable foo" });
+        const codexConfig = decodeCodexSettings({
+          launchArgs: "--strict-config --enable foo",
+        });
         return yield* makeCodexAdapter(codexConfig, {
           makeRuntime: runtimeFactory.factory,
         });
@@ -396,9 +404,13 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     const layer = Layer.effect(
       CodexAdapter,
       Effect.gen(function* () {
-        const codexConfig = decodeCodexSettings({ launchArgs: "--enable settings-feature" });
+        const codexConfig = decodeCodexSettings({
+          launchArgs: "--enable settings-feature",
+        });
         return yield* makeCodexAdapter(codexConfig, {
-          environment: { T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --enable env-feature " },
+          environment: {
+            T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --enable env-feature ",
+          },
           makeRuntime: runtimeFactory.factory,
         });
       }),
@@ -1196,7 +1208,9 @@ scopedLifecycleLayer("CodexAdapterLive scoped lifecycle", (it) => {
   );
 });
 
-const scopedFailureRuntimeFactory = makeScopedRuntimeFactory({ failConstruction: true });
+const scopedFailureRuntimeFactory = makeScopedRuntimeFactory({
+  failConstruction: true,
+});
 const scopedFailureLayer = it.layer(
   Layer.effect(
     CodexAdapter,

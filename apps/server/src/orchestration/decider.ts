@@ -61,7 +61,10 @@ function isStaleRequestFailureDetail(payload: Record<string, unknown> | null): b
 // stale. (The projection pipeline's pendingApprovalCount reads the same
 // capped stream and stays consistent with this view.)
 function hasOpenBlockingRequest(thread: {
-  readonly activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>;
+  readonly activities: ReadonlyArray<{
+    readonly kind: string;
+    readonly payload: unknown;
+  }>;
 }): boolean {
   const openRequestIds = new Set<string>();
   for (const activity of thread.activities) {
@@ -106,7 +109,10 @@ function hasOpenBlockingRequest(thread: {
  */
 function threadHasQueuedTurnStart(
   thread: {
-    readonly messages: ReadonlyArray<{ readonly role: string; readonly createdAt: string }>;
+    readonly messages: ReadonlyArray<{
+      readonly role: string;
+      readonly createdAt: string;
+    }>;
     readonly latestTurn: {
       readonly requestedAt: string;
       readonly startedAt: string | null;
@@ -374,6 +380,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           worktreePath: command.worktreePath,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
+          ...(command.hidden === undefined ? {} : { hidden: command.hidden }),
         },
       };
     }

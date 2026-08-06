@@ -197,7 +197,9 @@ describe("OrchestrationEngine", () => {
               updatedAt: projectionSnapshot.updatedAt,
             }),
           getSnapshotSequence: () =>
-            Effect.succeed({ snapshotSequence: projectionSnapshot.snapshotSequence }),
+            Effect.succeed({
+              snapshotSequence: projectionSnapshot.snapshotSequence,
+            }),
           getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
@@ -208,6 +210,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
           searchThreads: () => Effect.succeed({ matches: [] }),
+          isThreadHidden: () => Effect.succeed(false),
         }),
       ),
       Layer.provide(

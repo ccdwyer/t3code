@@ -1,0 +1,180 @@
+import type {
+  BoardId,
+  BoardSnapshot,
+  BoardStreamItem,
+  BoardTicketView,
+  EnvironmentApi,
+  EnvironmentId,
+  LaneKey,
+  ProjectId,
+  StepRunId,
+  TicketId,
+  WorkflowEventId,
+  WorkflowImportBoardInput,
+  WorkflowCreateWorkflowBoardInput,
+  WorkflowGenerateWorkflowDraftInput,
+  WorkflowParkActionResult,
+  WorkflowProposeBoardImprovementInput,
+  WorkflowResolveBoardProposalInput,
+} from "@t3tools/contracts";
+
+interface SubscriptionOptions {
+  readonly onResubscribe?: () => void;
+  readonly onSnapshot?: (snapshot: BoardSnapshot) => void;
+  readonly onTicketUpdate?: (ticket: BoardTicketView) => void;
+}
+
+export const subscribeBoard = (
+  api: EnvironmentApi,
+  environmentId: EnvironmentId,
+  boardId: BoardId,
+  options?: SubscriptionOptions,
+): (() => void) =>
+  api.workflow.subscribeBoard(
+    { boardId },
+    (item: BoardStreamItem) => {
+      // Board state is now folded by the workflowEnvironment.board atom —
+      // the applyBoardStreamItem Zustand side-effect has been removed.
+      if (item.kind === "snapshot") {
+        options?.onSnapshot?.(item.snapshot);
+      }
+      if (item.kind === "ticket") {
+        options?.onTicketUpdate?.(item.ticket);
+      }
+    },
+    options,
+  );
+
+export const createTicket = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["createTicket"]>[0],
+) => api.workflow.createTicket(input);
+
+export const listBoards = (api: EnvironmentApi, projectId: ProjectId) =>
+  api.workflow.listBoards({ projectId });
+
+export const createBoard = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["createBoard"]>[0],
+) => api.workflow.createBoard(input);
+
+export const importBoard = (api: EnvironmentApi, input: WorkflowImportBoardInput) =>
+  api.workflow.importBoard(input);
+
+export const createWorkflowBoard = (api: EnvironmentApi, input: WorkflowCreateWorkflowBoardInput) =>
+  api.workflow.createWorkflowBoard(input);
+
+export const generateWorkflowDraft = (
+  api: EnvironmentApi,
+  input: WorkflowGenerateWorkflowDraftInput,
+) => api.workflow.generateWorkflowDraft(input);
+
+export const listBoardTemplates = (api: EnvironmentApi) => api.workflow.listBoardTemplates({});
+
+export const deleteBoard = (api: EnvironmentApi, boardId: BoardId) =>
+  api.workflow.deleteBoard({ boardId });
+
+export const renameBoard = (api: EnvironmentApi, boardId: BoardId, name: string) =>
+  api.workflow.renameBoard({ boardId, name });
+
+export const editTicketContextPack = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["editTicketContextPack"]>[0],
+) => api.workflow.editTicketContextPack(input);
+
+export const editTicket = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["editTicket"]>[0],
+) => api.workflow.editTicket(input);
+
+export const deleteTicket = (api: EnvironmentApi, ticketId: TicketId) =>
+  api.workflow.deleteTicket({ ticketId });
+
+export const moveTicket = (api: EnvironmentApi, ticketId: TicketId, toLane: LaneKey) =>
+  api.workflow.moveTicket({ ticketId, toLane });
+
+export const invokeParkAction = (
+  api: EnvironmentApi,
+  ticketId: TicketId,
+  actionIndex: number,
+  parkedEventId: WorkflowEventId,
+): Promise<WorkflowParkActionResult> =>
+  api.workflow.invokeParkAction({ ticketId, actionIndex, parkedEventId });
+
+export const resolveApproval = (
+  api: EnvironmentApi,
+  stepRunId: StepRunId,
+  approved: boolean,
+  submission?: {
+    readonly decision?: string | undefined;
+    readonly answers?: Record<string, string | ReadonlyArray<string>> | undefined;
+  },
+) =>
+  api.workflow.resolveApproval({
+    stepRunId,
+    approved,
+    // A checkpoint form sends its chosen option; the server derives the routing
+    // outcome from it and ignores `approved`.
+    ...(submission?.decision === undefined ? {} : { decision: submission.decision }),
+    ...(submission?.answers === undefined ? {} : { answers: submission.answers as never }),
+  });
+
+export const postTicketMessage = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["postTicketMessage"]>[0],
+) => api.workflow.postTicketMessage(input);
+
+export const editTicketMessage = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["editTicketMessage"]>[0],
+) => api.workflow.editTicketMessage(input);
+
+export const answerTicketStep = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["answerTicketStep"]>[0],
+) => api.workflow.answerTicketStep(input);
+
+export const steerTicketStep = (
+  api: EnvironmentApi,
+  input: Parameters<EnvironmentApi["workflow"]["steerTicketStep"]>[0],
+) => api.workflow.steerTicketStep(input);
+
+export const getTicketDiff = (api: EnvironmentApi, ticketId: TicketId) =>
+  api.workflow.getTicketDiff({ ticketId });
+
+export const getTicketTimeline = (api: EnvironmentApi, ticketId: TicketId) =>
+  api.workflow.getTicketTimeline({ ticketId });
+
+/**
+ * One page of a board timeline. `throughSequence` pins the scrub session: pass
+ * the `latestSequence` from the first page on every subsequent call, or events
+ * appended mid-scrub shift the pages under the user.
+ */
+export const getBoardTimeline = (
+  api: EnvironmentApi,
+  input: {
+    readonly boardId: BoardId;
+    readonly afterSequence?: number | undefined;
+    readonly throughSequence?: number | undefined;
+    readonly limit?: number | undefined;
+  },
+) => api.workflow.getBoardTimeline(input);
+
+export const proposeBoardImprovement = (
+  api: EnvironmentApi,
+  input: WorkflowProposeBoardImprovementInput,
+) => api.workflow.proposeBoardImprovement(input);
+
+export const listBoardProposals = (api: EnvironmentApi, boardId: BoardId) =>
+  api.workflow.listBoardProposals({ boardId });
+
+export const getBoardProposal = (api: EnvironmentApi, proposalId: string) =>
+  api.workflow.getBoardProposal({ proposalId });
+
+export const resolveBoardProposal = (
+  api: EnvironmentApi,
+  input: WorkflowResolveBoardProposalInput,
+) => api.workflow.resolveBoardProposal(input);
+
+export const revertBoardProposal = (api: EnvironmentApi, proposalId: string) =>
+  api.workflow.revertBoardProposal({ proposalId });

@@ -37,6 +37,32 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
 const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
+/**
+ * Build the argv + env for spawning a local OpenCode server.
+ *
+ * SAFETY (no-tool guarantee): every t3code-spawned OpenCode server runs with
+ * `OPENCODE_CONFIG_CONTENT="{}"` — an EMPTY config — so the user's
+ * `opencode.json` / global config is NOT loaded. That means no MCP servers, no
+ * custom instructions/AGENTS.md, and no plugins reach the server. Combined with
+ * the per-session `permission "*" deny` posture, the board-proposal op (and all
+ * text-gen ops) cannot load or invoke any tool. This is the OpenCode analog of
+ * the Claude path's `--strict-mcp-config --mcp-config "{}"` and the Codex path's
+ * `--ignore-user-config`.
+ */
+export function buildOpenCodeServeSpawn(input: {
+  readonly hostname: string;
+  readonly port: number;
+  readonly environment?: NodeJS.ProcessEnv;
+}): { readonly args: Array<string>; readonly env: NodeJS.ProcessEnv } {
+  return {
+    args: ["serve", `--hostname=${input.hostname}`, `--port=${input.port}`],
+    env: {
+      ...(input.environment ?? process.env),
+      OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
+    },
+  };
+}
+
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
@@ -89,7 +115,11 @@ export const runOpenCodeSdk = <A>(
   Effect.tryPromise({
     try: fn,
     catch: (cause) =>
-      new OpenCodeRuntimeError({ operation, detail: openCodeRuntimeErrorDetail(cause), cause }),
+      new OpenCodeRuntimeError({
+        operation,
+        detail: openCodeRuntimeErrorDetail(cause),
+        cause,
+      }),
   }).pipe(Effect.withSpan(`opencode.${operation}`));
 
 export interface OpenCodeCommandResult {
@@ -177,7 +207,11 @@ const KNOWN_HIDDEN_AGENTS = new Set(["compaction", "summary", "title"]);
 export function parseModelsCliOutput(stdout: string): {
   readonly providers: ReadonlyMap<
     string,
-    { readonly id: string; readonly name: string; readonly models: { [key: string]: Model } }
+    {
+      readonly id: string;
+      readonly name: string;
+      readonly models: { [key: string]: Model };
+    }
   >;
   readonly connected: ReadonlyArray<string>;
 } {
@@ -451,19 +485,25 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ),
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
-      const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
-      const spawnCommand = yield* resolveCommand(input.binaryPath, args, input.environment);
+      const spawn = buildOpenCodeServeSpawn({
+        hostname,
+        port,
+        ...(input.environment ? { environment: input.environment } : {}),
+      });
+      const spawnCommand = yield* resolveCommand(input.binaryPath, spawn.args, input.environment);
 
       const child = yield* spawner
         .spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
             detached: hostPlatform !== "win32",
             shell: spawnCommand.shell,
-            env: {
-              ...input.environment,
-              OPENCODE_CONFIG_CONTENT: OPENCODE_EMPTY_CONFIG_CONTENT,
-            },
-            extendEnv: input.environment === undefined,
+            // Use the builder's env as the single source of truth for the
+            // no-tool guarantee. `buildOpenCodeServeSpawn` already merges the
+            // inherited env (falling back to `process.env` when none is given)
+            // and forces `OPENCODE_CONFIG_CONTENT="{}"`, so `extendEnv` is
+            // false here to avoid double-merging `process.env`.
+            env: spawn.env,
+            extendEnv: false,
           }),
         )
         .pipe(
@@ -650,9 +690,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     );
 
   const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client)], { concurrency: "unbounded" }).pipe(
-      Effect.map(([providerList, agents]) => ({ providerList, agents })),
-    );
+    Effect.all([loadProviders(client), loadAgents(client)], {
+      concurrency: "unbounded",
+    }).pipe(Effect.map(([providerList, agents]) => ({ providerList, agents })));
 
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {
@@ -665,9 +705,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ...env,
         }).pipe(Effect.exit);
       const runAgentsCli = () =>
-        runOpenCodeCommand({ binaryPath: input.binaryPath, args: ["agent", "list"], ...env }).pipe(
-          Effect.exit,
-        );
+        runOpenCodeCommand({
+          binaryPath: input.binaryPath,
+          args: ["agent", "list"],
+          ...env,
+        }).pipe(Effect.exit);
 
       // First attempt — run both in parallel
       let [modelsResult, agentsResult] = yield* Effect.all([runModelsCli(), runAgentsCli()], {

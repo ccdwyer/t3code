@@ -64,7 +64,11 @@ function findTaskTitleInActivities(
     }
     const payload =
       activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as { taskId?: unknown; title?: unknown; detail?: unknown })
+        ? (activity.payload as {
+            taskId?: unknown;
+            title?: unknown;
+            detail?: unknown;
+          })
         : undefined;
     if (payload?.taskId !== taskId) {
       continue;
@@ -362,7 +366,9 @@ export function runtimeEventToActivities(
   taskTitle?: string,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
-    const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
+    const eventWithSequence = event as ProviderRuntimeEvent & {
+      sessionSequence?: number;
+    };
     return eventWithSequence.sessionSequence !== undefined
       ? { sequence: eventWithSequence.sessionSequence }
       : {};
@@ -1474,10 +1480,15 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
-      const thread = yield* resolveThreadShell(event.threadId);
+      // Workflow dispatches use hidden orchestration threads. Shell queries
+      // intentionally exclude hidden threads, so fall back to the detail query
+      // before deciding that an event belongs to an unknown thread.
+      const visibleThread = yield* resolveThreadShell(event.threadId);
+      const hiddenThread = visibleThread ? undefined : yield* resolveThreadDetail(event.threadId);
+      const thread = visibleThread ?? hiddenThread;
       if (!thread) return;
 
-      let loadedThreadDetail: OrchestrationThread | null | undefined;
+      let loadedThreadDetail: OrchestrationThread | null | undefined = hiddenThread;
       const getLoadedThreadDetail = () =>
         Effect.gen(function* () {
           if (loadedThreadDetail !== undefined) {

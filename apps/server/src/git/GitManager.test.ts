@@ -72,7 +72,10 @@ function fakeGhOutput(stdout: string): VcsProcess.VcsProcessOutput {
   };
 }
 
-type FakeGitTextGeneration = TextGeneration.TextGeneration["Service"];
+type FakeGitTextGeneration = Pick<
+  TextGeneration.TextGeneration["Service"],
+  "generateCommitMessage" | "generatePrContent" | "generateBranchName" | "generateThreadTitle"
+>;
 
 type FakePullRequest = NonNullable<FakeGhScenario["pullRequest"]>;
 
@@ -341,6 +344,13 @@ function createTextGeneration(
             }),
         ),
       ),
+    generateBoardProposal: () =>
+      Effect.fail(
+        new TextGenerationError({
+          operation: "generateBoardProposal",
+          detail: "fake text generation does not support board proposals",
+        }),
+      ),
   };
 }
 
@@ -573,6 +583,46 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           cwd: input.cwd,
           args: ["pr", "checkout", input.reference, ...(input.force ? ["--force"] : [])],
         }).pipe(Effect.asVoid),
+      mergePullRequest: (input) =>
+        Effect.fail(
+          new GitHubCli.GitHubCliCommandError({
+            command: "gh",
+            cwd: input.cwd,
+            cause: new Error(`Unexpected merge: #${input.number}`),
+          }),
+        ),
+      getPullRequestDetail: (input) =>
+        Effect.fail(
+          new GitHubCli.GitHubCliCommandError({
+            command: "gh",
+            cwd: input.cwd,
+            cause: new Error(`Unexpected detail: #${input.number}`),
+          }),
+        ),
+      listPullRequestChecks: (input) =>
+        Effect.fail(
+          new GitHubCli.GitHubCliCommandError({
+            command: "gh",
+            cwd: input.cwd,
+            cause: new Error(`Unexpected checks: #${input.number}`),
+          }),
+        ),
+      listPullRequestReviews: (input) =>
+        Effect.fail(
+          new GitHubCli.GitHubCliCommandError({
+            command: "gh",
+            cwd: input.cwd,
+            cause: new Error(`Unexpected reviews: #${input.number}`),
+          }),
+        ),
+      listPullRequestReviewComments: (input) =>
+        Effect.fail(
+          new GitHubCli.GitHubCliCommandError({
+            command: "gh",
+            cwd: input.cwd,
+            cause: new Error(`Unexpected review comments: #${input.number}`),
+          }),
+        ),
     },
     ghCalls,
   };
@@ -935,8 +985,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       };
       const { manager, ghCalls } = yield* makeManager({
         ghScenario: {
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
-          prListSequence: [JSON.stringify([existingPr]), JSON.stringify([existingPr])],
+          prListSequence: [
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([existingPr]),
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify([existingPr]),
+          ],
         },
       });
 
@@ -1627,7 +1681,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generateCommitMessage: (input) => {
             generatedPolicy = input.policy;
-            return Effect.succeed({ subject: "Implement stacked git actions", body: "" });
+            return Effect.succeed({
+              subject: "Implement stacked git actions",
+              body: "",
+            });
           },
         },
       });
@@ -1640,7 +1697,9 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(result.commit.status).toBe("created");
       expect(result.push.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("skipped_not_requested");
-      expect(generatedPolicy).toMatchObject({ commitInstructions: "Use a direct tone." });
+      expect(generatedPolicy).toMatchObject({
+        commitInstructions: "Use a direct tone.",
+      });
       expect(result.toast).toMatchObject({
         description: "Implement stacked git actions",
         cta: {
@@ -1677,7 +1736,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generateCommitMessage: (input) => {
             generatedPolicy = input.policy;
-            return Effect.succeed({ subject: "Preserve custom style", body: "" });
+            return Effect.succeed({
+              subject: "Preserve custom style",
+              body: "",
+            });
           },
         },
       });
@@ -1719,7 +1781,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generateCommitMessage: (input) => {
             generatedModelSelection = input.modelSelection;
-            return Effect.succeed({ subject: "Use the available writer", body: "" });
+            return Effect.succeed({
+              subject: "Use the available writer",
+              body: "",
+            });
           },
         },
       });
@@ -1752,7 +1817,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generateCommitMessage: (input) => {
             generatedPolicy = input.policy;
-            return Effect.succeed({ subject: "Create initial commit", body: "" });
+            return Effect.succeed({
+              subject: "Create initial commit",
+              body: "",
+            });
           },
         },
       });
@@ -2820,7 +2888,10 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generatePrContent: (input) => {
             generatedCommitSummary = input.commitSummary;
-            return Effect.succeed({ title: "Feature PR", body: "Feature body" });
+            return Effect.succeed({
+              title: "Feature PR",
+              body: "Feature body",
+            });
           },
         },
       });

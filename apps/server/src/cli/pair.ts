@@ -198,7 +198,10 @@ export const formatPairOutput = (input: {
  * something answering that is not a T3 server (do NOT overwrite its mapping).
  */
 type EnvironmentProbeResult =
-  | { readonly _tag: "descriptor"; readonly descriptor: ExecutionEnvironmentDescriptor }
+  | {
+      readonly _tag: "descriptor";
+      readonly descriptor: ExecutionEnvironmentDescriptor;
+    }
   | { readonly _tag: "unreachable" }
   | { readonly _tag: "not-a-t3-server" };
 
@@ -341,6 +344,7 @@ const makePairServerConfig = Effect.fn(function* (input: {
     staticDir: undefined,
     devUrl,
     devAllowedOrigins: [],
+    webBaseUrl: undefined,
     noBrowser: true,
     startupPresentation: "headless",
     desktopBootstrapToken: undefined,
@@ -386,7 +390,9 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
     const existing = yield* probeEnvironmentDescriptor(baseUrl);
     if (existing._tag === "descriptor") {
       if (existing.descriptor.environmentId !== input.target.descriptor.environmentId) {
-        return yield* new ServesOtherEnvironmentError({ servePort: input.servePort });
+        return yield* new ServesOtherEnvironmentError({
+          servePort: input.servePort,
+        });
       }
       // Matching environment id proves the mapping reaches this server, but
       // not through which port: for a dev server it may front the backend
@@ -421,7 +427,9 @@ const resolveTailscalePairingBase = Effect.fn("pair.resolveTailscalePairingBase"
     const probed = yield* awaitEnvironmentDescriptor(baseUrl);
     if (probed._tag === "descriptor") {
       if (probed.descriptor.environmentId !== input.target.descriptor.environmentId) {
-        return yield* new ServesOtherEnvironmentError({ servePort: input.servePort });
+        return yield* new ServesOtherEnvironmentError({
+          servePort: input.servePort,
+        });
       }
     } else {
       notes.push(
@@ -524,7 +532,11 @@ export const pairCommand = Command.make("pair", {
       }
 
       const config = yield* makePairServerConfig({ target, logLevel });
-      const issued = yield* mintPairingLink({ config, ttl: flags.ttl, label: flags.label });
+      const issued = yield* mintPairingLink({
+        config,
+        ttl: flags.ttl,
+        label: flags.label,
+      });
       const pairingUrl = buildPairingUrl(pairingBaseUrl, issued.credential);
 
       yield* Console.log(

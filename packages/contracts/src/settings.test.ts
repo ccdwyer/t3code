@@ -5,6 +5,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
   ServerSettingsPatch,
@@ -91,6 +92,23 @@ describe("ClientSettings sidebar", () => {
     );
   });
 
+  it("defaults sidebar v2 mode to threads", () => {
+    expect(decodeClientSettings({}).sidebarV2Mode).toBe("threads");
+  });
+
+  it("round-trips sidebarV2Mode through full schema and patch", () => {
+    expect(decodeClientSettings({ sidebarV2Mode: "workflows" }).sidebarV2Mode).toBe("workflows");
+    expect(decodeClientSettingsPatch({ sidebarV2Mode: "workflows" }).sidebarV2Mode).toBe(
+      "workflows",
+    );
+    expect(decodeClientSettingsPatch({}).sidebarV2Mode).toBeUndefined();
+  });
+
+  it("rejects an unknown sidebarV2Mode", () => {
+    expect(() => decodeClientSettings({ sidebarV2Mode: "boards" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ sidebarV2Mode: "boards" })).toThrow();
+  });
+
   it("allows auto-settle by inactivity to be disabled", () => {
     expect(
       decodeClientSettings({ sidebarAutoSettleAfterDays: null }).sidebarAutoSettleAfterDays,
@@ -100,6 +118,40 @@ describe("ClientSettings sidebar", () => {
   it.each([-1, 0, 91])("rejects an auto-settle threshold outside 1..90: %s", (value) => {
     expect(() => decodeClientSettings({ sidebarAutoSettleAfterDays: value })).toThrow();
     expect(() => decodeClientSettingsPatch({ sidebarAutoSettleAfterDays: value })).toThrow();
+  });
+});
+
+describe("ClientSettings Codex Micro", () => {
+  it("decoding an empty config yields the documented defaults", () => {
+    // Decode {} directly — a legacy pre-Micro settings file must gain the
+    // defaults at runtime, independent of how DEFAULT_CLIENT_SETTINGS is
+    // maintained.
+    const decoded = decodeClientSettings({});
+    expect(decoded.codexMicroLedSyncEnabled).toBe(false);
+    expect(decoded.codexMicroBrightness).toBe(70);
+    expect(decoded.codexMicroAutoDim).toBe(true);
+    expect(decoded.codexMicroKeybindingsSeededEnvironments).toEqual([]);
+    expect(decoded.codexMicroAgentKeysSource).toBe("recentChats");
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroLedSyncEnabled).toBe(false);
+    expect(DEFAULT_CLIENT_SETTINGS.codexMicroKeybindingsSeededEnvironments).toEqual([]);
+  });
+
+  it("accepts a partial patch of Codex Micro fields", () => {
+    const patch = decodeClientSettingsPatch({
+      codexMicroLedSyncEnabled: true,
+      codexMicroBrightness: 30,
+      codexMicroKeybindingsSeededEnvironments: ["env-1"],
+    });
+    expect(patch.codexMicroLedSyncEnabled).toBe(true);
+    expect(patch.codexMicroBrightness).toBe(30);
+    expect(patch.codexMicroKeybindingsSeededEnvironments).toEqual(["env-1"]);
+    // Untouched fields stay absent in a patch.
+    expect(patch.codexMicroAutoDim).toBeUndefined();
+  });
+
+  it.each([-1, 101, 3.5])("rejects an out-of-range brightness: %s", (value) => {
+    expect(() => decodeClientSettings({ codexMicroBrightness: value })).toThrow();
+    expect(() => decodeClientSettingsPatch({ codexMicroBrightness: value })).toThrow();
   });
 });
 
@@ -148,7 +200,9 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
     const ollamaId = ProviderInstanceId.make("ollama_local");
 
     expect(decoded.providerInstances[personalId]?.driver).toBe("codex");
-    expect(decoded.providerInstances[workId]?.config).toEqual({ homePath: "~/.codex_work" });
+    expect(decoded.providerInstances[workId]?.config).toEqual({
+      homePath: "~/.codex_work",
+    });
     // Critical: a config naming a driver this build does not know about
     // (`ollama` is not in `ProviderDriverKind`) must round-trip without loss.
     // The runtime handles "driver not installed" — the schema must not.

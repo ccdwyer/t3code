@@ -207,7 +207,9 @@ describe("ProviderSessionReaper", () => {
           getShellSnapshot: () => Effect.die("unused"),
           getArchivedShellSnapshot: () => Effect.die("unused"),
           getSnapshotSequence: () =>
-            Effect.succeed({ snapshotSequence: input.readModel.snapshotSequence }),
+            Effect.succeed({
+              snapshotSequence: input.readModel.snapshotSequence,
+            }),
           getCounts: () => Effect.die("unused"),
           getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
           getProjectShellById: () => Effect.die("unused"),
@@ -223,6 +225,7 @@ describe("ProviderSessionReaper", () => {
           getThreadDetailById: () => Effect.die("unused"),
           getThreadDetailSnapshot: () => Effect.die("unused"),
           searchThreads: () => Effect.succeed({ matches: [] }),
+          isThreadHidden: () => Effect.succeed(false),
         }),
       ),
       Layer.provideMerge(NodeServices.layer),

@@ -83,6 +83,10 @@ The most common defect in this repo is a change that works on the path you teste
 - The web app requires pairing. Hand over the pairing URL, not the bare origin. A URL without its token is useless to whoever you gave it to. If the token got consumed, mint a fresh one with `node apps/server/src/bin.ts pair` — note it carries standard scopes, while the startup URL carries admin scopes (needed for Settings → Connections management).
 - Stop what you started, by the PID you tracked. See rule 1.
 
+## Local Development
+
+- Schema-migration note: a dev DB that applied `WorkflowSchema` as migration 33 (pre-rebase numbering, or pre-park without the parked columns) fails startup on this branch — the migration is now `034_WorkflowSchema` (upstream took slot 33) with park columns folded in place. Wipe local state (`state.sqlite` / `~/.t3`) or apply the ALTER recipe in `docs/superpowers/specs/2026-07-22-workflow-substates-design.md` §Backwards compatibility.
+
 ## Test data
 
 An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:

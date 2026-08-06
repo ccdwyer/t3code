@@ -11,7 +11,11 @@ import {
 } from "./CommandPalette.logic";
 
 describe("reduceCommandPaletteUiState", () => {
-  const closedState = { open: false, mode: "command", openIntent: null } as const;
+  const closedState = {
+    open: false,
+    mode: "command",
+    openIntent: null,
+  } as const;
 
   it("toggles each overlay mode open and closed", () => {
     const filesOpen = reduceCommandPaletteUiState(closedState, {
@@ -24,10 +28,17 @@ describe("reduceCommandPaletteUiState", () => {
       _tag: "ToggleMode",
       mode: "content",
     });
-    expect(contentOpen).toEqual({ open: true, mode: "content", openIntent: null });
+    expect(contentOpen).toEqual({
+      open: true,
+      mode: "content",
+      openIntent: null,
+    });
 
     expect(
-      reduceCommandPaletteUiState(contentOpen, { _tag: "ToggleMode", mode: "content" }),
+      reduceCommandPaletteUiState(contentOpen, {
+        _tag: "ToggleMode",
+        mode: "content",
+      }),
     ).toEqual({ open: false, mode: "command", openIntent: null });
   });
 
@@ -36,13 +47,16 @@ describe("reduceCommandPaletteUiState", () => {
       _tag: "ToggleMode",
       mode: "files",
     });
-    expect(reduceCommandPaletteUiState(filesOpen, { _tag: "ToggleMode", mode: "command" })).toEqual(
-      {
-        open: true,
+    expect(
+      reduceCommandPaletteUiState(filesOpen, {
+        _tag: "ToggleMode",
         mode: "command",
-        openIntent: null,
-      },
-    );
+      }),
+    ).toEqual({
+      open: true,
+      mode: "command",
+      openIntent: null,
+    });
   });
 
   it("routes open intents to command mode", () => {
@@ -59,6 +73,11 @@ describe("reduceCommandPaletteUiState", () => {
       open: true,
       mode: "command",
       openIntent: { kind: "new-thread-in" },
+    });
+    expect(reduceCommandPaletteUiState(filesOpen, { _tag: "OpenNewWorkflowIn" })).toEqual({
+      open: true,
+      mode: "command",
+      openIntent: { kind: "new-workflow-in" },
     });
   });
 
@@ -117,7 +136,10 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     environmentId: LOCAL_ENVIRONMENT_ID,
     projectId: PROJECT_ID,
     title: "Thread",
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5",
+    },
     runtimeMode: "full-access",
     interactionMode: "default",
     session: null,

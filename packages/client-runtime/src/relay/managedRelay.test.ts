@@ -483,6 +483,7 @@ describe("ManagedRelayClient", () => {
                 notifyOnInput: true,
                 notifyOnCompletion: true,
                 notifyOnFailure: true,
+                notifyOnBlocked: true,
               },
               liveActivities: {
                 enabled: true,
@@ -496,7 +497,9 @@ describe("ManagedRelayClient", () => {
 
     return Effect.gen(function* () {
       const relayClient = yield* ManagedRelay.ManagedRelayClient;
-      const devices = yield* relayClient.listDevices({ clerkToken: "clerk-token" });
+      const devices = yield* relayClient.listDevices({
+        clerkToken: "clerk-token",
+      });
       expect(devices).toMatchObject([
         {
           deviceId: "device-1",

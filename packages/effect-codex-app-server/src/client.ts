@@ -21,6 +21,13 @@ import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
+  /**
+   * Set false ONLY if the caller consumes `handle.stderr` itself. Leaving the
+   * child's stderr unread lets its pipe fill (64KB on most systems), at which
+   * point the child blocks on write and stops answering protocol requests —
+   * so the default is to drain.
+   */
+  readonly drainStderr?: boolean;
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
@@ -151,7 +158,9 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     if (schema) {
       return decodeNotificationPayload(notification.method, schema, notification.params).pipe(
         Effect.flatMap((decoded) =>
-          Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
+          Effect.forEach(handlers, (handler) => handler(decoded), {
+            discard: true,
+          }),
         ),
         Effect.catch(() => Effect.void),
       );
@@ -259,11 +268,23 @@ export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   options: CodexAppServerClientOptions = {},
 ): Layer.Layer<CodexAppServerClient> =>
-  Layer.effect(CodexAppServerClient, makeChildProcessClient(handle, options));
+  // Drain stderr unless the caller opts out. The previous default assumed the
+  // caller would consume it, but no caller does, so a child emitting more than
+  // a pipe buffer of diagnostics deadlocked mid-protocol.
+  Layer.effect(
+    CodexAppServerClient,
+    makeChildProcessClient(handle, options, options.drainStderr !== false),
+  );
 
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
-)(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
-  yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
+)(function* (
+  handle: ChildProcessSpawner.ChildProcessHandle,
+  options: CodexAppServerClientOptions,
+  drainStderr: boolean,
+) {
+  if (drainStderr) {
+    yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
+  }
   return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
 });

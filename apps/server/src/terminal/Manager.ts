@@ -23,6 +23,8 @@ import {
   type TerminalClearInput,
   type TerminalCloseInput,
   type TerminalEvent,
+  type TerminalHistoryAttachInput,
+  type TerminalHistoryAttachStreamEvent,
   type TerminalMetadataStreamEvent,
   type TerminalOpenInput,
   type TerminalResizeInput,
@@ -138,6 +140,15 @@ export class TerminalManager extends Context.Service<
     ) => Effect.Effect<() => void, TerminalError>;
 
     /**
+     * Attach to persisted terminal history and stream live events if a matching
+     * session is still active. This never opens or restarts a shell.
+     */
+    readonly attachHistoryStream: (
+      input: TerminalHistoryAttachInput,
+      listener: (event: TerminalHistoryAttachStreamEvent) => Effect.Effect<void>,
+    ) => Effect.Effect<() => void, TerminalError>;
+
+    /**
      * Write input bytes to a terminal session.
      */
     readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
@@ -167,6 +178,15 @@ export class TerminalManager extends Context.Service<
      * When `terminalId` is omitted, closes all sessions for the thread.
      */
     readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+
+    /**
+     * Read the current snapshot for a terminal session without opening or
+     * modifying it. Returns `null` if no session exists for the given ids.
+     */
+    readonly getSnapshot: (input: {
+      readonly threadId: string;
+      readonly terminalId: string;
+    }) => Effect.Effect<TerminalSessionSnapshot | null>;
 
     /**
      * Subscribe to terminal runtime events with a direct callback.
@@ -386,6 +406,23 @@ function terminalEventToAttachEvent(event: TerminalEvent): TerminalAttachStreamE
     case "restarted":
     case "activity":
       return event;
+  }
+}
+
+function terminalEventToHistoryAttachEvent(
+  event: TerminalEvent,
+): TerminalHistoryAttachStreamEvent | null {
+  switch (event.type) {
+    case "output":
+    case "exited":
+    case "closed":
+    case "error":
+    case "cleared":
+    case "activity":
+      return event;
+    case "started":
+    case "restarted":
+      return null;
   }
 }
 
@@ -646,7 +683,11 @@ function windowsInspectSubprocess(
   }).pipe(
     Effect.map((result) => {
       if (result.code !== 0) {
-        return { hasRunningSubprocess: false, childCommand: null, processIds: [] } as const;
+        return {
+          hasRunningSubprocess: false,
+          childCommand: null,
+          processIds: [],
+        } as const;
       }
       const processNameById = new Map<number, string>();
       const childrenByParent = new Map<number, number[]>();
@@ -663,7 +704,11 @@ function windowsInspectSubprocess(
       const directChildren = childrenByParent.get(terminalPid) ?? [];
       const childPid = directChildren[0];
       if (childPid === undefined) {
-        return { hasRunningSubprocess: false, childCommand: null, processIds: [] } as const;
+        return {
+          hasRunningSubprocess: false,
+          childCommand: null,
+          processIds: [],
+        } as const;
       }
       const processIds = new Set<number>([terminalPid]);
       const pending = [terminalPid];
@@ -750,14 +795,22 @@ const posixInspectSubprocess = Effect.fn("terminal.posixInspectSubprocess")(func
     if (pgrepResult.value.code === 0) {
       childPid = parseFirstChildPidFromPgrep(pgrepResult.value.stdout);
     } else if (pgrepResult.value.code === 1) {
-      return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+      return {
+        hasRunningSubprocess: false,
+        childCommand: null,
+        processIds: [],
+      };
     }
   }
 
   if (childPid === null) {
     const psResult = yield* Effect.exit(runPs);
     if (psResult._tag === "Failure" || psResult.value.code !== 0) {
-      return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+      return {
+        hasRunningSubprocess: false,
+        childCommand: null,
+        processIds: [],
+      };
     }
     for (const line of psResult.value.stdout.split(/\r?\n/g)) {
       const [pidRaw, ppidRaw] = line.trim().split(/\s+/g);
@@ -772,7 +825,11 @@ const posixInspectSubprocess = Effect.fn("terminal.posixInspectSubprocess")(func
   }
 
   if (childPid === null) {
-    return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+    return {
+      hasRunningSubprocess: false,
+      childCommand: null,
+      processIds: [],
+    };
   }
 
   const runComm = processRunner.run({
@@ -843,7 +900,11 @@ const posixInspectSubprocess = Effect.fn("terminal.posixInspectSubprocess")(func
 function defaultSubprocessInspectorForPlatform(platform: NodeJS.Platform) {
   return Effect.fn("terminal.defaultSubprocessInspector")(function* (terminalPid: number) {
     if (!Number.isInteger(terminalPid) || terminalPid <= 0) {
-      return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
+      return {
+        hasRunningSubprocess: false,
+        childCommand: null,
+        processIds: [],
+      };
     }
     if (platform === "win32") {
       return yield* windowsInspectSubprocess(terminalPid, platform);
@@ -1473,31 +1534,42 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   ) {
     const nextPath = historyPath(threadId, terminalId);
     if (
-      yield* fileSystem
-        .exists(nextPath)
-        .pipe(
-          Effect.mapError(
-            (cause) => new TerminalHistoryError({ operation: "read", threadId, terminalId, cause }),
-          ),
-        )
+      yield* fileSystem.exists(nextPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TerminalHistoryError({
+              operation: "read",
+              threadId,
+              terminalId,
+              cause,
+            }),
+        ),
+      )
     ) {
-      const raw = yield* fileSystem
-        .readFileString(nextPath)
-        .pipe(
-          Effect.mapError(
-            (cause) => new TerminalHistoryError({ operation: "read", threadId, terminalId, cause }),
-          ),
-        );
+      const raw = yield* fileSystem.readFileString(nextPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TerminalHistoryError({
+              operation: "read",
+              threadId,
+              terminalId,
+              cause,
+            }),
+        ),
+      );
       const capped = capHistory(raw, historyLineLimit);
       if (capped !== raw) {
-        yield* fileSystem
-          .writeFileString(nextPath, capped)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new TerminalHistoryError({ operation: "truncate", threadId, terminalId, cause }),
-            ),
-          );
+        yield* fileSystem.writeFileString(nextPath, capped).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TerminalHistoryError({
+                operation: "truncate",
+                threadId,
+                terminalId,
+                cause,
+              }),
+          ),
+        );
       }
       return capped;
     }
@@ -1508,35 +1580,44 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     const legacyPath = legacyHistoryPath(threadId);
     if (
-      !(yield* fileSystem
-        .exists(legacyPath)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
-          ),
-        ))
+      !(yield* fileSystem.exists(legacyPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TerminalHistoryError({
+              operation: "migrate",
+              threadId,
+              terminalId,
+              cause,
+            }),
+        ),
+      ))
     ) {
       return "";
     }
 
-    const raw = yield* fileSystem
-      .readFileString(legacyPath)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
-        ),
-      );
+    const raw = yield* fileSystem.readFileString(legacyPath).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TerminalHistoryError({
+            operation: "migrate",
+            threadId,
+            terminalId,
+            cause,
+          }),
+      ),
+    );
     const capped = capHistory(raw, historyLineLimit);
-    yield* fileSystem
-      .writeFileString(nextPath, capped)
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new TerminalHistoryError({ operation: "migrate", threadId, terminalId, cause }),
-        ),
-      );
+    yield* fileSystem.writeFileString(nextPath, capped).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TerminalHistoryError({
+            operation: "migrate",
+            threadId,
+            terminalId,
+            cause,
+          }),
+      ),
+    );
     yield* fileSystem.remove(legacyPath, { force: true }).pipe(
       Effect.catch((cleanupError) =>
         Effect.logWarning("failed to remove legacy terminal history", {
@@ -1928,13 +2009,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
             const processPid = ptyProcess.pid;
             const unsubscribeData = ptyProcess.onData((data) => {
-              if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
+              if (
+                !enqueueProcessEvent(session, processPid, {
+                  type: "output",
+                  data,
+                })
+              ) {
                 return;
               }
               runFork(drainProcessEvents(session, processPid));
             });
             const unsubscribeExit = ptyProcess.onExit((event) => {
-              if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
+              if (
+                !enqueueProcessEvent(session, processPid, {
+                  type: "exit",
+                  event,
+                })
+              ) {
                 return;
               }
               runFork(drainProcessEvents(session, processPid));
@@ -2443,6 +2534,105 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
+  const readHistorySnapshot = (input: { readonly threadId: string; readonly terminalId: string }) =>
+    withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const session = yield* getSession(input.threadId, input.terminalId);
+        if (Option.isSome(session)) {
+          return {
+            threadId: session.value.threadId,
+            terminalId: session.value.terminalId,
+            history: session.value.history,
+            status: session.value.status,
+            exitCode: session.value.exitCode,
+            exitSignal: session.value.exitSignal,
+            sequence: session.value.eventSequence,
+          };
+        }
+
+        yield* flushPersist(input.threadId, input.terminalId);
+        const history = yield* readHistory(input.threadId, input.terminalId);
+        return {
+          threadId: input.threadId,
+          terminalId: input.terminalId,
+          history,
+          status: null,
+          exitCode: null,
+          exitSignal: null,
+        };
+      }),
+    );
+
+  const getSnapshot: TerminalManager["Service"]["getSnapshot"] = (input) =>
+    getSession(input.threadId, input.terminalId).pipe(
+      Effect.map((session) => (Option.isSome(session) ? snapshot(session.value) : null)),
+    );
+
+  const attachHistoryStream: TerminalManager["Service"]["attachHistoryStream"] = (
+    input,
+    listener,
+  ) => {
+    let unsubscribe: (() => void) | null = null;
+
+    return Effect.gen(function* () {
+      const bufferedEvents: TerminalEvent[] = [];
+      let deliverLive = false;
+
+      unsubscribe = yield* subscribe((event) => {
+        if (event.threadId !== input.threadId || event.terminalId !== input.terminalId) {
+          return Effect.void;
+        }
+
+        if (!deliverLive) {
+          bufferedEvents.push(event);
+          return Effect.void;
+        }
+
+        const attachEvent = terminalEventToHistoryAttachEvent(event);
+        return attachEvent ? listener(attachEvent) : Effect.void;
+      });
+
+      const initialSnapshot = yield* readHistorySnapshot(input);
+
+      yield* listener({
+        type: "snapshot",
+        snapshot: initialSnapshot,
+      });
+
+      for (const event of bufferedEvents) {
+        if (
+          typeof event.sequence === "number" &&
+          typeof initialSnapshot.sequence === "number" &&
+          event.sequence <= initialSnapshot.sequence
+        ) {
+          continue;
+        }
+
+        const attachEvent = terminalEventToHistoryAttachEvent(event);
+        if (attachEvent) {
+          yield* listener(attachEvent);
+        }
+      }
+
+      deliverLive = true;
+      return () => {
+        unsubscribe?.();
+        unsubscribe = null;
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.flatMap(
+          Effect.sync(() => {
+            unsubscribe?.();
+            unsubscribe = null;
+          }),
+          () => Effect.failCause(cause),
+        ),
+      ),
+    );
+  };
+
   const metadataEventFromTerminalEvent = (
     event: TerminalEvent,
   ): Effect.Effect<TerminalMetadataStreamEvent | null> => {
@@ -2694,11 +2884,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   return TerminalManager.of({
     open,
     attachStream,
+    attachHistoryStream,
     write,
     resize,
     clear,
     restart,
     close,
+    getSnapshot,
     subscribe,
     subscribeMetadata,
   });

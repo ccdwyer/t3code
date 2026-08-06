@@ -130,7 +130,22 @@ const program = Effect.gen(function* () {
   return yield* Effect.never;
 });
 
-program.pipe(
-  Effect.provide(Layer.provide(AcpAgent.layerStdio(), NodeServices.layer)),
-  NodeRuntime.runMain,
-);
+const runProgram = () => {
+  program.pipe(
+    Effect.provide(Layer.provide(AcpAgent.layerStdio(), NodeServices.layer)),
+    NodeRuntime.runMain,
+  );
+};
+
+// Flood stderr and only start serving once that write has FLUSHED. Node buffers
+// stderr internally rather than blocking, so writing and continuing would not
+// reproduce anything; waiting for the flush is what stalls the peer when the
+// client leaves the pipe unread.
+const mockStderrBytes = Number(process.env.ACP_MOCK_STDERR_BYTES ?? 0);
+if (Number.isFinite(mockStderrBytes) && mockStderrBytes > 0) {
+  process.stderr.write("x".repeat(mockStderrBytes), () => {
+    runProgram();
+  });
+} else {
+  runProgram();
+}

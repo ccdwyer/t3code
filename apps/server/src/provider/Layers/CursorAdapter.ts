@@ -450,7 +450,10 @@ export function makeCursorAdapter(
       const ctx = sessions.get(threadId);
       if (!ctx || ctx.stopped) {
         return Effect.fail(
-          new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }),
+          new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId,
+          }),
         );
       }
       return Effect.succeed(ctx);
@@ -1018,7 +1021,10 @@ export function makeCursorAdapter(
           if (turnRecord) {
             turnRecord.items.push({ prompt: promptParts, result });
           } else {
-            ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+            ctx.turns.push({
+              id: turnId,
+              items: [{ prompt: promptParts, result }],
+            });
           }
           ctx.session = {
             ...ctx.session,
@@ -1151,9 +1157,13 @@ export function makeCursorAdapter(
       Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
 
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true }).pipe(
+      Effect.forEach(sessions.values(), stopSessionInternal, {
+        discard: true,
+      }).pipe(
         Effect.catch((cause) =>
-          Effect.logError("Failed to emit Cursor session shutdown event.", { cause }),
+          Effect.logError("Failed to emit Cursor session shutdown event.", {
+            cause,
+          }),
         ),
         Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
         Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
@@ -1164,7 +1174,10 @@ export function makeCursorAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        supportsSessionResume: true,
+      },
       startSession,
       sendTurn,
       interruptTurn,

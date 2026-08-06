@@ -26,16 +26,25 @@ export function createTerminalEnvironmentAtoms<R, E>(
     input,
   }: {
     readonly environmentId: string;
-    readonly input: { readonly threadId: string; readonly terminalId?: string | undefined };
+    readonly input: {
+      readonly threadId: string;
+      readonly terminalId?: string | undefined;
+    };
   }) => JSON.stringify([environmentId, input.threadId]);
   const terminalSessionKey = ({
     environmentId,
     input,
   }: {
     readonly environmentId: string;
-    readonly input: { readonly threadId: string; readonly terminalId?: string | undefined };
+    readonly input: {
+      readonly threadId: string;
+      readonly terminalId?: string | undefined;
+    };
   }) => JSON.stringify([environmentId, input.threadId, input.terminalId ?? null]);
-  const lifecycleConcurrency = { mode: "serial" as const, key: terminalThreadKey };
+  const lifecycleConcurrency = {
+    mode: "serial" as const,
+    key: terminalThreadKey,
+  };
   return {
     attach: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:attach",
@@ -43,6 +52,16 @@ export function createTerminalEnvironmentAtoms<R, E>(
         subscribe(WS_METHODS.terminalAttach, input).pipe(
           Stream.scan(EMPTY_TERMINAL_BUFFER_STATE, applyTerminalAttachStreamEvent),
         ),
+    }),
+    // Raw (unfolded) terminal-history replay stream — each
+    // TerminalHistoryAttachStreamEvent as emitted. Mirrors `boardRaw`: the
+    // EnvironmentApi facade's `terminal.attachHistory` bridge forwards these to
+    // its callback, and the web ScriptStepLogViewer folds them itself, so no
+    // Stream.scan here (unlike `attach` above).
+    attachHistory: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:terminal:attach-history",
+      subscribe: (input: EnvironmentRpcInput<typeof WS_METHODS.terminalAttachHistory>) =>
+        subscribe(WS_METHODS.terminalAttachHistory, input),
     }),
     events: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:terminal:events",

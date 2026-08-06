@@ -28,7 +28,10 @@ import { ThreadSnapshotLoader, type ThreadSnapshotWindow } from "./threadSnapsho
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
-import { followStreamInEnvironment } from "./runtime.ts";
+import {
+  createEnvironmentRpcSubscriptionAtomFamily,
+  followStreamInEnvironment,
+} from "./runtime.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadPageState,
@@ -163,7 +166,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // Seed the resume cursor from the cached snapshot so a warm cache can catch up
   // via `afterSequence` instead of re-downloading the full thread body.
   const lastSequence = yield* SubscriptionRef.make(
-    Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
+    Option.match(cached, {
+      onNone: () => 0,
+      onSome: (snapshot) => snapshot.snapshotSequence,
+    }),
   );
   const awaitingCompletion = yield* Ref.make(false);
   // Bumped whenever loaded history may have been rewritten out from under an
@@ -611,7 +617,10 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : undefined,
           );
           if (Option.isSome(httpSnapshot)) {
-            yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+            yield* applyItem({
+              kind: "snapshot",
+              snapshot: httpSnapshot.value,
+            });
             current = yield* SubscriptionRef.get(state);
           }
         }
@@ -718,9 +727,20 @@ export function createEnvironmentThreadStateAtoms<R, E>(
       );
   });
 
+  // Raw (unfolded) orchestration thread stream — each OrchestrationThreadStreamItem
+  // as emitted. Mirrors `workflowEnvironment.boardRaw`: the board route's
+  // EnvironmentApi facade bridge (`orchestration.subscribeThread`) forwards these
+  // to its callback and folds them itself, whereas normal thread views render the
+  // folded `stateAtom` above.
+  const streamRaw = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:thread:stream-raw",
+    tag: ORCHESTRATION_WS_METHODS.subscribeThread,
+  });
+
   return {
     stateAtom: (environmentId: EnvironmentIdType, threadId: ThreadIdType) =>
       family(threadKey({ environmentId, threadId })),
+    streamRaw,
   };
 }
 

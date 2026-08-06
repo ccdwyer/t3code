@@ -186,6 +186,14 @@ export interface ProjectionSnapshotQueryShape {
     threadId: ThreadId,
     window?: OrchestrationThreadDetailWindow,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
+
+  /**
+   * Whether a thread is internal (workflow step/intake dispatch) and must be
+   * kept out of user-facing thread lists and live shell streams.
+   */
+  readonly isThreadHidden: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
 }
 
 /**

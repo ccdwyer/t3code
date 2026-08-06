@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -12,6 +13,7 @@ import type { Thread, ThreadShell } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  approvalDecisionForKeybindingCommand,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   buildLoadingThreadFromShell,
@@ -26,6 +28,7 @@ import {
   isBranchMismatchDismissedForSession,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  resolveApprovalKeybindingOutcome,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   scheduleEnvironmentReconnectWarning,
@@ -384,9 +387,12 @@ describe("resolveSendEnvMode", () => {
 
 describe("branchMismatchKey", () => {
   it("builds a key from thread id and both branches", () => {
-    expect(branchMismatchKey("thread-1", { threadBranch: "feat/a", currentBranch: "feat/b" })).toBe(
-      "thread-1:feat/a:feat/b",
-    );
+    expect(
+      branchMismatchKey("thread-1", {
+        threadBranch: "feat/a",
+        currentBranch: "feat/b",
+      }),
+    ).toBe("thread-1:feat/a:feat/b");
   });
 
   it("returns null without a thread or mismatch", () => {
@@ -412,17 +418,28 @@ describe("shouldShowBranchMismatchBanner", () => {
   });
 
   it("stays mounted after the draft clears once shown for the current mismatch", () => {
-    expect(shouldShowBranchMismatchBanner({ ...base, wasShownForCurrentMismatch: true })).toBe(
-      true,
-    );
+    expect(
+      shouldShowBranchMismatchBanner({
+        ...base,
+        wasShownForCurrentMismatch: true,
+      }),
+    ).toBe(true);
   });
 
   it("never shows when dismissed or without a mismatch", () => {
     expect(
-      shouldShowBranchMismatchBanner({ ...base, composerHasContent: true, isDismissed: true }),
+      shouldShowBranchMismatchBanner({
+        ...base,
+        composerHasContent: true,
+        isDismissed: true,
+      }),
     ).toBe(false);
     expect(
-      shouldShowBranchMismatchBanner({ ...base, composerHasContent: true, hasMismatch: false }),
+      shouldShowBranchMismatchBanner({
+        ...base,
+        composerHasContent: true,
+        hasMismatch: false,
+      }),
     ).toBe(false);
   });
 });
@@ -712,8 +729,165 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       threadError: null,
     };
 
-    expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
-    expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        hasPendingApproval: true,
+      }),
+    ).toBe(true);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        hasPendingUserInput: true,
+      }),
+    ).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
+  });
+});
+
+describe("approvalDecisionForKeybindingCommand", () => {
+  it("maps approval.accept to a one-shot accept (never acceptForSession)", () => {
+    expect(approvalDecisionForKeybindingCommand("approval.accept")).toBe("accept");
+  });
+
+  it("maps approval.decline to decline (never cancel)", () => {
+    expect(approvalDecisionForKeybindingCommand("approval.decline")).toBe("decline");
+  });
+
+  it("returns null for unrelated, null, or undefined commands", () => {
+    expect(approvalDecisionForKeybindingCommand("chat.new")).toBeNull();
+    expect(approvalDecisionForKeybindingCommand("acceptForSession")).toBeNull();
+    expect(approvalDecisionForKeybindingCommand("cancel")).toBeNull();
+    expect(approvalDecisionForKeybindingCommand(null)).toBeNull();
+    expect(approvalDecisionForKeybindingCommand(undefined)).toBeNull();
+  });
+});
+
+describe("resolveApprovalKeybindingOutcome", () => {
+  const requestA = ApprovalRequestId.make("approval-a");
+  const requestB = ApprovalRequestId.make("approval-b");
+  const requestC = ApprovalRequestId.make("approval-c");
+
+  it("responds with accept for the oldest pending approval", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [
+        { requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" },
+        { requestId: requestB, createdAt: "2026-03-29T00:00:05.000Z" },
+      ],
+      respondingRequestIds: [],
+    });
+    expect(outcome).toEqual({
+      kind: "respond",
+      requestId: requestA,
+      decision: "accept",
+    });
+  });
+
+  it("responds with decline for the oldest pending approval", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.decline",
+      isRepeat: false,
+      pendingApprovals: [{ requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" }],
+      respondingRequestIds: [],
+    });
+    expect(outcome).toEqual({
+      kind: "respond",
+      requestId: requestA,
+      decision: "decline",
+    });
+  });
+
+  it("targets the oldest by createdAt regardless of array order (2+ pending)", () => {
+    // Deliberately unsorted input: the newest sits at index 0, so a naive
+    // pendingApprovals[0] would target the wrong request.
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [
+        { requestId: requestC, createdAt: "2026-03-29T00:00:09.000Z" },
+        { requestId: requestA, createdAt: "2026-03-29T00:00:01.000Z" },
+        { requestId: requestB, createdAt: "2026-03-29T00:00:05.000Z" },
+      ],
+      respondingRequestIds: [],
+    });
+    expect(outcome).toEqual({
+      kind: "respond",
+      requestId: requestA,
+      decision: "accept",
+    });
+  });
+
+  it("reports no-pending (caller toasts) when nothing is pending", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [],
+      respondingRequestIds: [],
+    });
+    expect(outcome).toEqual({ kind: "no-pending" });
+  });
+
+  it("ignores auto-repeat keydowns", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: true,
+      pendingApprovals: [{ requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" }],
+      respondingRequestIds: [],
+    });
+    expect(outcome).toEqual({ kind: "ignore" });
+  });
+
+  it("rejects a duplicate decision while the only pending request is in flight", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.decline",
+      isRepeat: false,
+      pendingApprovals: [{ requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" }],
+      respondingRequestIds: [requestA],
+    });
+    expect(outcome).toEqual({ kind: "in-flight" });
+  });
+
+  it("targets the next-oldest pending approval when the oldest is already in flight", () => {
+    // The in-flight set is a per-request duplicate guard, not a global mutex:
+    // a second press while A is submitting acts on B.
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [
+        { requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" },
+        { requestId: requestB, createdAt: "2026-03-29T00:00:05.000Z" },
+      ],
+      respondingRequestIds: [requestA],
+    });
+    expect(outcome).toEqual({
+      kind: "respond",
+      requestId: requestB,
+      decision: "accept",
+    });
+  });
+
+  it("reports in-flight when every pending approval is already being submitted", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "approval.accept",
+      isRepeat: false,
+      pendingApprovals: [
+        { requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" },
+        { requestId: requestB, createdAt: "2026-03-29T00:00:05.000Z" },
+      ],
+      respondingRequestIds: [requestA, requestB],
+    });
+    expect(outcome).toEqual({ kind: "in-flight" });
+  });
+
+  it("ignores non-approval commands", () => {
+    const outcome = resolveApprovalKeybindingOutcome({
+      command: "chat.new",
+      isRepeat: false,
+      pendingApprovals: [{ requestId: requestA, createdAt: "2026-03-29T00:00:00.000Z" }],
+      respondingRequestIds: [],
+    });
+    expect(outcome).toEqual({ kind: "ignore" });
   });
 });

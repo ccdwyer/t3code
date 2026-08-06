@@ -187,7 +187,13 @@ function makePushNotificationRequest(input: {
         sound: "default",
       },
       environmentId: input.notification.environmentId,
-      threadId: input.notification.threadId,
+      ...(input.notification.threadId !== undefined
+        ? { threadId: input.notification.threadId }
+        : {}),
+      ...(input.notification.boardId !== undefined ? { boardId: input.notification.boardId } : {}),
+      ...(input.notification.ticketId !== undefined
+        ? { ticketId: input.notification.ticketId }
+        : {}),
       deepLink: input.notification.deepLink,
     },
   };
@@ -228,7 +234,9 @@ export const make = Effect.gen(function* () {
   const sendLiveActivityRequest: ApnsClient["Service"]["sendLiveActivityRequest"] = Effect.fn(
     "relay.apns.send_live_activity_request",
   )(function* (input) {
-    yield* Effect.annotateCurrentSpan({ "relay.apns.event": input.request.event });
+    yield* Effect.annotateCurrentSpan({
+      "relay.apns.event": input.request.event,
+    });
     const jwt = yield* providerTokens.getJwt({
       ...input.credentials,
       issuedAtUnixSeconds: input.issuedAtUnixSeconds,
@@ -286,7 +294,9 @@ export const make = Effect.gen(function* () {
 
   const sendPushNotificationRequest: ApnsClient["Service"]["sendPushNotificationRequest"] =
     Effect.fn("relay.apns.send_push_notification_request")(function* (input) {
-      yield* Effect.annotateCurrentSpan({ "relay.apns.event": "push_notification" });
+      yield* Effect.annotateCurrentSpan({
+        "relay.apns.event": "push_notification",
+      });
       const jwt = yield* providerTokens.getJwt({
         ...input.credentials,
         issuedAtUnixSeconds: input.issuedAtUnixSeconds,

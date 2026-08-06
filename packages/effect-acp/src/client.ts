@@ -26,6 +26,13 @@ import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 export interface AcpClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
+  /**
+   * Set false ONLY if the caller consumes `handle.stderr` itself. Leaving the
+   * child's stderr unread lets its pipe fill (64KB on most systems), at which
+   * point the agent blocks on write and stops answering protocol requests — so
+   * the default is to drain.
+   */
+  readonly drainStderr?: boolean;
   readonly logger?: (event: AcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
 }
 
@@ -581,5 +588,16 @@ export const layerChildProcess = (
 ): Layer.Layer<AcpClient> => {
   const stdio = makeChildStdio(handle);
   const terminationError = makeTerminationError(handle);
-  return Layer.effect(AcpClient, make(stdio, options, terminationError));
+  return Layer.effect(
+    AcpClient,
+    Effect.gen(function* () {
+      // Nothing else reads this child's stderr — not this layer's callers, not
+      // AcpSessionRuntime — so an agent that writes more than a pipe buffer of
+      // diagnostics would block on the write and deadlock the session.
+      if (options.drainStderr !== false) {
+        yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
+      }
+      return yield* make(stdio, options, terminationError);
+    }),
+  );
 };

@@ -533,6 +533,12 @@ jobs:
           AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
+          # Codex Micro packaging gate: the build script runs the packaged
+          # node-hid native-load check against its STAGING dist dir (the only
+          # place the unpacked app tree exists) and fails the build if the
+          # host-arch artifact is missing or node-hid cannot load. Each matrix
+          # runner covers its own arch; together they cover arm64 + x64.
+          T3_REQUIRE_PACKAGED_NATIVE_CHECK: "1"
         run: |
           args=(
             --platform "${{ matrix.platform }}"

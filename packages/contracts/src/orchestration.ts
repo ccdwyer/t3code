@@ -647,6 +647,9 @@ const ThreadCreateCommand = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
+  // Internal threads (workflow step/intake dispatches) carry projections but
+  // never appear in user-facing thread lists.
+  hidden: Schema.optional(Schema.Boolean),
 });
 
 const ThreadDeleteCommand = Schema.Struct({
@@ -1094,6 +1097,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  hidden: Schema.optional(Schema.Boolean),
 });
 
 export const ThreadDeletedPayload = Schema.Struct({

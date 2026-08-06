@@ -2,6 +2,8 @@ import type { TicketId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
+import type { WorkflowEventStoreError } from "./Errors.ts";
+
 /**
  * The artifact-ingestion finalizer — spec §Ingestion trigger (v2.5).
  *
@@ -41,7 +43,10 @@ export class TicketArtifactFinalizer extends Context.Service<
  * Null = the ticket has no attached worktree = silent no-op.
  */
 export interface TicketWorktreeLocatorShape {
-  readonly locate: (ticketId: TicketId) => Effect.Effect<{ readonly path: string } | null>;
+  /** Null = genuinely no worktree (silent no-op); failures MUST surface. */
+  readonly locate: (
+    ticketId: TicketId,
+  ) => Effect.Effect<{ readonly path: string } | null, WorkflowEventStoreError>;
 }
 
 export class TicketWorktreeLocator extends Context.Service<

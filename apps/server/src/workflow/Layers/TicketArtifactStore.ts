@@ -139,6 +139,30 @@ const openContained = async (
 };
 
 /**
+ * Blob health for repair detection — the same no-follow/verified posture as
+ * serving (O_NOFOLLOW open, fstat regular-file, size equality), not a weak
+ * lstat that a symlink swap could satisfy.
+ */
+const blobHealthy = async (
+  dir: string,
+  row: { readonly blobId: string; readonly byteSize: number },
+): Promise<boolean> => {
+  let handle: Fs.FileHandle | null = null;
+  try {
+    handle = await Fs.open(
+      NodePath.join(dir, row.blobId),
+      FsConstants.O_RDONLY | FsConstants.O_NOFOLLOW,
+    );
+    const stat = await handle.stat();
+    return stat.isFile() && stat.size === row.byteSize;
+  } catch {
+    return false;
+  } finally {
+    if (handle !== null) await handle.close().catch(() => undefined);
+  }
+};
+
+/**
  * Bounded streaming copy with the pinned stability check (spec §Ingest step
  * 3): record size S and mtime M, stream at most min(cap, S) + 1 bytes, then
  * require size == S, mtime == M, bytes == S. Returns staged file metadata or
@@ -471,17 +495,24 @@ const make = Effect.gen(function* () {
           const sidecarAbs = NodePath.join(input.artifactsRootAbsolutePath, sidecarRaw);
           const opened = yield* Effect.promise(() => openContained(sidecarAbs, rootReal));
           if (opened !== null) {
-            sidecarPresent = true;
-            const bytes = yield* Effect.tryPromise({
-              try: async () => {
+            // A sidecar that opens but fails to READ is treated as ABSENT
+            // (existing description preserved) — a transient read error must
+            // not clear a caption. The handle always closes.
+            const bytes = yield* Effect.promise(async (): Promise<Buffer | null> => {
+              try {
                 const buffer = Buffer.alloc(Math.min(ARTIFACT_SIDECAR_READ_CAP_BYTES, opened.size));
                 const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, 0);
-                await opened.handle.close();
                 return buffer.subarray(0, bytesRead);
-              },
-              catch: toStoreError("TicketArtifactStore.ingest:sidecar"),
-            }).pipe(Effect.orElseSucceed(() => Buffer.alloc(0)));
-            description = normalizeCaption(decodeUtf8Replacing(bytes));
+              } catch {
+                return null;
+              } finally {
+                await opened.handle.close().catch(() => undefined);
+              }
+            });
+            if (bytes !== null) {
+              sidecarPresent = true;
+              description = normalizeCaption(decodeUtf8Replacing(bytes));
+            }
           }
         }
 
@@ -502,14 +533,7 @@ const make = Effect.gen(function* () {
           existing.byteSize === preOpen.size &&
           existing.sourceMtimeMs === observedMtime
         ) {
-          const healthy = yield* Effect.promise(async () => {
-            try {
-              const stat = await Fs.lstat(NodePath.join(dir, existing.blobId));
-              return stat.isFile() && stat.size === existing.byteSize;
-            } catch {
-              return false;
-            }
-          });
+          const healthy = yield* Effect.promise(() => blobHealthy(dir, existing));
           if (healthy) {
             yield* Effect.promise(() => preOpen.handle.close().catch(() => undefined));
             staged.push({
@@ -525,6 +549,13 @@ const make = Effect.gen(function* () {
           repairRequired = true;
         }
 
+        // Repair detection must not depend on the short-circuit firing: a
+        // missing/unhealthy current blob with a drifted mtime still needs the
+        // staged bytes ADOPTED even when the sha matches (spec Phase-B pin).
+        if (existing !== undefined && !repairRequired) {
+          const healthy = yield* Effect.promise(() => blobHealthy(dir, existing));
+          repairRequired = !healthy;
+        }
         const cap = ARTIFACT_FILE_CAPS[candidate.kind];
         const blobId = randomUUID();
         const tmpPath = NodePath.join(dir, `.tmp-${randomUUID()}`);
@@ -552,7 +583,19 @@ const make = Effect.gen(function* () {
       }
 
       // Phase B — one short write transaction with liveness + caps + the four
-      // exhaustive branches.
+      // exhaustive branches. EVERY-EXIT staged cleanup (spec pin): if the
+      // transaction fails or the fiber is interrupted before adoption, all
+      // promoted-but-unadopted staged blobs are removed here — the reconciler
+      // is a backstop, not the primary exit path.
+      const adoptedBlobIds = new Set<string>();
+      const removeStagedExcept = (keep: ReadonlySet<string>) =>
+        Effect.promise(async () => {
+          for (const item of staged) {
+            if (item.mode === "staged" && item.blobId !== undefined && !keep.has(item.blobId)) {
+              await Fs.rm(NodePath.join(dir, item.blobId), { force: true }).catch(() => undefined);
+            }
+          }
+        });
       const supersededBlobs: Array<string> = [];
       const unadoptedBlobs: Array<string> = [];
       const txResult = yield* sql
@@ -635,6 +678,7 @@ const make = Effect.gen(function* () {
                 `;
                 count += 1;
                 bytes += size;
+                adoptedBlobIds.add(blobId);
                 ingested.push(item.candidate.normalized);
                 continue;
               }
@@ -675,13 +719,18 @@ const make = Effect.gen(function* () {
                 WHERE artifact_id = ${row.artifactId}
               `;
               bytes += delta;
+              adoptedBlobIds.add(blobId);
               supersededBlobs.push(row.blobId);
               ingested.push(item.candidate.normalized);
             }
             return { ticketMissing: false as const };
           }),
         )
-        .pipe(Effect.mapError(toStoreError("TicketArtifactStore.ingest:commit")));
+        .pipe(
+          Effect.mapError(toStoreError("TicketArtifactStore.ingest:commit")),
+          Effect.onError(() => removeStagedExcept(new Set())),
+          Effect.onInterrupt(() => removeStagedExcept(new Set())),
+        );
 
       if (txResult.ticketMissing) {
         // Whole batch no-ops: remove everything we staged.

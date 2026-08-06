@@ -1949,6 +1949,15 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
+              // Ticket-artifact URLs are minted ONLY by the workflow list
+              // handler (workflow:read scope, ticket-bound rows). The generic
+              // asset RPC runs under orchestration:read and must never become
+              // a refresh oracle for artifact claims.
+              if (input.resource._tag === "ticket-artifact") {
+                return yield* new AssetWorkspaceContextNotFoundError({
+                  resource: input.resource,
+                });
+              }
               if (input.resource._tag !== "workspace-file") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }

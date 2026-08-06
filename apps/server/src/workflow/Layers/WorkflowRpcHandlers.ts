@@ -358,8 +358,13 @@ export const listDurableArtifacts = (
         views.push(base);
         continue;
       }
+      // Worst-case U+FFFD inflation is 3× (1 invalid byte → 3 decoded
+      // bytes), so a 64 KiB decoded slice never needs more than the slice
+      // itself in stored bytes; +4 covers a split trailing code point. Truncation
+      // detection needs ONE extra decoded byte beyond the slice, hence the
+      // slice-size read floor rather than the full 1 MiB read cap.
       const decoded = yield* store
-        .readInlineText(ticketId, row.artifactId, ARTIFACT_READ_CAP_BYTES)
+        .readInlineText(ticketId, row.artifactId, ARTIFACT_INLINE_FILE_CAP_BYTES + 4)
         .pipe(Effect.orElseSucceed(() => null));
       if (decoded === null) {
         views.push({ ...base, contentUnavailable: true });

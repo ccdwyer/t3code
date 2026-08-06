@@ -21,8 +21,9 @@ import { migrationEntries, runMigrations } from "../Migrations.ts";
  * If this test fails, the collapsed schema diverged from the chain — fix the
  * migration, do not weaken the assertion.
  *
- * ONE column post-dates the chain: `workflow_dispatch_outbox.dispatch_kind`
- * (now folded into 036 under the single-migration rule),
+ * ONE column post-dates the chain: `workflow_dispatch_outbox.dispatch_kind`,
+ * folded into 036 under the single-migration rule (the standalone 037 that
+ * once carried it is deleted; nothing registers id 37),
  * added by 036_DispatchKind for agent-question continuations and registered as
  * id 37 in this rebased loader. It is listed in GOLDEN because this dump runs
  * every migration, not because it came from the 033->055 chain. Anything else

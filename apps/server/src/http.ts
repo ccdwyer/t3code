@@ -244,10 +244,17 @@ const serveTicketArtifact = (
       const decision = decideRange(rangeHeader, blob.size);
 
       if (decision.kind === "unsatisfiable") {
-        return HttpServerResponse.text("Range Not Satisfiable", {
-          status: 416,
-          headers: { ...headers, "Content-Range": `bytes */${String(blob.size)}` },
-        });
+        const unsatisfiableHeaders = {
+          ...headers,
+          "Content-Range": `bytes */${String(blob.size)}`,
+        };
+        // HEAD parity holds on 416 too: identical status/headers, no body.
+        return isHead
+          ? HttpServerResponse.empty({ status: 416, headers: unsatisfiableHeaders })
+          : HttpServerResponse.text("Range Not Satisfiable", {
+              status: 416,
+              headers: unsatisfiableHeaders,
+            });
       }
       if (decision.kind === "partial") {
         const end = Math.min(decision.end, decision.start + ARTIFACT_RANGE_WINDOW_BYTES - 1);

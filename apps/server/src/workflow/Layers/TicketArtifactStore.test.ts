@@ -483,3 +483,38 @@ storeLayer("TicketArtifactStore", (it) => {
     }),
   );
 });
+
+storeLayer("TicketArtifactStore repair with drift", (it) => {
+  it.effect("adopts the staged blob when the current blob is missing AND mtime drifted", () =>
+    Effect.gen(function* () {
+      const store = yield* TicketArtifactStore;
+      const paths = yield* TicketArtifactPaths;
+      const ticketId = freshTicketId();
+      yield* seedTicket(String(ticketId));
+      const src = yield* makeSourceDir();
+      yield* write(src, "spec.md", "same bytes");
+      yield* store.ingestBatch({ ticketId, artifactsRootAbsolutePath: src, entries: ["spec.md"] });
+      const first = (yield* store.list(ticketId))[0];
+      assert.isDefined(first);
+      if (first === undefined) return;
+
+      // Crash state: blob gone. Then the SOURCE mtime drifts (touch) with the
+      // SAME bytes — the short-circuit misses, sha matches, and repair must
+      // still ADOPT the staged blob rather than keep the dead reference.
+      yield* Effect.promise(async () => {
+        await Fs.rm(NodePath.join(paths.rootDir, String(ticketId), first.blobId), { force: true });
+        const full = NodePath.join(src, "spec.md");
+        await Fs.utimes(full, new Date(), new Date(Date.now() + 5000));
+      });
+      yield* store.ingestBatch({ ticketId, artifactsRootAbsolutePath: src, entries: ["spec.md"] });
+      const repaired = (yield* store.list(ticketId))[0];
+      assert.isDefined(repaired);
+      if (repaired === undefined) return;
+      assert.notEqual(repaired.blobId, first.blobId);
+      assert.equal(repaired.sha256, first.sha256);
+      const blob = yield* store.openVerifiedBlob(repaired);
+      assert.isNotNull(blob);
+      if (blob !== null) yield* blob.close();
+    }),
+  );
+});

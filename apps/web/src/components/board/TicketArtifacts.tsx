@@ -231,7 +231,9 @@ function TextualArtifactRow({
         if (
           (event.currentTarget as HTMLDetailsElement).open &&
           needsFetchOnExpand(artifact) &&
-          fetched.status === "idle"
+          // Re-expanding after a failed fetch retries; only an in-flight or
+          // successful load is final.
+          (fetched.status === "idle" || fetched.status === "error")
         ) {
           void loadFull();
         }

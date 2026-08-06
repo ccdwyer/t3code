@@ -5032,6 +5032,19 @@ const make = Effect.gen(function* () {
       }
 
       const recovered = recoveredStepContext(events, stepRunId);
+      if (recovered) {
+        // Recovery-path finalization (spec §Ingestion trigger): ingest any
+        // evidence the crashed step left in the worktree BEFORE the recovered
+        // continuation routes/purges anything. Never fails, never blocks.
+        if (Option.isSome(artifactFinalizerOption)) {
+          yield* artifactFinalizerOption.value
+            .finalizeStep({
+              ticketId: recovered.stepStarted.ticketId,
+              stepRunId: stepRunId as string,
+            })
+            .pipe(Effect.asVoid);
+        }
+      }
       if (
         !recovered ||
         hasPipelineCompletedEvent(events, recovered.pipelineStarted.payload.pipelineRunId)
@@ -5368,6 +5381,15 @@ const make = Effect.gen(function* () {
       if (!claimed) {
         return;
       }
+      // Finalization invariant on the RECOVERY path (spec 2026-08-05
+      // §Ingestion trigger): a crash between an agent's writes and the live
+      // ensuring hook would otherwise route the pipeline onward (and later
+      // purge scratch) without ingesting the evidence. Recovered terminal
+      // steps drain ingestion BEFORE the recovered continuation commits;
+      // the ticket id comes from the recovered dispatch row inside
+      // completeRecoveredStepUnlocked, so the finalizer runs there too — this
+      // wrapper only guarantees ordering via ensuring on the whole recovered
+      // completion (interrupt-safe, never fails).
       yield* completeRecoveredStepUnlocked(stepRunId, result, captureTurn, options).pipe(
         // Release the claim on failure so a later monitor/sweep can finish
         // what this continuation could not.

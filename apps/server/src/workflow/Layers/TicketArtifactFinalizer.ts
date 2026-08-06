@@ -5,6 +5,8 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 
 import { StepRunId, TrimmedNonEmptyString, type TicketId } from "@t3tools/contracts";
+
+import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
@@ -82,10 +84,13 @@ const make = Effect.gen(function* () {
       }
       // Missing artifacts/ dir = SILENT no-op: listFilesRecursive yields [] for
       // an absent directory.
+      // A scan FAILURE (permissions, fs errors) must not read as "no
+      // artifacts": it flows to the outer catch and reports ok:false. Only a
+      // genuinely missing artifacts/ dir yields an empty listing.
       const names = yield* listRecursive({
         cwd: worktree.path,
         relativePath: relativeRoot,
-      }).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+      });
       if (names.length === 0) {
         return { ok: true };
       }
@@ -101,8 +106,8 @@ const make = Effect.gen(function* () {
           scanTruncated,
         })
         .pipe(
-          // Batch-level failures (DB busy, disk full): retry 3× with backoff,
-          // then give up loudly — the lifecycle proceeds regardless.
+          // Batch-level failures (DB busy, disk full): 3 attempts total with
+          // backoff, then give up loudly — the lifecycle proceeds regardless.
           Effect.retry({ schedule: Schedule.exponential("200 millis"), times: 2 }),
         );
 
@@ -189,7 +194,7 @@ export const TicketWorktreeLocatorLive = Layer.effect(
     const git = yield* GitWorkflowService;
     const sql = yield* SqlClient.SqlClient;
 
-    const locate = (ticketId: TicketId): Effect.Effect<{ readonly path: string } | null> =>
+    const locate = (ticketId: TicketId) =>
       Effect.gen(function* () {
         const rows = yield* sql<{ readonly repoRoot: string | null }>`
           SELECT projects.workspace_root AS "repoRoot"
@@ -200,12 +205,23 @@ export const TicketWorktreeLocatorLive = Layer.effect(
           LIMIT 1
         `;
         const repoRoot = rows[0]?.repoRoot;
+        // GENUINE absence (no project row / no attached worktree) is the only
+        // silent null; infrastructure failures must surface so the finalizer
+        // reports ok:false instead of letting cleanup destroy unread evidence.
         if (repoRoot === null || repoRoot === undefined) return null;
         const refs = yield* git.listRefs({ cwd: TrimmedNonEmptyString.make(repoRoot) });
         const worktreeRef = `workflow/${ticketId as string}`;
         const existing = refs.refs.find((ref) => !ref.isRemote && ref.name === worktreeRef);
         return existing?.worktreePath ? { path: existing.worktreePath } : null;
-      }).pipe(Effect.orElseSucceed(() => null));
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new WorkflowEventStoreError({
+              message: "ticket-artifact worktree location failed",
+              cause,
+            }),
+        ),
+      );
 
     return { locate };
   }),

@@ -59,7 +59,9 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeVcsStatus
   | typeof WS_METHODS.terminalAttach
   | typeof WS_METHODS.terminalAttachHistory
-  | typeof WORKFLOW_WS_METHODS.subscribeBoard;
+  | typeof WORKFLOW_WS_METHODS.subscribeBoard
+  | typeof WORKFLOW_WS_METHODS.subscribeSlackAgentRun
+  | typeof WORKFLOW_WS_METHODS.subscribeMockSlackThread;
 
 export type EnvironmentStreamCommandRpcTag =
   | typeof WS_METHODS.cloudInstallRelayClient

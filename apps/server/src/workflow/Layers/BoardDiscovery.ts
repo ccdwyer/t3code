@@ -24,6 +24,7 @@ import { WorkflowEngine } from "../Services/WorkflowEngine.ts";
 import { WorkflowEventStore } from "../Services/WorkflowEventStore.ts";
 import { WorkflowFileLoader } from "../Services/WorkflowFileLoader.ts";
 import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { SlackAgentInstanceStore } from "../Services/SlackAgentInstanceStore.ts";
 import { WorkflowAgentSessionStore } from "../Services/WorkflowAgentSessionStore.ts";
 import { WorkflowThreadJanitor } from "../Services/WorkflowThreadJanitor.ts";
 import { WorkflowWebhook } from "../Services/WorkflowWebhook.ts";
@@ -103,6 +104,10 @@ const make = Effect.gen(function* () {
   const providerService = Context.getOption(
     (yield* Effect.context<never>()) as Context.Context<ProviderService>,
     ProviderService,
+  );
+  const slackInstances = Context.getOption(
+    (yield* Effect.context<never>()) as Context.Context<SlackAgentInstanceStore>,
+    SlackAgentInstanceStore,
   );
   const cache = yield* Ref.make<Map<string, ReadonlyArray<BoardListEntry>>>(new Map());
 
@@ -260,6 +265,9 @@ const make = Effect.gen(function* () {
                     ...(Option.isSome(webhook) ? { webhook: webhook.value } : {}),
                     ...(Option.isSome(agentSessions) ? { agentSessions: agentSessions.value } : {}),
                     ...(Option.isSome(providerService) ? { provider: providerService.value } : {}),
+                    ...(Option.isSome(slackInstances)
+                      ? { slackInstances: slackInstances.value }
+                      : {}),
                   },
                   candidate.boardId,
                 );

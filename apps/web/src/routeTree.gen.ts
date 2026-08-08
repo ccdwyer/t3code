@@ -16,6 +16,7 @@ import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as SettingsWorkSourcesRouteImport } from './routes/settings.work-sources'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
+import { Route as SettingsSlackAgentsRouteImport } from './routes/settings.slack-agents'
 import { Route as SettingsProvidersRouteImport } from './routes/settings.providers'
 import { Route as SettingsOutboundRouteImport } from './routes/settings.outbound'
 import { Route as SettingsKeybindingsRouteImport } from './routes/settings.keybindings'
@@ -62,6 +63,11 @@ const SettingsWorkSourcesRoute = SettingsWorkSourcesRouteImport.update({
 const SettingsSourceControlRoute = SettingsSourceControlRouteImport.update({
   id: '/source-control',
   path: '/source-control',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsSlackAgentsRoute = SettingsSlackAgentsRouteImport.update({
+  id: '/slack-agents',
+  path: '/slack-agents',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsProvidersRoute = SettingsProvidersRouteImport.update({
@@ -146,6 +152,7 @@ export interface FileRoutesByFullPath {
   '/settings/keybindings': typeof SettingsKeybindingsRoute
   '/settings/outbound': typeof SettingsOutboundRoute
   '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/slack-agents': typeof SettingsSlackAgentsRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/work-sources': typeof SettingsWorkSourcesRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
@@ -166,6 +173,7 @@ export interface FileRoutesByTo {
   '/settings/keybindings': typeof SettingsKeybindingsRoute
   '/settings/outbound': typeof SettingsOutboundRoute
   '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/slack-agents': typeof SettingsSlackAgentsRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/work-sources': typeof SettingsWorkSourcesRoute
   '/': typeof ChatIndexRoute
@@ -189,6 +197,7 @@ export interface FileRoutesById {
   '/settings/keybindings': typeof SettingsKeybindingsRoute
   '/settings/outbound': typeof SettingsOutboundRoute
   '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/slack-agents': typeof SettingsSlackAgentsRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/work-sources': typeof SettingsWorkSourcesRoute
   '/_chat/': typeof ChatIndexRoute
@@ -213,6 +222,7 @@ export interface FileRouteTypes {
     | '/settings/keybindings'
     | '/settings/outbound'
     | '/settings/providers'
+    | '/settings/slack-agents'
     | '/settings/source-control'
     | '/settings/work-sources'
     | '/$environmentId/$threadId'
@@ -233,6 +243,7 @@ export interface FileRouteTypes {
     | '/settings/keybindings'
     | '/settings/outbound'
     | '/settings/providers'
+    | '/settings/slack-agents'
     | '/settings/source-control'
     | '/settings/work-sources'
     | '/'
@@ -255,6 +266,7 @@ export interface FileRouteTypes {
     | '/settings/keybindings'
     | '/settings/outbound'
     | '/settings/providers'
+    | '/settings/slack-agents'
     | '/settings/source-control'
     | '/settings/work-sources'
     | '/_chat/'
@@ -320,6 +332,13 @@ declare module '@tanstack/react-router' {
       path: '/source-control'
       fullPath: '/settings/source-control'
       preLoaderRoute: typeof SettingsSourceControlRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/slack-agents': {
+      id: '/settings/slack-agents'
+      path: '/slack-agents'
+      fullPath: '/settings/slack-agents'
+      preLoaderRoute: typeof SettingsSlackAgentsRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/providers': {
@@ -442,6 +461,7 @@ interface SettingsRouteChildren {
   SettingsKeybindingsRoute: typeof SettingsKeybindingsRoute
   SettingsOutboundRoute: typeof SettingsOutboundRoute
   SettingsProvidersRoute: typeof SettingsProvidersRoute
+  SettingsSlackAgentsRoute: typeof SettingsSlackAgentsRoute
   SettingsSourceControlRoute: typeof SettingsSourceControlRoute
   SettingsWorkSourcesRoute: typeof SettingsWorkSourcesRoute
 }
@@ -456,6 +476,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsKeybindingsRoute: SettingsKeybindingsRoute,
   SettingsOutboundRoute: SettingsOutboundRoute,
   SettingsProvidersRoute: SettingsProvidersRoute,
+  SettingsSlackAgentsRoute: SettingsSlackAgentsRoute,
   SettingsSourceControlRoute: SettingsSourceControlRoute,
   SettingsWorkSourcesRoute: SettingsWorkSourcesRoute,
 }

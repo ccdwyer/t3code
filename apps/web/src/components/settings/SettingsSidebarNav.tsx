@@ -18,6 +18,7 @@ import {
   SearchIcon,
   SendIcon,
   Settings2Icon,
+  SlackIcon,
   UsbIcon,
   WorkflowIcon,
   XIcon,
@@ -53,6 +54,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/keybindings": KeyboardIcon,
   "/settings/providers": BotIcon,
   "/settings/source-control": GitBranchIcon,
+  "/settings/slack-agents": SlackIcon,
   "/settings/connections": Link2Icon,
   "/settings/archived": ArchiveIcon,
 };
@@ -61,6 +63,7 @@ export type SettingsSectionPath =
   | SettingsPath
   | "/settings/devices"
   | "/settings/work-sources"
+  | "/settings/slack-agents"
   | "/settings/outbound";
 
 export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
@@ -75,6 +78,7 @@ export const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   })),
   { label: "Devices", to: "/settings/devices", icon: UsbIcon },
   { label: "Work Sources", to: "/settings/work-sources", icon: WorkflowIcon },
+  { label: "Slack Agents", to: "/settings/slack-agents", icon: SlackIcon },
   { label: "Outbound", to: "/settings/outbound", icon: SendIcon },
 ];
 

@@ -573,13 +573,60 @@ const make = Effect.gen(function* () {
 
   const deleteBoardTicketState: WorkflowReadModelShape["deleteBoardTicketState"] = (boardId) =>
     wrap(sql`
+      DELETE FROM mock_slack_thread
+      WHERE EXISTS (
+        SELECT 1
+        FROM slack_agent_run AS run
+        JOIN projection_ticket AS ticket ON ticket.ticket_id = run.ticket_id
+        WHERE ticket.board_id = ${boardId}
+          AND run.workspace_id = mock_slack_thread.workspace_id
+          AND run.channel_id = mock_slack_thread.channel_id
+          AND run.thread_ts = mock_slack_thread.thread_ts
+      )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM slack_agent_run AS other_run
+          WHERE other_run.workspace_id = mock_slack_thread.workspace_id
+            AND other_run.channel_id = mock_slack_thread.channel_id
+            AND other_run.thread_ts = mock_slack_thread.thread_ts
+            AND other_run.ticket_id NOT IN (
+              SELECT ticket_id
+              FROM projection_ticket
+              WHERE board_id = ${boardId}
+            )
+        )
+    `).pipe(
+      Effect.andThen(
+        wrap(sql`
+          DELETE FROM slack_agent_delivery
+          WHERE run_id IN (
+            SELECT run.run_id
+            FROM slack_agent_run AS run
+            JOIN projection_ticket AS ticket ON ticket.ticket_id = run.ticket_id
+            WHERE ticket.board_id = ${boardId}
+          )
+        `),
+      ),
+      Effect.andThen(
+        wrap(sql`
+          DELETE FROM slack_agent_run
+          WHERE ticket_id IN (
+            SELECT ticket_id
+            FROM projection_ticket
+            WHERE board_id = ${boardId}
+          )
+        `),
+      ),
+      Effect.andThen(
+        wrap(sql`
       DELETE FROM workflow_dispatch_outbox
       WHERE ticket_id IN (
         SELECT ticket_id
         FROM projection_ticket
         WHERE board_id = ${boardId}
       )
-    `).pipe(
+    `),
+      ),
       Effect.andThen(
         wrap(sql`
           DELETE FROM workflow_setup_run
@@ -908,9 +955,46 @@ const make = Effect.gen(function* () {
 
   const deleteTicketState: WorkflowReadModelShape["deleteTicketState"] = (ticketId) =>
     wrap(sql`
+      DELETE FROM mock_slack_thread
+      WHERE EXISTS (
+        SELECT 1
+        FROM slack_agent_run AS run
+        WHERE run.ticket_id = ${ticketId}
+          AND run.workspace_id = mock_slack_thread.workspace_id
+          AND run.channel_id = mock_slack_thread.channel_id
+          AND run.thread_ts = mock_slack_thread.thread_ts
+      )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM slack_agent_run AS other_run
+          WHERE other_run.workspace_id = mock_slack_thread.workspace_id
+            AND other_run.channel_id = mock_slack_thread.channel_id
+            AND other_run.thread_ts = mock_slack_thread.thread_ts
+            AND other_run.ticket_id <> ${ticketId}
+        )
+    `).pipe(
+      Effect.andThen(
+        wrap(sql`
+          DELETE FROM slack_agent_delivery
+          WHERE run_id IN (
+            SELECT run_id
+            FROM slack_agent_run
+            WHERE ticket_id = ${ticketId}
+          )
+        `),
+      ),
+      Effect.andThen(
+        wrap(sql`
+          DELETE FROM slack_agent_run
+          WHERE ticket_id = ${ticketId}
+        `),
+      ),
+      Effect.andThen(
+        wrap(sql`
       DELETE FROM workflow_dispatch_outbox
       WHERE ticket_id = ${ticketId}
-    `).pipe(
+    `),
+      ),
       Effect.andThen(
         wrap(sql`
           DELETE FROM workflow_setup_run

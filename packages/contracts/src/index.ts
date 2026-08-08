@@ -35,3 +35,4 @@ export * from "./workflowReplay.ts";
 export * from "./checkpointForm.ts";
 export * from "./workflowTimelineEntry.ts";
 export * from "./outbound.ts";
+export * from "./slackAgent.ts";

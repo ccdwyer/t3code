@@ -11,6 +11,7 @@ import type { WorkflowEngineShape } from "./Services/WorkflowEngine.ts";
 import type { WorkflowEventStoreError } from "./Services/Errors.ts";
 import type { WorkflowEventStoreShape } from "./Services/WorkflowEventStore.ts";
 import type { WorkflowReadModelShape } from "./Services/WorkflowReadModel.ts";
+import type { SlackAgentInstanceStoreShape } from "./Services/SlackAgentInstanceStore.ts";
 import type {
   DiskRef as TicketArtifactDiskRef,
   TicketArtifactStoreShape,
@@ -42,6 +43,7 @@ export interface WorkflowBoardOwnedStateDeletionDeps {
   // cascade transaction; blob removal is best-effort post-commit (the boot
   // reconciler backstops failures).
   readonly artifactStore?: Pick<TicketArtifactStoreShape, "deleteRowsForBoard" | "removeDisk">;
+  readonly slackInstances?: Pick<SlackAgentInstanceStoreShape, "disableForBoard">;
 }
 
 export interface WorkflowBoardTicketStateDeletionDeps {
@@ -107,6 +109,7 @@ export const deleteWorkflowBoardOwnedState = (
         yield* deps.agentSessions?.deleteByBoard(boardId) ?? Effect.void;
         yield* deps.eventStore.deleteForBoard(boardId);
         artifactRefs = yield* deps.artifactStore?.deleteRowsForBoard(boardId) ?? noArtifactRefs;
+        yield* deps.slackInstances?.disableForBoard(boardId) ?? Effect.void;
         yield* deps.readModel.deleteBoardTicketState(boardId);
         yield* deps.readModel.deleteBoard(boardId);
       }),

@@ -132,6 +132,14 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       label: "environment-data:workflow:list-outbound-connections",
       tag: WORKFLOW_WS_METHODS.listOutboundConnections,
     }),
+    listSlackAgentInstances: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:workflow:list-slack-agent-instances",
+      tag: WORKFLOW_WS_METHODS.listSlackAgentInstances,
+    }),
+    getSlackAgentRun: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:workflow:get-slack-agent-run",
+      tag: WORKFLOW_WS_METHODS.getSlackAgentRun,
+    }),
     listImportableWorkItems: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:workflow:list-importable-work-items",
       tag: WORKFLOW_WS_METHODS.listImportableWorkItems,
@@ -300,10 +308,53 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       tag: WORKFLOW_WS_METHODS.deleteOutboundConnection,
       concurrency: serialPerEnv,
     }),
+    createSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:create-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.createSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    updateSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:update-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.updateSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    disableSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:disable-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.disableSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    enableSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:enable-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.enableSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    deleteSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:delete-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.deleteSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    simulateSlackMention: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:simulate-slack-mention",
+      tag: WORKFLOW_WS_METHODS.simulateSlackMention,
+      concurrency: serialPerEnv,
+    }),
+    retrySlackAgentDelivery: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:retry-slack-agent-delivery",
+      tag: WORKFLOW_WS_METHODS.retrySlackAgentDelivery,
+      concurrency: serialPerEnv,
+    }),
     importWorkItems: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:workflow:import-work-items",
       tag: WORKFLOW_WS_METHODS.importWorkItems,
       concurrency: serialPerEnv,
+    }),
+    subscribeSlackAgentRun: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:workflow:subscribe-slack-agent-run",
+      tag: WORKFLOW_WS_METHODS.subscribeSlackAgentRun,
+    }),
+    subscribeMockSlackThread: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:workflow:subscribe-mock-slack-thread",
+      tag: WORKFLOW_WS_METHODS.subscribeMockSlackThread,
     }),
   };
 }

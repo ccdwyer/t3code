@@ -32,6 +32,7 @@ import { WorkflowRecovery } from "./workflow/Services/WorkflowRecovery.ts";
 import { WorkflowTerminalRetentionSweeper } from "./workflow/Services/WorkflowTerminalRetentionSweeper.ts";
 import { WorkflowSlaSweeper } from "./workflow/Services/WorkflowSlaSweeper.ts";
 import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
+import { SlackAgentDeliveryDispatcher } from "./workflow/Services/SlackAgentDeliveryDispatcher.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -343,6 +344,7 @@ export const make = (options?: StartupOptions) =>
     const workflowBoardNotificationDispatcher = yield* WorkflowBoardNotificationDispatcher;
     const workflowSourceSyncer = yield* WorkflowSourceSyncer;
     const workflowOutboundDispatcher = yield* WorkflowOutboundDispatcher;
+    const slackAgentDeliveryDispatcher = yield* Effect.serviceOption(SlackAgentDeliveryDispatcher);
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -508,6 +510,21 @@ export const make = (options?: StartupOptions) =>
         );
       } else {
         yield* Effect.logWarning("skipping outbound dispatcher start: workflow recovery failed");
+      }
+
+      // Mock Slack status delivery is another durable workflow outbox. Start it
+      // only after recovery so accepted/progress rows cannot overtake projection
+      // repair, and retain the same startup scope/finalization behavior.
+      if (recovered && Option.isSome(slackAgentDeliveryDispatcher)) {
+        yield* Effect.logDebug("startup phase: starting Slack agent delivery dispatcher");
+        yield* runStartupPhase(
+          "workflow.slack-agent-delivery.start",
+          slackAgentDeliveryDispatcher.value.start().pipe(Scope.provide(reactorScope)),
+        );
+      } else if (!recovered) {
+        yield* Effect.logWarning(
+          "skipping Slack agent delivery dispatcher start: workflow recovery failed",
+        );
       }
 
       // Start the GitHub poller ONLY after recovery succeeds: its sweep drains

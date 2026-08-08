@@ -84,6 +84,22 @@ A side-effecting service that handles follow-up work after events or runtime sig
 
 A typed signal emitted when an async milestone completes, such as `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, or `turn.processing.quiesced`. Receipts are a test-only mechanism: the production `RuntimeReceiptBusLive` publish is a no-op and only the test layer is PubSub-backed. Do not build production behavior on them. See [RuntimeReceiptBus.ts][13] and [CheckpointReactor.ts][6].
 
+#### Slack agent instance
+
+A personal mock bot configuration, such as `@t3_chris`, that targets one project workflow board and
+one automatic entry lane. It is routed by an immutable mock bot user id rather than by parsing the
+display handle.
+
+#### Slack run
+
+The durable mapping from one accepted mock Slack mention to one workflow ticket. A run owns the
+captured thread snapshot, status delivery state, and links back to the originating mock thread.
+
+#### Mock workspace
+
+The local deterministic Slack simulation for an environment. It can create mock users, channels,
+threads, mentions, and bot replies without Slack credentials or network calls.
+
 #### Quiesced
 
 "Quiesced" means a turn has gone quiet and stable: follow-up work such as [CheckpointReactor.ts][6] has settled. It appears in [the receipt schema][13], so in practice it is something tests wait on rather than a production signal.

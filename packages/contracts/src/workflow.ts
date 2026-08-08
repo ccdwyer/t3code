@@ -67,6 +67,17 @@ export const WORKFLOW_WS_METHODS = {
   listBoardTemplates: "workflow.listBoardTemplates",
   listImportableWorkItems: "workflow.listImportableWorkItems",
   importWorkItems: "workflow.importWorkItems",
+  listSlackAgentInstances: "workflow.listSlackAgentInstances",
+  createSlackAgentInstance: "workflow.createSlackAgentInstance",
+  updateSlackAgentInstance: "workflow.updateSlackAgentInstance",
+  disableSlackAgentInstance: "workflow.disableSlackAgentInstance",
+  enableSlackAgentInstance: "workflow.enableSlackAgentInstance",
+  deleteSlackAgentInstance: "workflow.deleteSlackAgentInstance",
+  simulateSlackMention: "workflow.simulateSlackMention",
+  getSlackAgentRun: "workflow.getSlackAgentRun",
+  subscribeSlackAgentRun: "workflow.subscribeSlackAgentRun",
+  retrySlackAgentDelivery: "workflow.retrySlackAgentDelivery",
+  subscribeMockSlackThread: "workflow.subscribeMockSlackThread",
 } as const;
 
 /**

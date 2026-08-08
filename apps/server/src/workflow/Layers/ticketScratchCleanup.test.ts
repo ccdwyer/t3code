@@ -62,6 +62,7 @@ it.layer(TestLayer)("cleanupTicketScratch (real git)", (it) => {
       yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/DESCRIPTION.md`, "# desc\n");
       yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/handoff/x.md`, "handoff\n");
       yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/design/SPEC.md`, "spec\n");
+      yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/SOURCE_SLACK.md`, "slack\n");
 
       yield* cleanupTicketScratch(git, cwd, ticketId);
 
@@ -78,6 +79,7 @@ it.layer(TestLayer)("cleanupTicketScratch (real git)", (it) => {
       })).stdout;
       assert.include(tracked, "src/app.ts");
       assert.notInclude(tracked, ".t3/ticket/ticket-1/");
+      assert.notInclude(tracked, "SOURCE_SLACK.md");
     }),
   );
 
@@ -108,6 +110,7 @@ it.layer(TestLayer)("cleanupTicketScratch (real git)", (it) => {
       const ticketId = "ticket-1";
       yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/DESCRIPTION.md`, "# desc\n");
       yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/handoff/x.md`, "handoff\n");
+      yield* writeTextFile(cwd, `.t3/ticket/${ticketId}/SOURCE_SLACK.md`, "slack\n");
 
       yield* cleanupTicketScratch(git, cwd, ticketId);
 
@@ -118,8 +121,12 @@ it.layer(TestLayer)("cleanupTicketScratch (real git)", (it) => {
       const handoffExists = yield* fileSystem.exists(
         pathService.join(cwd, `.t3/ticket/${ticketId}/handoff/x.md`),
       );
+      const sourceExists = yield* fileSystem.exists(
+        pathService.join(cwd, `.t3/ticket/${ticketId}/SOURCE_SLACK.md`),
+      );
       assert.isFalse(descExists);
       assert.isFalse(handoffExists);
+      assert.isFalse(sourceExists);
     }),
   );
 });

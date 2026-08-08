@@ -9,6 +9,23 @@ import {
   ImportWorkItemsResult,
 } from "./workSource.ts";
 import { OutboundConnectionView, CreateOutboundConnectionInput } from "./outbound.ts";
+import {
+  MockSlackSubscribeThreadInput,
+  MockSlackThreadStreamEvent,
+  SlackAgentCreateInstanceInput,
+  SlackAgentCreateInstanceResult,
+  SlackAgentDeliveryView,
+  SlackAgentGetRunInput,
+  SlackAgentInstanceIdInput,
+  SlackAgentListInstancesResult,
+  SlackAgentRetryDeliveryInput,
+  SlackAgentRpcError,
+  SlackAgentRunDetailView,
+  SlackAgentRunStreamEvent,
+  SlackAgentSimulateMentionInput,
+  SlackAgentSimulateMentionResult,
+  SlackAgentUpdateInstanceInput,
+} from "./slackAgent.ts";
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
@@ -1294,6 +1311,104 @@ export const WsWorkflowImportWorkItemsRpc = Rpc.make(WORKFLOW_WS_METHODS.importW
   error: Schema.Union([WorkflowRpcError, EnvironmentAuthorizationError]),
 });
 
+export const WsWorkflowListSlackAgentInstancesRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.listSlackAgentInstances,
+  {
+    payload: Schema.Struct({}),
+    success: SlackAgentListInstancesResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowCreateSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.createSlackAgentInstance,
+  {
+    payload: SlackAgentCreateInstanceInput,
+    success: SlackAgentCreateInstanceResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowUpdateSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.updateSlackAgentInstance,
+  {
+    payload: SlackAgentUpdateInstanceInput,
+    success: SlackAgentCreateInstanceResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowDisableSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.disableSlackAgentInstance,
+  {
+    payload: SlackAgentInstanceIdInput,
+    success: Schema.Void,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowEnableSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.enableSlackAgentInstance,
+  {
+    payload: SlackAgentInstanceIdInput,
+    success: SlackAgentCreateInstanceResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowDeleteSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.deleteSlackAgentInstance,
+  {
+    payload: SlackAgentInstanceIdInput,
+    success: Schema.Void,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowSimulateSlackMentionRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.simulateSlackMention,
+  {
+    payload: SlackAgentSimulateMentionInput,
+    success: SlackAgentSimulateMentionResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowGetSlackAgentRunRpc = Rpc.make(WORKFLOW_WS_METHODS.getSlackAgentRun, {
+  payload: SlackAgentGetRunInput,
+  success: SlackAgentRunDetailView,
+  error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+});
+
+export const WsWorkflowSubscribeSlackAgentRunRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.subscribeSlackAgentRun,
+  {
+    payload: SlackAgentGetRunInput,
+    success: SlackAgentRunStreamEvent,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
+export const WsWorkflowRetrySlackAgentDeliveryRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.retrySlackAgentDelivery,
+  {
+    payload: SlackAgentRetryDeliveryInput,
+    success: SlackAgentDeliveryView,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowSubscribeMockSlackThreadRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.subscribeMockSlackThread,
+  {
+    payload: MockSlackSubscribeThreadInput,
+    success: MockSlackThreadStreamEvent,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+    stream: true,
+  },
+);
+
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
   payload: Schema.Struct({}),
   success: TerminalEvent,
@@ -1479,4 +1594,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowRevertBoardProposalRpc,
   WsWorkflowListImportableWorkItemsRpc,
   WsWorkflowImportWorkItemsRpc,
+  WsWorkflowListSlackAgentInstancesRpc,
+  WsWorkflowCreateSlackAgentInstanceRpc,
+  WsWorkflowUpdateSlackAgentInstanceRpc,
+  WsWorkflowDisableSlackAgentInstanceRpc,
+  WsWorkflowEnableSlackAgentInstanceRpc,
+  WsWorkflowDeleteSlackAgentInstanceRpc,
+  WsWorkflowSimulateSlackMentionRpc,
+  WsWorkflowGetSlackAgentRunRpc,
+  WsWorkflowSubscribeSlackAgentRunRpc,
+  WsWorkflowRetrySlackAgentDeliveryRpc,
+  WsWorkflowSubscribeMockSlackThreadRpc,
 );

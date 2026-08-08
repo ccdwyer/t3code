@@ -228,6 +228,14 @@ export const descriptionSpillPath = (ticketId: string): string =>
 export const descriptionSpillReference = (spillPath: string): string =>
   `The full ticket description is in \`${spillPath}\` — read that file before starting.`;
 
+/** The worktree-relative scratch path for integration-owned source context. */
+export const sourceContextPath = (ticketId: string): string =>
+  `${ticketScratchDir(ticketId)}/SOURCE_SLACK.md`;
+
+/** Non-droppable pointer to the full source context materialized in scratch. */
+export const sourceContextReference = (relativePath: string): string =>
+  `## Source context\n\nRead the complete source transcript in \`${relativePath}\` before acting.`;
+
 /**
  * `{{ticket.contextPack}}` is valid ONLY inside an agent instruction. It is
  * deliberately not a member of TICKET_TEMPLATE_FIELDS: that constant is shared

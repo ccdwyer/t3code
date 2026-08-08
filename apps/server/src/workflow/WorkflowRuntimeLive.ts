@@ -31,6 +31,7 @@ import { TicketCheckpointServiceLive } from "./Layers/TicketCheckpointService.ts
 import { MergeGitPortLive, TicketMergeServiceLive } from "./Layers/TicketMergeService.ts";
 import { GitHubPortLive } from "./Layers/GitHubPort.ts";
 import { TicketPullRequestServiceLive } from "./Layers/TicketPullRequestService.ts";
+import { TicketSourceContextMaterializerLive } from "./Layers/TicketSourceContextMaterializer.ts";
 import { WorkflowThreadJanitorLive } from "./Layers/WorkflowThreadJanitor.ts";
 import { WorkflowWebhookLive } from "./Layers/WorkflowWebhook.ts";
 import { WorkflowWorktreeJanitorLive } from "./Layers/WorkflowWorktreeJanitor.ts";
@@ -73,7 +74,21 @@ import {
   TicketWorktreeLocatorLive,
 } from "./Layers/TicketArtifactFinalizer.ts";
 import { TicketArtifactPathsLive, TicketArtifactStoreLive } from "./Layers/TicketArtifactStore.ts";
+import { MockSlackGatewayLive } from "./Layers/MockSlackGateway.ts";
+import { makeSlackAgentDeliveryDispatcherLive } from "./Layers/SlackAgentDeliveryDispatcher.ts";
+import { SlackAgentInstanceStoreLive } from "./Layers/SlackAgentInstanceStore.ts";
+import { SlackAgentIntakeLive } from "./Layers/SlackAgentIntake.ts";
+import { SlackAgentRunStoreLive } from "./Layers/SlackAgentRunStore.ts";
 import { WorkflowFoundationLive } from "./WorkflowFoundationLive.ts";
+
+// Shared mock-Slack persistence/gateway layer. Reusing this exact Layer value
+// lets Effect memoize one instance when recovery, discovery, intake, and RPC
+// surfaces all need access to the same stores and gateway.
+const SlackAgentInfrastructureLive = Layer.mergeAll(
+  SlackAgentInstanceStoreLive,
+  SlackAgentRunStoreLive,
+  MockSlackGatewayLive,
+);
 
 // PR steps run through the GitHub port. GitHubPortLive leaks GitHubCli +
 // SourceControlProviderRegistry as runtime requirements (mirrors how
@@ -82,12 +97,16 @@ import { WorkflowFoundationLive } from "./WorkflowFoundationLive.ts";
 const StepExecutionLive = RealStepExecutorLive.pipe(
   Layer.provideMerge(TicketMergeServiceLive),
   Layer.provideMerge(TicketPullRequestServiceLive),
+  Layer.provideMerge(TicketSourceContextMaterializerLive),
   Layer.provideMerge(GitHubPortLive),
 );
 
 const WorkflowRuntimeCoreBaseLive = Layer.mergeAll(
   WorkflowEngineLayer,
-  WorkflowRecoveryLive.pipe(Layer.provideMerge(WorkflowEngineLayer)),
+  WorkflowRecoveryLive.pipe(
+    Layer.provideMerge(WorkflowEngineLayer),
+    Layer.provideMerge(SlackAgentInfrastructureLive),
+  ),
   WorkflowTerminalRetentionSweeperLive.pipe(Layer.provideMerge(WorkflowEngineLayer)),
   WorkflowSlaSweeperLiveDefault.pipe(Layer.provideMerge(WorkflowEngineLayer)),
   WorkflowGitHubPollerLive.pipe(Layer.provideMerge(WorkflowEngineLayer)),
@@ -167,6 +186,7 @@ const WorkflowBoardDiscoverySupportLive = BoardDiscoveryLive.pipe(
   Layer.provideMerge(ProjectWorkspaceResolverLive),
   Layer.provideMerge(WorkflowFileLoaderLive),
   Layer.provideMerge(WorkflowBoardSaveLocksLive),
+  Layer.provideMerge(SlackAgentInfrastructureLive),
 );
 
 export const WorkflowRpcSupportLive = Layer.mergeAll(
@@ -238,6 +258,14 @@ const WorkSourceLive = WorkflowSourceSyncerLive.pipe(
   Layer.provideMerge(WorkSourceConnectionStoreLive),
 );
 
+// Mock-first personal Slack agents. The gateway is deliberately local/SQL-only;
+// no Slack SDK, OAuth token, or network client exists in this layer. Store and
+// gateway outputs remain visible so ws.ts can expose the authenticated RPCs.
+const SlackAgentLive = Layer.mergeAll(
+  SlackAgentIntakeLive.pipe(Layer.provideMerge(SlackAgentInfrastructureLive)),
+  makeSlackAgentDeliveryDispatcherLive().pipe(Layer.provideMerge(MockSlackGatewayLive)),
+);
+
 // Outbound-webhook stack. The dispatcher drains durable
 // `workflow_outbound_delivery` rows and POSTs each rendered payload to its
 // connection's target URL. Its `webBaseUrl` (for absolute ticket links in
@@ -273,6 +301,7 @@ export const WorkflowServerRuntimeLive = WorkflowIntakeLive.pipe(
   Layer.provideMerge(WorkflowRpcSupportLive),
   Layer.provideMerge(WorkflowBoardNotificationLive),
   Layer.provideMerge(WorkSourceLive),
+  Layer.provideMerge(SlackAgentLive),
   Layer.provideMerge(WorkflowOutboundLive),
   Layer.provideMerge(WorkflowRuntimeLive),
 );

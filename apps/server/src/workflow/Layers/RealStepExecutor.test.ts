@@ -44,9 +44,11 @@ import { ScriptStepExecutorLive } from "./ScriptStepExecutor.ts";
 import { TurnStateReader } from "../Services/TurnStateReader.ts";
 import { TicketMergeService } from "../Services/TicketMergeService.ts";
 import { TicketPullRequestService } from "../Services/TicketPullRequestService.ts";
+import { TicketSourceContextMaterializer } from "../Services/TicketSourceContextMaterializer.ts";
 import { BoardRegistryLive } from "./BoardRegistry.ts";
 import { PredicateEvaluatorLive } from "./PredicateEvaluator.ts";
 import { WorkflowBoardSaveLocksLive } from "./WorkflowBoardSaveLocks.ts";
+import { sourceContextPath } from "../instructionTemplate.ts";
 import { ticketBaseRef } from "../ticketRefs.ts";
 
 const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -318,6 +320,11 @@ const mk = (
     readonly fileSystemLayer?: Layer.Layer<FileSystem.FileSystem>;
     readonly capturedOutputForRead?: (input: { readonly threadId: string }) => unknown;
     readonly providerServiceLayer?: Layer.Layer<ProviderService>;
+    readonly sourceContextPointer?: (input: {
+      readonly ticketId: string;
+      readonly worktreePath: string;
+    }) => string | null;
+    readonly sourceContextFailure?: string;
   } = {},
 ) =>
   it.layer(
@@ -431,8 +438,30 @@ const mk = (
                 ),
         }),
       ),
-      Layer.provideMerge(StubTicketMergeServiceLayer),
-      Layer.provideMerge(StubTicketPullRequestServiceLayer),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          StubTicketMergeServiceLayer,
+          StubTicketPullRequestServiceLayer,
+          options.sourceContextPointer === undefined && options.sourceContextFailure === undefined
+            ? Layer.empty
+            : Layer.succeed(TicketSourceContextMaterializer, {
+                materialize: (input) =>
+                  options.sourceContextFailure === undefined
+                    ? Effect.sync(
+                        () =>
+                          options.sourceContextPointer?.({
+                            ticketId: input.ticketId as string,
+                            worktreePath: input.worktreePath,
+                          }) ?? null,
+                      )
+                    : Effect.fail(
+                        new WorkflowEventStoreError({
+                          message: options.sourceContextFailure,
+                        }),
+                      ),
+              }),
+        ),
+      ),
       Layer.provideMerge(WorkflowEventCommitterLive),
       Layer.provideMerge(BoardRegistryLive),
       Layer.provideMerge(PredicateEvaluatorLive),
@@ -1501,6 +1530,144 @@ mk({ ok: true, turnId: "turn-stub" as never })("RealStepExecutor success", (it) 
         }),
       ),
     ),
+  );
+});
+
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  {
+    sourceContextPointer: ({ ticketId, worktreePath }) =>
+      `## Source context\n\nRead the complete source transcript in \`${sourceContextPath(ticketId)}\` before acting. (${worktreePath})`,
+  },
+)("RealStepExecutor source context", (it) => {
+  it.effect(
+    "injects the materialized source pointer into agent instructions after worktree prep",
+    () =>
+      Effect.gen(function* () {
+        dispatchStartInputs.length = 0;
+        const executor = yield* StepExecutor;
+        yield* seedStepStartedFor(
+          {
+            ...context,
+            ticketId: "ticket-source-context" as never,
+            stepRunId: "step-run-source-context" as never,
+          },
+          "event-step-started-source-context",
+        );
+
+        const outcome = yield* executor.execute({
+          ...context,
+          ticketId: "ticket-source-context" as never,
+          stepRunId: "step-run-source-context" as never,
+        });
+
+        assert.equal(outcome._tag, "completed");
+        const dispatched = dispatchStartInputs[0] as {
+          readonly instruction: string;
+        };
+        assert.include(dispatched.instruction, ".t3/ticket/ticket-source-context/SOURCE_SLACK.md");
+        assert.include(dispatched.instruction, "/tmp/wt-ticket-1");
+      }),
+  );
+});
+
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  {
+    providerServiceLayer: providerServiceLayerWithMaxInput(40),
+    sourceContextPointer: ({ ticketId }) =>
+      `## Source context\n\nRead the complete source transcript in \`${sourceContextPath(ticketId)}\` before acting.`,
+  },
+)("RealStepExecutor source context budget", (it) => {
+  it.effect("blocks instead of dropping an over-budget source pointer", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const ctx = {
+        ...context,
+        ticketId: "ticket-source-context-tight" as never,
+        stepRunId: "step-run-source-context-tight" as never,
+        step: {
+          ...context.step,
+          instruction: "Do it",
+        },
+      };
+      yield* seedStepStartedFor(ctx, "event-step-started-source-context-tight");
+
+      const outcome = yield* executor.execute(ctx);
+
+      assert.deepEqual(outcome, {
+        _tag: "blocked",
+        reason: "source context pointer exceeds provider input budget",
+      });
+      assert.deepEqual(dispatchStartInputs, []);
+    }),
+  );
+});
+
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  {
+    providerServiceLayer: providerServiceLayerWithMaxInput(240),
+    sourceContextPointer: () => "## Source context\n\nRead `SOURCE_SLACK.md` before acting.",
+  },
+)("RealStepExecutor source context with optional discussion", (it) => {
+  it.effect("preserves the required pointer and newest discussion within the provider budget", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const ctx = {
+        ...context,
+        ticketId: "ticket-source-context-discussion" as never,
+        stepRunId: "step-run-source-context-discussion" as never,
+        step: {
+          ...context.step,
+          instruction: "Implement it",
+        },
+      };
+      yield* seedStepStartedFor(ctx, "event-step-started-source-context-discussion");
+      yield* seedTicketMessages(ctx, [
+        {
+          author: "user",
+          body: `${"x".repeat(800)}LATEST-CONTEXT`,
+          attachments: 0,
+        },
+      ]);
+
+      const outcome = yield* executor.execute(ctx);
+
+      assert.equal(outcome._tag, "completed");
+      const dispatched = dispatchStartInputs[0] as { readonly instruction: string };
+      assert.isAtMost(dispatched.instruction.length, 240);
+      assert.include(dispatched.instruction, "SOURCE_SLACK.md");
+      assert.include(dispatched.instruction, "LATEST-CONTEXT");
+    }),
+  );
+});
+
+mk(
+  { ok: true, turnId: "turn-stub" as never },
+  { sourceContextFailure: "Slack source context SHA-256 mismatch" },
+)("RealStepExecutor corrupt source context", (it) => {
+  it.effect("blocks before dispatch when required source context cannot be verified", () =>
+    Effect.gen(function* () {
+      dispatchStartInputs.length = 0;
+      const executor = yield* StepExecutor;
+      const ctx = {
+        ...context,
+        ticketId: "ticket-source-context-corrupt" as never,
+        stepRunId: "step-run-source-context-corrupt" as never,
+      };
+      yield* seedStepStartedFor(ctx, "event-step-started-source-context-corrupt");
+
+      const outcome = yield* executor.execute(ctx);
+
+      assert.deepEqual(outcome, {
+        _tag: "blocked",
+        reason: "required source context could not be verified",
+      });
+      assert.deepEqual(dispatchStartInputs, []);
+    }),
   );
 });
 

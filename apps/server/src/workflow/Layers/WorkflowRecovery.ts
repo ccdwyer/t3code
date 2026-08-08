@@ -37,6 +37,7 @@ import { WorkflowEventStore } from "../Services/WorkflowEventStore.ts";
 import { WorkflowEngine } from "../Services/WorkflowEngine.ts";
 import { WorkflowIds } from "../Services/WorkflowIds.ts";
 import { WorkflowReadModel } from "../Services/WorkflowReadModel.ts";
+import { SlackAgentInstanceStore } from "../Services/SlackAgentInstanceStore.ts";
 import { WorkflowWebhook } from "../Services/WorkflowWebhook.ts";
 import { WorkflowRecovery, type WorkflowRecoveryShape } from "../Services/WorkflowRecovery.ts";
 import { MergeGitPort } from "../Services/TicketMergeService.ts";
@@ -231,11 +232,16 @@ const make = Effect.gen(function* () {
     (yield* Effect.context<never>()) as Context.Context<ProviderService>,
     ProviderService,
   );
+  const slackInstances = Context.getOption(
+    (yield* Effect.context<never>()) as Context.Context<SlackAgentInstanceStore>,
+    SlackAgentInstanceStore,
+  );
   // Spread into both board-deletion cascade calls so a missing-file board's
   // per-agent sessions are torn down (A8).
   const agentSessionDeletionDeps = {
     ...(Option.isSome(agentSessions) ? { agentSessions: agentSessions.value } : {}),
     ...(Option.isSome(providerService) ? { provider: providerService.value } : {}),
+    ...(Option.isSome(slackInstances) ? { slackInstances: slackInstances.value } : {}),
   };
 
   const getOptionalBoardLoaders = Effect.context<never>().pipe(

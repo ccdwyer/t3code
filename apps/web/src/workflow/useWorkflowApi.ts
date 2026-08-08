@@ -12,6 +12,40 @@ import { useContext, useMemo } from "react";
 import { workflowEnvironment } from "../state/workflow";
 
 type WorkflowApi = EnvironmentApi["workflow"];
+export type SlackAgentWorkflowApi = Pick<
+  WorkflowApi,
+  | "listBoards"
+  | "getBoardDefinition"
+  | "listSlackAgentInstances"
+  | "createSlackAgentInstance"
+  | "updateSlackAgentInstance"
+  | "disableSlackAgentInstance"
+  | "enableSlackAgentInstance"
+  | "deleteSlackAgentInstance"
+  | "simulateSlackMention"
+  | "getSlackAgentRun"
+  | "subscribeSlackAgentRun"
+  | "retrySlackAgentDelivery"
+  | "subscribeMockSlackThread"
+>;
+export type SlackAgentInstanceView = Awaited<
+  ReturnType<WorkflowApi["listSlackAgentInstances"]>
+>["instances"][number];
+
+export interface SlackAgentMockAttachmentDraft {
+  readonly id?: string;
+  readonly filename?: string;
+  readonly mediaType?: string;
+  readonly sizeBytes?: number;
+  readonly permalink?: string;
+}
+
+export interface SlackAgentMockMessageDraft {
+  readonly messageId: string;
+  readonly authorLabel: string;
+  readonly text: string;
+  readonly attachments?: ReadonlyArray<SlackAgentMockAttachmentDraft>;
+}
 
 /**
  * Bridge that exposes the deleted `readEnvironmentApi(env).workflow.*` facade
@@ -83,6 +117,90 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
     };
 
     const w = workflowEnvironment;
+    type SlackWorkflowAtomBag = Partial<
+      Record<
+        keyof SlackAgentWorkflowApi,
+        | AtomCommand<
+            { readonly environmentId: EnvironmentId; readonly input: unknown },
+            unknown,
+            unknown
+          >
+        | ((target: {
+            readonly environmentId: EnvironmentId;
+            readonly input: unknown;
+          }) => Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>)
+      >
+    >;
+    const slackAtoms = w as typeof workflowEnvironment & SlackWorkflowAtomBag;
+    const unsupportedSlackRpc = (method: keyof SlackAgentWorkflowApi): Error =>
+      new Error(`${method} is not available until the Slack-agent workflow RPCs are registered.`);
+    const readOptionalSlackQuery = <A, I>(
+      method: keyof SlackAgentWorkflowApi,
+      input: I,
+    ): Promise<A> => {
+      const family = slackAtoms[method];
+      if (typeof family !== "function") {
+        return Promise.reject(unsupportedSlackRpc(method));
+      }
+      return readQuery(
+        family as (target: {
+          readonly environmentId: EnvironmentId;
+          readonly input: I;
+        }) => Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
+        input,
+      );
+    };
+    const runOptionalSlackCommand = <A, I>(
+      method: keyof SlackAgentWorkflowApi,
+      input: I,
+    ): Promise<A> => {
+      const command = slackAtoms[method];
+      if (typeof command === "function" || command === undefined) {
+        return Promise.reject(unsupportedSlackRpc(method));
+      }
+      return run(
+        command as AtomCommand<
+          { readonly environmentId: EnvironmentId; readonly input: I },
+          A,
+          unknown
+        >,
+        input,
+      );
+    };
+    const subscribeOptionalSlack = <I, E>(
+      method: keyof SlackAgentWorkflowApi,
+      input: I,
+      callback: (event: E) => void,
+      _options?: { onResubscribe?: () => void },
+    ): (() => void) => {
+      const family = slackAtoms[method];
+      if (typeof family !== "function") {
+        setTimeout(() => {
+          throw unsupportedSlackRpc(method);
+        }, 0);
+        return () => undefined;
+      }
+      const subscriptionFamily = family as (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: I;
+      }) => Atom.Atom<AsyncResult.AsyncResult<E, unknown>>;
+      const atom = subscriptionFamily({ environmentId, input });
+      const unsubscribe = registry.subscribe(
+        atom,
+        (result) => {
+          if (AsyncResult.isSuccess(result)) {
+            callback(result.value as E);
+          }
+        },
+        { immediate: true },
+      );
+      registry.refresh(atom);
+      const unmount = registry.mount(atom);
+      return () => {
+        unsubscribe();
+        unmount();
+      };
+    };
 
     // After a connection mutation, drop the list cache so every consumer (settings,
     // source wizard, import dialog) sees the new set on the next read/open.
@@ -224,7 +342,62 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
       revertBoardProposal: (input) => run(w.revertBoardProposal, input),
       listImportableWorkItems: (input) => readQuery(w.listImportableWorkItems, input),
       importWorkItems: (input) => run(w.importWorkItems, input),
-    } satisfies WorkflowApi;
+      listSlackAgentInstances: (input) =>
+        readOptionalSlackQuery<
+          {
+            readonly instances: ReadonlyArray<SlackAgentInstanceView>;
+          },
+          typeof input
+        >("listSlackAgentInstances", input),
+      createSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<
+          Awaited<ReturnType<WorkflowApi["createSlackAgentInstance"]>>,
+          typeof input
+        >("createSlackAgentInstance", input),
+      updateSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<
+          Awaited<ReturnType<WorkflowApi["updateSlackAgentInstance"]>>,
+          typeof input
+        >("updateSlackAgentInstance", input),
+      disableSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<void, typeof input>("disableSlackAgentInstance", input),
+      enableSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<
+          Awaited<ReturnType<WorkflowApi["enableSlackAgentInstance"]>>,
+          typeof input
+        >("enableSlackAgentInstance", input),
+      deleteSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<void, typeof input>("deleteSlackAgentInstance", input),
+      retrySlackAgentDelivery: (input) =>
+        runOptionalSlackCommand<
+          Awaited<ReturnType<WorkflowApi["retrySlackAgentDelivery"]>>,
+          typeof input
+        >("retrySlackAgentDelivery", input),
+      simulateSlackMention: (input) =>
+        runOptionalSlackCommand<
+          Awaited<ReturnType<WorkflowApi["simulateSlackMention"]>>,
+          typeof input
+        >("simulateSlackMention", input),
+      getSlackAgentRun: (input) =>
+        readOptionalSlackQuery<Awaited<ReturnType<WorkflowApi["getSlackAgentRun"]>>, typeof input>(
+          "getSlackAgentRun",
+          input,
+        ),
+      subscribeSlackAgentRun: (input, callback, options) =>
+        subscribeOptionalSlack<
+          typeof input,
+          Parameters<WorkflowApi["subscribeSlackAgentRun"]>[1] extends (event: infer E) => void
+            ? E
+            : never
+        >("subscribeSlackAgentRun", input, callback, options),
+      subscribeMockSlackThread: (input, callback, options) =>
+        subscribeOptionalSlack<
+          typeof input,
+          Parameters<WorkflowApi["subscribeMockSlackThread"]>[1] extends (event: infer E) => void
+            ? E
+            : never
+        >("subscribeMockSlackThread", input, callback, options),
+    };
   }, [registry, environmentId]);
 }
 

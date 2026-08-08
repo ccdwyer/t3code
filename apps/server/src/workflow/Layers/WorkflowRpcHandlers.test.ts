@@ -7,6 +7,7 @@ import {
   BoardId,
   isParkTarget,
   LaneKey,
+  SlackAgentInvalidTargetError,
   type ProjectId,
   StepKey,
   StepRunId,
@@ -41,6 +42,8 @@ import {
   validateAndCreateBoard,
   createWorkflowBoard,
   generateWorkflowDraft,
+  mapSlackAgentIntakeRpcError,
+  normalizeMockSlackSimulationThread,
   workflowRpcHandlers,
 } from "./WorkflowRpcHandlers.ts";
 import { BOARD_TEMPLATES } from "../boardTemplates.ts";
@@ -48,6 +51,7 @@ import { makeWorkflowBoardSaveLocks } from "./WorkflowBoardSaveLocks.ts";
 import { WorkflowBoardVersionStoreLive } from "./WorkflowBoardVersionStore.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
+import { SlackAgentGatewayError } from "../Services/SlackAgentGateway.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
 import type { ProjectScriptTrustShape } from "../Services/ProjectScriptTrust.ts";
 import type { WorkSourceConnectionStoreShape } from "../Services/WorkSourceConnectionStore.ts";
@@ -71,6 +75,35 @@ const noopProjectScriptTrust = {
   isTrusted: () => Effect.succeed(false),
   setTrusted: () => Effect.void,
 } satisfies ProjectScriptTrustShape;
+
+it("maps only declared Slack intake errors through the RPC boundary", () => {
+  assert.equal(
+    mapSlackAgentIntakeRpcError(new SlackAgentInvalidTargetError({ message: "invalid target" }))
+      ._tag,
+    "SlackAgentInvalidTargetError",
+  );
+  assert.equal(
+    mapSlackAgentIntakeRpcError(new SlackAgentGatewayError({ message: "database unavailable" }))
+      ._tag,
+    "WorkflowRpcError",
+  );
+});
+
+it("pins simulated Slack mentions to the environment's mock workspace", () => {
+  const normalized = normalizeMockSlackSimulationThread({
+    workspaceId: "unexpected-workspace",
+    channelId: "C123",
+    channelName: "engineering",
+    threadTs: "1.000001",
+    threadKey: "thread-one",
+  } as never);
+
+  assert.equal(String(normalized.workspaceId), "mock");
+  assert.equal(String(normalized.channelId), "C123");
+  assert.equal(normalized.channelName, "engineering");
+  assert.equal(normalized.threadTs, "1.000001");
+  assert.equal(normalized.threadKey, "thread-one");
+});
 
 const noopConnectionStore = {
   getToken: (connectionRef: string, _expectedProvider) =>

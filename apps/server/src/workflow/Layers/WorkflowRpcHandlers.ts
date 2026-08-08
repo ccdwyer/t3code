@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
 import type {
@@ -56,6 +57,17 @@ import type {
   WorkflowGenerateWorkflowDraftResult,
   WorkflowSteerTicketStepInput as WorkflowSteerTicketStepInputType,
   ModelSelection as ModelSelectionType,
+  MockSlackThreadStreamEvent,
+  MockSlackThreadView,
+  SlackAgentCreateInstanceInput,
+  SlackAgentDeliveryView,
+  SlackAgentGetRunInput,
+  SlackAgentInstanceIdInput,
+  SlackAgentInstanceView,
+  SlackAgentRetryDeliveryInput,
+  SlackAgentRunStreamEvent,
+  SlackAgentSimulateMentionInput,
+  SlackAgentUpdateInstanceInput,
 } from "@t3tools/contracts";
 import type { WorkSourceConnectionView } from "@t3tools/contracts/workSource";
 import type { WorkSourceProviderName } from "@t3tools/contracts/workSource";
@@ -68,6 +80,16 @@ import {
   AgentSelection,
   BoardId,
   LaneKey,
+  MockSlackMessageId,
+  MockSlackThreadId,
+  MockSlackUserId,
+  MockSlackWorkspaceId,
+  MOCK_SLACK_WORKSPACE_ID,
+  SlackAgentExternalEventId,
+  SlackAgentFailedDeliveryError,
+  SlackAgentHandleCollisionError,
+  SlackAgentInvalidTargetError,
+  SlackAgentMissingRunError,
   StepKey,
   TICKET_ARTIFACT_ERROR_MESSAGES,
   WORKFLOW_WS_METHODS,
@@ -120,7 +142,7 @@ import {
 } from "../definitionCaps.ts";
 import { emptyBoardDefinition } from "../emptyBoard.ts";
 import type { BoardDiscoveryShape } from "../Services/BoardDiscovery.ts";
-import type { BoardRegistryShape } from "../Services/BoardRegistry.ts";
+import { BoardRegistry, type BoardRegistryShape } from "../Services/BoardRegistry.ts";
 import type { ProjectScriptTrustShape } from "../Services/ProjectScriptTrust.ts";
 import type { ProjectWorkspaceResolverShape } from "../Services/ProjectWorkspaceResolver.ts";
 import type { WorkflowBoardEventsShape } from "../Services/WorkflowBoardEvents.ts";
@@ -154,6 +176,14 @@ import type {
   SourceDelta,
   WorkflowSourceCommitterShape,
 } from "../Services/WorkflowSourceCommitter.ts";
+import type {
+  MockSlackThreadView as MockSlackGatewayThreadView,
+  SlackAgentGatewayShape,
+} from "../Services/SlackAgentGateway.ts";
+import type { SlackAgentInstanceStoreShape } from "../Services/SlackAgentInstanceStore.ts";
+import type { SlackAgentIntakeError, SlackAgentIntakeShape } from "../Services/SlackAgentIntake.ts";
+import type { SlackAgentRunStoreShape } from "../Services/SlackAgentRunStore.ts";
+import type { SlackAgentDeliveryDispatcherShape } from "../Services/SlackAgentDeliveryDispatcher.ts";
 import {
   deleteWorkflowBoardOwnedState,
   deleteWorkflowBoardTicketOwnedState,
@@ -171,6 +201,7 @@ import { simulateBoardRoute } from "../dryRun.ts";
 import { sha256Hex } from "../workflowVersionHash.ts";
 import { encodeWorkflowDefinitionJson, type LintError } from "../workflowFile.ts";
 import { buildProposalPrompt, parseBoardProposal } from "../selfImprove/boardProposalPrompt.ts";
+import { validateSlackAgentTarget } from "../slack/slackAgentTargetValidator.ts";
 import {
   buildCreatePrompt,
   containsForbiddenStepType,
@@ -312,6 +343,15 @@ interface WorkflowRpcHandlerDeps {
   readonly outboundConnectionStore?: WorkflowOutboundConnectionStoreShape;
   readonly workSourceProviders?: WorkSourceProviderRegistryShape;
   readonly sourceCommitter?: Pick<WorkflowSourceCommitterShape, "reconcileChunk">;
+  /** Mock-first personal Slack-agent services. Optional for focused handler tests. */
+  readonly slackInstances?: SlackAgentInstanceStoreShape;
+  readonly slackRuns?: SlackAgentRunStoreShape;
+  readonly slackIntake?: SlackAgentIntakeShape;
+  readonly slackGateway?: SlackAgentGatewayShape;
+  readonly slackDeliveryDispatcher?: Pick<
+    SlackAgentDeliveryDispatcherShape,
+    "retryDelivery" | "subscribeRunChanges"
+  >;
   /**
    * Gate that defers a mutating effect until the server runtime has finished
    * startup + workflow recovery (and fails it if recovery failed). Optional so
@@ -714,6 +754,24 @@ const workflowRpcError = (message: string, cause?: unknown) =>
     message,
     ...(cause === undefined ? {} : { cause }),
   });
+
+export const mapSlackAgentIntakeRpcError = (cause: SlackAgentIntakeError) => {
+  switch (cause._tag) {
+    case "SlackAgentDisabledInstanceError":
+    case "SlackAgentInvalidTargetError":
+    case "SlackAgentOversizedSnapshotError":
+      return cause;
+    default:
+      return workflowRpcError("Failed to accept mock Slack mention", cause);
+  }
+};
+
+export const normalizeMockSlackSimulationThread = (
+  thread: SlackAgentSimulateMentionInput["thread"],
+): SlackAgentSimulateMentionInput["thread"] => ({
+  ...thread,
+  workspaceId: MockSlackWorkspaceId.make(MOCK_SLACK_WORKSPACE_ID),
+});
 
 const decodeUnknownJsonStringSync = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeWorkflowDefinition = Schema.decodeUnknownEffect(WorkflowDefinition);
@@ -1399,6 +1457,7 @@ const deleteBoard = (
     | "agentSessions"
     | "provider"
     | "sql"
+    | "slackInstances"
   >,
   input: WorkflowDeleteBoardInput,
 ): Effect.Effect<void, WorkflowRpcError> =>
@@ -1442,6 +1501,7 @@ const deleteBoard = (
           ...(deps.webhook === undefined ? {} : { webhook: deps.webhook }),
           ...(deps.agentSessions === undefined ? {} : { agentSessions: deps.agentSessions }),
           ...(deps.provider === undefined ? {} : { provider: deps.provider }),
+          ...(deps.slackInstances === undefined ? {} : { slackInstances: deps.slackInstances }),
         },
         input.boardId,
       ).pipe(Effect.mapError(toWorkflowRpcError("Failed to delete workflow board state")));
@@ -3143,6 +3203,142 @@ export const listBoardTemplates = (): Effect.Effect<
     templates: [...listBoardTemplateSummaries()],
   } satisfies WorkflowListBoardTemplatesResult);
 
+const requireSlackService = <A>(
+  service: A | undefined,
+  name: string,
+): Effect.Effect<A, WorkflowRpcError> =>
+  service === undefined
+    ? Effect.fail(workflowRpcError(`${name} is not available on this server`))
+    : Effect.succeed(service);
+
+const validateSlackTarget = (
+  deps: Pick<WorkflowRpcHandlerDeps, "boardRegistry" | "readModel">,
+  target: SlackAgentInstanceView["target"],
+) =>
+  Effect.gen(function* () {
+    const board = yield* deps.readModel
+      .getBoard(target.boardId)
+      .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent target board")));
+    if (board === null || board.projectId !== target.projectId) {
+      return {
+        valid: false as const,
+        path: [],
+        message:
+          board === null
+            ? `Workflow board "${target.boardId}" was not found.`
+            : `Workflow board "${target.boardId}" does not belong to project "${target.projectId}".`,
+      };
+    }
+    return yield* validateSlackAgentTarget({
+      boardId: target.boardId,
+      initialLane: target.initialLane,
+    }).pipe(Effect.provideService(BoardRegistry, deps.boardRegistry));
+  });
+
+const withCurrentSlackTargetValidation = (
+  deps: Pick<WorkflowRpcHandlerDeps, "boardRegistry" | "readModel">,
+  instance: SlackAgentInstanceView,
+): Effect.Effect<SlackAgentInstanceView, WorkflowRpcError> =>
+  Effect.map(validateSlackTarget(deps, instance.target), (validation): SlackAgentInstanceView => {
+    if (validation.valid) {
+      return {
+        ...instance,
+        state: instance.enabled ? "enabled" : "disabled",
+        validation: { valid: true, path: validation.path.map(String) },
+      };
+    }
+    return {
+      ...instance,
+      state: instance.enabled ? "needs_setup" : "disabled",
+      validation: {
+        valid: false,
+        reason: validation.message,
+        ...(validation.path.length === 0 ? {} : { path: validation.path.map(String) }),
+      },
+    };
+  });
+
+const requireValidSlackTarget = (
+  deps: Pick<WorkflowRpcHandlerDeps, "boardRegistry" | "readModel">,
+  target: SlackAgentInstanceView["target"],
+) =>
+  Effect.flatMap(validateSlackTarget(deps, target), (validation) =>
+    validation.valid
+      ? Effect.void
+      : Effect.fail(
+          new SlackAgentInvalidTargetError({
+            message: validation.message,
+            ...(validation.path.length === 0
+              ? {}
+              : { path: validation.path.map((lane) => String(lane)) }),
+          }),
+        ),
+  );
+
+const slackHandleForSuffix = (suffix: string) =>
+  `t3_${suffix.trim().toLowerCase()}` as SlackAgentInstanceView["handle"];
+
+const mapSlackInstanceStoreError =
+  (handle?: SlackAgentInstanceView["handle"]) =>
+  (cause: { readonly message: string }): WorkflowRpcError | SlackAgentHandleCollisionError =>
+    cause.message.toLowerCase().includes("handle") && handle !== undefined
+      ? new SlackAgentHandleCollisionError({ handle, message: cause.message })
+      : workflowRpcError(cause.message, cause);
+
+const parseMockThreadId = (threadId: string) => {
+  const [workspaceId, channelId, ...threadTsParts] = threadId.split(":");
+  const threadTs = threadTsParts.join(":");
+  return workspaceId === undefined || channelId === undefined || threadTs === ""
+    ? null
+    : { workspaceId, channelId, threadTs };
+};
+
+const toContractMockSlackThread = (
+  deps: Pick<WorkflowRpcHandlerDeps, "slackRuns">,
+  thread: MockSlackGatewayThreadView | null,
+): Effect.Effect<MockSlackThreadView, WorkflowRpcError> =>
+  Effect.gen(function* () {
+    if (thread === null) {
+      return yield* workflowRpcError("Mock Slack thread was not found");
+    }
+    const runs = yield* requireSlackService(deps.slackRuns, "Slack agent run store");
+    const statusReplies = [] as Array<MockSlackThreadView["statusReplies"][number]>;
+    for (const reply of Object.values(thread.statusReplies)) {
+      const run = yield* runs
+        .getRunSummary(reply.runId)
+        .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent run")));
+      if (run === null) continue;
+      statusReplies.push({
+        messageId: MockSlackMessageId.make(reply.statusMessageId),
+        botUserId: run.botUserId,
+        runId: run.runId,
+        text: reply.text,
+        updatedAt: reply.updatedAt as never,
+      });
+    }
+    return {
+      threadId: MockSlackThreadId.make(thread.threadKey),
+      ref: {
+        workspaceId: thread.workspaceId as never,
+        channelId: thread.channelId as never,
+        channelName: thread.channelName as never,
+        threadTs: thread.threadTs as never,
+        threadKey: thread.threadKey as never,
+      },
+      sourceMessages: thread.messages.map((message) => ({
+        messageId: MockSlackMessageId.make(message.messageId),
+        ts: message.ts,
+        authorUserId: MockSlackUserId.make(message.authorUserId),
+        authorLabel: message.authorLabel,
+        text: message.text,
+        ...(message.editedTs === undefined ? {} : { editedTs: message.editedTs }),
+        ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
+      })),
+      statusReplies,
+      updatedAt: thread.updatedAt as never,
+    } satisfies MockSlackThreadView;
+  });
+
 /**
  * Workflow RPC methods that MUTATE durable state (event store, board files,
  * registry, connections, proposals). These are gated behind startup/recovery
@@ -3182,6 +3378,13 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
   WORKFLOW_WS_METHODS.resolveBoardProposal,
   WORKFLOW_WS_METHODS.revertBoardProposal,
   WORKFLOW_WS_METHODS.importWorkItems,
+  WORKFLOW_WS_METHODS.createSlackAgentInstance,
+  WORKFLOW_WS_METHODS.updateSlackAgentInstance,
+  WORKFLOW_WS_METHODS.disableSlackAgentInstance,
+  WORKFLOW_WS_METHODS.enableSlackAgentInstance,
+  WORKFLOW_WS_METHODS.deleteSlackAgentInstance,
+  WORKFLOW_WS_METHODS.simulateSlackMention,
+  WORKFLOW_WS_METHODS.retrySlackAgentDelivery,
 ]);
 
 export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
@@ -3216,6 +3419,323 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
       deps.observeRpcEffect(WORKFLOW_WS_METHODS.listBoardTemplates, listBoardTemplates(), {
         "rpc.aggregate": "workflow",
       }),
+    [WORKFLOW_WS_METHODS.listSlackAgentInstances]: (_input: Record<string, never>) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.listSlackAgentInstances,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          const listed = yield* instances
+            .list(MOCK_SLACK_WORKSPACE_ID)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to list Slack agent instances")));
+          return {
+            instances: yield* Effect.forEach(listed, (instance) =>
+              withCurrentSlackTargetValidation(deps, instance),
+            ),
+          };
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.createSlackAgentInstance]: (input: SlackAgentCreateInstanceInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.createSlackAgentInstance,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          yield* requireValidSlackTarget(deps, input.target);
+          const handle = slackHandleForSuffix(input.handleSuffix);
+          const instance = yield* instances
+            .create({
+              workspaceId: MOCK_SLACK_WORKSPACE_ID,
+              ownerLabel: input.ownerLabel,
+              handleSuffix: input.handleSuffix,
+              projectId: input.target.projectId,
+              boardId: input.target.boardId,
+              initialLane: input.target.initialLane,
+            })
+            .pipe(Effect.mapError(mapSlackInstanceStoreError(handle)));
+          return { instance: yield* withCurrentSlackTargetValidation(deps, instance) };
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.updateSlackAgentInstance]: (input: SlackAgentUpdateInstanceInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.updateSlackAgentInstance,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          const current = yield* instances
+            .get(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent instance")));
+          if (current === null) {
+            return yield* workflowRpcError("Slack agent instance was not found");
+          }
+          const target = input.target ?? current.target;
+          yield* requireValidSlackTarget(deps, target);
+          const handle =
+            input.handleSuffix === undefined
+              ? current.handle
+              : slackHandleForSuffix(input.handleSuffix);
+          const instance = yield* instances
+            .update(input.instanceId, {
+              ...(input.ownerLabel === undefined ? {} : { ownerLabel: input.ownerLabel }),
+              ...(input.handleSuffix === undefined ? {} : { handleSuffix: input.handleSuffix }),
+              projectId: target.projectId,
+              boardId: target.boardId,
+              initialLane: target.initialLane,
+            })
+            .pipe(Effect.mapError(mapSlackInstanceStoreError(handle)));
+          return { instance: yield* withCurrentSlackTargetValidation(deps, instance) };
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.disableSlackAgentInstance]: (input: SlackAgentInstanceIdInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.disableSlackAgentInstance,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          yield* instances
+            .disable(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to disable Slack agent instance")));
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.enableSlackAgentInstance]: (input: SlackAgentInstanceIdInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.enableSlackAgentInstance,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          const current = yield* instances
+            .get(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent instance")));
+          if (current === null) {
+            return yield* workflowRpcError("Slack agent instance was not found");
+          }
+          yield* requireValidSlackTarget(deps, current.target);
+          const instance = yield* instances
+            .enable(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to enable Slack agent instance")));
+          return { instance: yield* withCurrentSlackTargetValidation(deps, instance) };
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.deleteSlackAgentInstance]: (input: SlackAgentInstanceIdInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.deleteSlackAgentInstance,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          const current = yield* instances
+            .get(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent instance")));
+          if (current === null) return;
+          if (current.enabled) {
+            return yield* workflowRpcError("Disable the Slack agent before deleting it");
+          }
+          yield* instances
+            .delete(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to delete Slack agent instance")));
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.simulateSlackMention]: (input: SlackAgentSimulateMentionInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.simulateSlackMention,
+        Effect.gen(function* () {
+          const instances = yield* requireSlackService(
+            deps.slackInstances,
+            "Slack agent instance store",
+          );
+          const intake = yield* requireSlackService(deps.slackIntake, "Slack agent intake");
+          const instance = yield* instances
+            .get(input.instanceId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent instance")));
+          if (instance === null) {
+            return yield* workflowRpcError("Slack agent instance was not found");
+          }
+          const accepted = yield* intake
+            .acceptMention({
+              instanceId: input.instanceId,
+              botUserId: instance.botUserId,
+              externalEventId:
+                input.externalEventId ??
+                SlackAgentExternalEventId.make(`mock-event-${NodeCrypto.randomUUID()}`),
+              thread: normalizeMockSlackSimulationThread(input.thread),
+              messages: input.messages,
+              triggerMessageId: input.triggerMessageId,
+            })
+            .pipe(Effect.mapError(mapSlackAgentIntakeRpcError));
+          return {
+            runId: accepted.run.runId,
+            ticketId: accepted.run.ticketId,
+            statusMessageId: accepted.statusMessageId,
+            duplicate: accepted.duplicate,
+            state: accepted.run.state,
+            ...(accepted.message === undefined ? {} : { message: accepted.message }),
+          };
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.getSlackAgentRun]: (input: SlackAgentGetRunInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.getSlackAgentRun,
+        Effect.gen(function* () {
+          const runs = yield* requireSlackService(deps.slackRuns, "Slack agent run store");
+          const run = yield* runs
+            .getRun(input.runId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent run")));
+          if (run === null) {
+            return yield* new SlackAgentMissingRunError({
+              runId: input.runId,
+              message: "Slack agent run was not found.",
+            });
+          }
+          return run;
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.retrySlackAgentDelivery]: (input: SlackAgentRetryDeliveryInput) =>
+      deps.observeRpcEffect(
+        WORKFLOW_WS_METHODS.retrySlackAgentDelivery,
+        Effect.gen(function* () {
+          const dispatcher = yield* requireSlackService(
+            deps.slackDeliveryDispatcher,
+            "Slack agent delivery dispatcher",
+          );
+          const delivery = yield* dispatcher
+            .retryDelivery(input.deliveryId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to retry Slack status delivery")));
+          if (delivery === null) {
+            return yield* new SlackAgentFailedDeliveryError({
+              deliveryId: input.deliveryId,
+              message: "This Slack status delivery is not the newest retryable failure.",
+            });
+          }
+          return delivery;
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.subscribeSlackAgentRun]: (input: SlackAgentGetRunInput) =>
+      deps.observeRpcStreamEffect(
+        WORKFLOW_WS_METHODS.subscribeSlackAgentRun,
+        Effect.gen(function* () {
+          const runs = yield* requireSlackService(deps.slackRuns, "Slack agent run store");
+          const initial = yield* runs
+            .getRun(input.runId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack agent run")));
+          if (initial === null) {
+            return yield* new SlackAgentMissingRunError({
+              runId: input.runId,
+              message: "Slack agent run was not found.",
+            });
+          }
+          const ticket = yield* deps.readModel
+            .getTicketDetail(initial.run.ticketId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load Slack workflow ticket")));
+          if (ticket === null) {
+            return Stream.make({ type: "snapshot" as const, run: initial });
+          }
+
+          // Register the live subscription before refreshing the snapshot so a
+          // commit between the two reads is buffered instead of lost.
+          const boardLive = yield* deps.boardEvents.subscribe(ticket.ticket.boardId as BoardId);
+          const dispatcher = yield* requireSlackService(
+            deps.slackDeliveryDispatcher,
+            "Slack agent delivery dispatcher",
+          );
+          const deliveryLive = yield* dispatcher.subscribeRunChanges(String(input.runId));
+          const refreshed = yield* runs
+            .getRun(input.runId)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to refresh Slack agent run")));
+          if (refreshed === null) {
+            return yield* new SlackAgentMissingRunError({
+              runId: input.runId,
+              message: "Slack agent run was not found.",
+            });
+          }
+          const boardTriggers = boardLive.pipe(
+            Stream.filter((changed) => changed.ticketId === initial.run.ticketId),
+            Stream.map(() => ({ delivery: null as SlackAgentDeliveryView | null })),
+          );
+          const deliveryTriggers = deliveryLive.pipe(Stream.map((delivery) => ({ delivery })));
+          const updates = Stream.merge(boardTriggers, deliveryTriggers).pipe(
+            Stream.mapEffect((trigger) =>
+              runs.getRun(input.runId).pipe(
+                Effect.mapError(toWorkflowRpcError("Failed to refresh Slack agent run")),
+                Effect.flatMap((run) =>
+                  run === null
+                    ? Effect.fail(
+                        new SlackAgentMissingRunError({
+                          runId: input.runId,
+                          message: "Slack agent run was not found.",
+                        }),
+                      )
+                    : Effect.succeed(
+                        (() => {
+                          const delivery = trigger.delivery ?? run.deliveries.at(-1);
+                          return {
+                            type: "updated" as const,
+                            run: run.run,
+                            ...(delivery === undefined ? {} : { delivery }),
+                          } satisfies SlackAgentRunStreamEvent;
+                        })(),
+                      ),
+                ),
+              ),
+            ),
+          );
+          return Stream.concat(Stream.make({ type: "snapshot" as const, run: refreshed }), updates);
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
+    [WORKFLOW_WS_METHODS.subscribeMockSlackThread]: (input: {
+      readonly threadId: MockSlackThreadId;
+    }) =>
+      deps.observeRpcStreamEffect(
+        WORKFLOW_WS_METHODS.subscribeMockSlackThread,
+        Effect.gen(function* () {
+          const gateway = yield* requireSlackService(deps.slackGateway, "Mock Slack gateway");
+          const parsed = parseMockThreadId(input.threadId);
+          if (parsed === null) {
+            return yield* workflowRpcError("Mock Slack thread id is invalid");
+          }
+          const live = yield* gateway.subscribeMockThreadChanges(parsed);
+          const raw = yield* gateway
+            .subscribeMockThread(parsed)
+            .pipe(Effect.mapError(toWorkflowRpcError("Failed to load mock Slack thread")));
+          const thread = yield* toContractMockSlackThread(deps, raw);
+          return Stream.concat(
+            Stream.make({
+              type: "snapshot",
+              thread,
+            } satisfies MockSlackThreadStreamEvent),
+            live.pipe(
+              Stream.mapEffect((updated) =>
+                toContractMockSlackThread(deps, updated).pipe(
+                  Effect.map(
+                    (thread) => ({ type: "updated", thread }) satisfies MockSlackThreadStreamEvent,
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+        { "rpc.aggregate": "workflow" },
+      ),
     [WORKFLOW_WS_METHODS.deleteBoard]: (input: WorkflowDeleteBoardInput) =>
       deps.observeRpcEffect(WORKFLOW_WS_METHODS.deleteBoard, deleteBoard(deps, input), {
         "rpc.aggregate": "workflow",
@@ -3515,7 +4035,7 @@ export const workflowRpcHandlers = (deps: WorkflowRpcHandlerDeps) => {
           // the canonical containment check below is the security control.
           const scratchNames = names.filter((name) => {
             const first = (name.split("/")[0] ?? "").toLowerCase();
-            return first !== "artifacts";
+            return first !== "artifacts" && name !== "SOURCE_SLACK.md";
           });
           const scratch: Array<{
             readonly name: string;

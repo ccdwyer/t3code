@@ -716,11 +716,11 @@ layer("039_WorkflowSchema", (it) => {
     Effect.gen(function* () {
       const consolidated = migrationEntries.find(([id]) => id === 39);
       assert.strictEqual(consolidated?.[1], "WorkflowSchema");
-      // Single-migration rule: 039 is the branch's ONE migration on top of
-      // upstream (which owns through 038 ProjectionThreadsPinOrderKey).
-      // dispatch_kind and the ticket-artifact schema are folded in.
-      const highest = migrationEntries.reduce((max, [id]) => (id > max ? id : max), 0);
-      assert.strictEqual(highest, 39);
+      // 039 remains the consolidated workflow schema. Later features must add
+      // their own migration instead of modifying a schema already applied by
+      // existing Hyperion databases.
+      const next = migrationEntries.find(([id]) => id === 40);
+      assert.strictEqual(next?.[1], "SlackAgentMock");
     }),
   );
 

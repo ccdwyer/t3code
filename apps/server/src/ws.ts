@@ -61,7 +61,6 @@ import {
   type TerminalHistoryAttachStreamEvent,
   type TerminalMetadataStreamEvent,
   TICKET_NO_WORKTREE_MESSAGE,
-  WORKFLOW_WS_METHODS,
   WorkflowRpcError,
   WS_METHODS,
   WsRpcGroup,
@@ -156,6 +155,11 @@ import { WorkSourceConnectionStore } from "./workflow/Services/WorkSourceConnect
 import { WorkSourceProviderRegistry } from "./workflow/Services/WorkSourceProvider.ts";
 import { WorkflowSourceCommitter } from "./workflow/Services/WorkflowSourceCommitter.ts";
 import { WorkflowOutboundConnectionStore } from "./workflow/Services/WorkflowOutboundConnectionStore.ts";
+import { SlackAgentDeliveryDispatcher } from "./workflow/Services/SlackAgentDeliveryDispatcher.ts";
+import { SlackAgentGateway } from "./workflow/Services/SlackAgentGateway.ts";
+import { SlackAgentInstanceStore } from "./workflow/Services/SlackAgentInstanceStore.ts";
+import { SlackAgentIntake } from "./workflow/Services/SlackAgentIntake.ts";
+import { SlackAgentRunStore } from "./workflow/Services/SlackAgentRunStore.ts";
 import { workflowRpcHandlers } from "./workflow/Layers/WorkflowRpcHandlers.ts";
 import { ticketBaseRef } from "./workflow/ticketRefs.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -535,6 +539,26 @@ const makeWsRpcLayer = (
       const workflowOutboundConnectionStore = Context.getOption(
         (yield* Effect.context<never>()) as Context.Context<WorkflowOutboundConnectionStore>,
         WorkflowOutboundConnectionStore,
+      );
+      const slackAgentInstances = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackAgentInstanceStore>,
+        SlackAgentInstanceStore,
+      );
+      const slackAgentRuns = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackAgentRunStore>,
+        SlackAgentRunStore,
+      );
+      const slackAgentIntake = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackAgentIntake>,
+        SlackAgentIntake,
+      );
+      const slackAgentGateway = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackAgentGateway>,
+        SlackAgentGateway,
+      );
+      const slackAgentDeliveryDispatcher = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackAgentDeliveryDispatcher>,
+        SlackAgentDeliveryDispatcher,
       );
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1277,6 +1301,15 @@ const makeWsRpcLayer = (
         sourceCommitter: workflowSourceCommitter,
         ...(Option.isSome(workflowOutboundConnectionStore)
           ? { outboundConnectionStore: workflowOutboundConnectionStore.value }
+          : {}),
+        ...(Option.isSome(slackAgentInstances)
+          ? { slackInstances: slackAgentInstances.value }
+          : {}),
+        ...(Option.isSome(slackAgentRuns) ? { slackRuns: slackAgentRuns.value } : {}),
+        ...(Option.isSome(slackAgentIntake) ? { slackIntake: slackAgentIntake.value } : {}),
+        ...(Option.isSome(slackAgentGateway) ? { slackGateway: slackAgentGateway.value } : {}),
+        ...(Option.isSome(slackAgentDeliveryDispatcher)
+          ? { slackDeliveryDispatcher: slackAgentDeliveryDispatcher.value }
           : {}),
         observeRpcEffect,
         observeRpcStreamEffect,

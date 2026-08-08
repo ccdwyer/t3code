@@ -36,6 +36,7 @@ import { StepUsageReader } from "../Services/StepUsageReader.ts";
 import { TicketCheckpointService } from "../Services/TicketCheckpointService.ts";
 import { TicketMergeService } from "../Services/TicketMergeService.ts";
 import { TicketPullRequestService } from "../Services/TicketPullRequestService.ts";
+import { TicketSourceContextMaterializer } from "../Services/TicketSourceContextMaterializer.ts";
 import { WorkflowAgentSessionStore } from "../Services/WorkflowAgentSessionStore.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import {
@@ -96,6 +97,20 @@ import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { PARALLELISM_HOLD_REASON_ACTIVE, serializeHoldReason } from "../worktreeOverlap.ts";
 
 const encodeJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const OPTIONAL_DISCUSSION_PREFIX = "\n\n## Ticket discussion\n\n";
+const OPTIONAL_DISCUSSION_TRUNCATION_NOTE =
+  "_(earlier discussion omitted to preserve required source context)_\n\n";
+
+const fitOptionalDiscussion = (discussion: string, maxChars: number): string => {
+  if (discussion.length <= maxChars) return discussion;
+  if (maxChars <= 0) return "";
+  if (maxChars <= OPTIONAL_DISCUSSION_TRUNCATION_NOTE.length) {
+    return discussion.slice(-maxChars);
+  }
+  return `${OPTIONAL_DISCUSSION_TRUNCATION_NOTE}${discussion.slice(
+    -(maxChars - OPTIONAL_DISCUSSION_TRUNCATION_NOTE.length),
+  )}`;
+};
 
 const toExecutorError = (message: string) => (cause: unknown) =>
   new WorkflowEventStoreError({ message, cause });
@@ -190,6 +205,10 @@ const make = Effect.gen(function* () {
   const usageReader = Context.getOption(
     (yield* Effect.context<never>()) as Context.Context<StepUsageReader>,
     StepUsageReader,
+  );
+  const sourceContextMaterializer = Context.getOption(
+    (yield* Effect.context<never>()) as Context.Context<TicketSourceContextMaterializer>,
+    TicketSourceContextMaterializer,
   );
   const readStepUsage = (threadId: string) =>
     Option.isNone(usageReader)
@@ -866,12 +885,66 @@ const make = Effect.gen(function* () {
             )
         : undefined;
       const providerBudget = providerInputBudget(maxInputChars);
+      const sourceContextResult = Option.isSome(sourceContextMaterializer)
+        ? yield* sourceContextMaterializer.value
+            .materialize({
+              ticketId: ctx.ticketId,
+              worktreePath: worktree.path,
+            })
+            .pipe(
+              Effect.map((value) => ({ ok: true as const, value })),
+              Effect.catch((error) =>
+                Effect.logWarning("workflow.step.source-context-materialization-failed", {
+                  ticketId: ctx.ticketId,
+                  message: error.message,
+                }).pipe(Effect.as({ ok: false as const })),
+              ),
+            )
+        : ({ ok: true as const, value: null } as const);
+      if (!sourceContextResult.ok) {
+        return {
+          _tag: "blocked",
+          reason: "required source context could not be verified",
+        } satisfies StepOutcome;
+      }
+      const sourceContextBlock = sourceContextResult.value;
+      const sourcePackedInstruction =
+        sourceContextBlock === null
+          ? packedInstruction
+          : `${packedInstruction}\n\n${sourceContextBlock}`;
+      const requiredBodyBudget = instructionBodyBudget(
+        providerBudget,
+        resume?.answersBlock.length ?? 0,
+        step.captureOutput === true,
+        step.allowQuestions === true,
+      );
+      if (sourceContextBlock !== null && sourcePackedInstruction.length > requiredBodyBudget) {
+        return {
+          _tag: "blocked",
+          reason: "source context pointer exceeds provider input budget",
+        } satisfies StepOutcome;
+      }
 
+      const placesDiscussion = hasDiscussionPlaceholder(sourcePackedInstruction);
+      const rawDiscussionForPrompt =
+        discussion === "" && placesDiscussion ? "(no discussion yet)" : discussion;
+      const discussionPrefixLength =
+        placesDiscussion || rawDiscussionForPrompt === "" ? 0 : OPTIONAL_DISCUSSION_PREFIX.length;
+      const discussionForPrompt =
+        sourceContextBlock === null
+          ? rawDiscussionForPrompt
+          : fitOptionalDiscussion(
+              rawDiscussionForPrompt,
+              Math.max(
+                0,
+                requiredBodyBudget - sourcePackedInstruction.length - discussionPrefixLength,
+              ),
+            );
       // The discussion block appended after the body (0 when inlined via the
       // {{ticket.discussion}} placeholder). Reserved exactly against the budget.
       const appendedDiscussionBlock =
-        discussion !== "" && !hasDiscussionPlaceholder(packedInstruction)
-          ? `\n\n## Ticket discussion\n\n${discussion}`
+        discussionForPrompt !== "" && !placesDiscussion
+          ? `${OPTIONAL_DISCUSSION_PREFIX}${discussionForPrompt}`
           : "";
       const bodyBudget = instructionBodyBudget(
         providerBudget,
@@ -892,20 +965,20 @@ const make = Effect.gen(function* () {
       // the description is spliced in is deliberate: it stops the handoff scanner
       // from matching {{prev.output}}/{{step.k.output}} text that happens to appear
       // inside a ticket description (which would silently mangle the description).
-      const instructionWithHandoff = packedInstruction.includes("{{")
+      const instructionWithHandoff = sourcePackedInstruction.includes("{{")
         ? yield* Effect.gen(function* () {
             const detail = yield* read.getTicketDetail(ctx.ticketId);
             const title = detail?.ticket.title ?? "";
             const rawDescription = detail?.ticket.description ?? "";
             const templatedShort = applyInstructionTemplateExcept(
-              packedInstruction,
+              sourcePackedInstruction,
               {
                 title,
                 id: ctx.ticketId as string,
                 baseRef: ticketBaseRef(ctx.ticketId),
-                ...(hasDiscussionPlaceholder(packedInstruction)
+                ...(placesDiscussion
                   ? {
-                      discussion: discussion === "" ? "(no discussion yet)" : discussion,
+                      discussion: discussionForPrompt,
                     }
                   : {}),
               },
@@ -975,7 +1048,7 @@ const make = Effect.gen(function* () {
               () => descriptionReplacement,
             );
           })
-        : packedInstruction;
+        : sourcePackedInstruction;
       // Comments always reach the next agent step: unless the instruction
       // already placed the transcript via {{ticket.discussion}}, append it.
       const instructionWithDiscussion =
@@ -1062,6 +1135,12 @@ const make = Effect.gen(function* () {
         instruction = replaceOneSentinel(preSplice, CONTEXT_PACK_EMPTY);
       }
       if (instruction.length > providerBudget) {
+        if (sourceContextBlock !== null) {
+          return {
+            _tag: "blocked",
+            reason: "source context pointer exceeds provider input budget",
+          } satisfies StepOutcome;
+        }
         if (contract !== undefined) {
           return {
             _tag: "failed",

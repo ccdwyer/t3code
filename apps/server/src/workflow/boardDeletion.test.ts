@@ -479,6 +479,142 @@ it.effect(
 );
 
 it.effect(
+  "ticket read-model cleanup deletes linked Slack run, deliveries, and final mock thread",
+  () =>
+    Effect.gen(function* () {
+      const readModel = yield* WorkflowReadModel;
+      const sql = yield* SqlClient.SqlClient;
+      const ticketId = "ticket-slack-cascade";
+      const now = "2026-08-07T00:00:00.000Z";
+
+      yield* seedTicketOwnedRows(ticketId);
+      yield* sql`
+      INSERT INTO slack_agent_instance (
+        instance_id, kind, workspace_id, bot_user_id, handle, owner_label,
+        owner_principal, project_id, board_id, initial_lane, enabled, created_at, updated_at
+      ) VALUES (
+        'inst-slack-cascade', 'mock', 'workspace-1', 'bot-1', 't3_chris', 'Chris',
+        NULL, 'project-1', 'board-ticket-cascade', 'done', 1, ${now}, ${now}
+      )
+    `;
+      yield* sql`
+      INSERT INTO mock_slack_thread (
+        thread_key, workspace_id, channel_id, channel_name, thread_ts,
+        messages_json, status_replies_json, updated_at
+      ) VALUES (
+        'thread-slack-cascade', 'workspace-1', 'channel-1', 'general', '1000.000001',
+        '[]', '{}', ${now}
+      )
+    `;
+      yield* sql`
+      INSERT INTO slack_agent_run (
+        run_id, instance_id, external_event_id, workspace_id, channel_id, channel_name,
+        thread_key, thread_ts, trigger_ts, snapshot_json, snapshot_sha256, snapshot_bytes,
+        ticket_id, status, created_at, updated_at
+      ) VALUES (
+        'run-slack-cascade', 'inst-slack-cascade', 'event-1', 'workspace-1', 'channel-1', 'general',
+        'thread-slack-cascade', '1000.000001', '1000.000002', '{}', 'sha', 2,
+        ${ticketId}, 'accepted', ${now}, ${now}
+      )
+    `;
+      yield* sql`
+      INSERT INTO slack_agent_delivery (
+        delivery_id, run_id, workflow_sequence, kind, operation, payload_json,
+        delivery_state, attempt_count, next_attempt_at, created_at, updated_at
+      ) VALUES (
+        'delivery-slack-cascade', 'run-slack-cascade', 0, 'accepted', 'post', '{}',
+        'pending', 0, ${now}, ${now}, ${now}
+      )
+    `;
+
+      yield* readModel.deleteTicketState(ticketId as never);
+
+      const rows = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM slack_agent_run WHERE run_id = 'run-slack-cascade'
+      UNION ALL SELECT COUNT(*) AS count FROM slack_agent_delivery WHERE run_id = 'run-slack-cascade'
+      UNION ALL SELECT COUNT(*) AS count FROM mock_slack_thread WHERE thread_key = 'thread-slack-cascade'
+    `;
+      assert.equal(
+        rows.reduce((sum, row) => sum + row.count, 0),
+        0,
+      );
+    }).pipe(Effect.provide(deletionLayer)),
+);
+
+it.effect(
+  "board read-model cleanup removes board Slack rows without deleting shared survivor threads",
+  () =>
+    Effect.gen(function* () {
+      const readModel = yield* WorkflowReadModel;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-08-07T00:00:00.000Z";
+
+      yield* seedTicketOwnedRows("ticket-slack-board");
+      yield* sql`
+      INSERT INTO projection_ticket (
+        ticket_id, board_id, title, current_lane_key, status, created_at, updated_at
+      ) VALUES (
+        'ticket-slack-other', 'board-other', 'other', 'done', 'done', ${now}, ${now}
+      )
+    `;
+      yield* sql`
+      INSERT INTO slack_agent_instance (
+        instance_id, kind, workspace_id, bot_user_id, handle, owner_label,
+        owner_principal, project_id, board_id, initial_lane, enabled, created_at, updated_at
+      ) VALUES
+        ('inst-slack-board', 'mock', 'workspace-1', 'bot-board', 't3_chris', 'Chris', NULL, 'project-1', 'board-ticket-cascade', 'done', 1, ${now}, ${now}),
+        ('inst-slack-other', 'mock', 'workspace-1', 'bot-other', 't3_theo', 'Theo', NULL, 'project-1', 'board-other', 'done', 1, ${now}, ${now})
+    `;
+      yield* sql`
+      INSERT INTO mock_slack_thread (
+        thread_key, workspace_id, channel_id, channel_name, thread_ts,
+        messages_json, status_replies_json, updated_at
+      ) VALUES (
+        'thread-shared', 'workspace-1', 'channel-1', 'general', '1000.000001',
+        '[]', '{}', ${now}
+      )
+    `;
+      yield* sql`
+      INSERT INTO slack_agent_run (
+        run_id, instance_id, external_event_id, workspace_id, channel_id, channel_name,
+        thread_key, thread_ts, trigger_ts, snapshot_json, snapshot_sha256, snapshot_bytes,
+        ticket_id, status, created_at, updated_at
+      ) VALUES
+        ('run-slack-board', 'inst-slack-board', 'event-board', 'workspace-1', 'channel-1', 'general', 'thread-shared', '1000.000001', '1000.000002', '{}', 'sha', 2, 'ticket-slack-board', 'accepted', ${now}, ${now}),
+        ('run-slack-other', 'inst-slack-other', 'event-other', 'workspace-1', 'channel-1', 'general', 'thread-shared', '1000.000001', '1000.000003', '{}', 'sha', 2, 'ticket-slack-other', 'accepted', ${now}, ${now})
+    `;
+      yield* sql`
+      INSERT INTO slack_agent_delivery (
+        delivery_id, run_id, workflow_sequence, kind, operation, payload_json,
+        delivery_state, attempt_count, next_attempt_at, created_at, updated_at
+      ) VALUES
+        ('delivery-slack-board', 'run-slack-board', 0, 'accepted', 'post', '{}', 'pending', 0, ${now}, ${now}, ${now}),
+        ('delivery-slack-other', 'run-slack-other', 0, 'accepted', 'post', '{}', 'pending', 0, ${now}, ${now}, ${now})
+    `;
+
+      yield* readModel.deleteBoardTicketState("board-ticket-cascade" as never);
+
+      const deleted = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM slack_agent_run WHERE run_id = 'run-slack-board'
+      UNION ALL SELECT COUNT(*) AS count FROM slack_agent_delivery WHERE run_id = 'run-slack-board'
+    `;
+      const survivors = yield* sql<{ readonly count: number }>`
+      SELECT COUNT(*) AS count FROM slack_agent_run WHERE run_id = 'run-slack-other'
+      UNION ALL SELECT COUNT(*) AS count FROM slack_agent_delivery WHERE run_id = 'run-slack-other'
+      UNION ALL SELECT COUNT(*) AS count FROM mock_slack_thread WHERE thread_key = 'thread-shared'
+    `;
+      assert.equal(
+        deleted.reduce((sum, row) => sum + row.count, 0),
+        0,
+      );
+      assert.equal(
+        survivors.reduce((sum, row) => sum + row.count, 0),
+        3,
+      );
+    }).pipe(Effect.provide(deletionLayer)),
+);
+
+it.effect(
   "board deletion collects threads first, runs DB cascade in a transaction, then cleans up",
   () =>
     Effect.gen(function* () {
@@ -535,6 +671,53 @@ it.effect(
         "deleteThreads:thread-a+thread-b",
       ]);
     }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
+
+it.effect("board deletion disables Slack instances inside the DB cascade transaction", () =>
+  Effect.gen(function* () {
+    const calls = yield* Ref.make<ReadonlyArray<string>>([]);
+    const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
+
+    yield* deleteWorkflowBoardOwnedState(
+      {
+        boardRegistry: {
+          unregister: (boardId) => record(`unregister:${boardId}`),
+        },
+        engine: {
+          cancelBoardPipelines: (boardId) => record(`cancel:${boardId}`),
+        },
+        eventStore: { deleteForBoard: () => record("db:events") },
+        readModel: {
+          deleteBoardTicketState: () => record("db:ticketState"),
+          deleteBoard: () => record("db:board"),
+        },
+        versionStore: { deleteForBoard: () => record("db:versions") },
+        sql: {
+          withTransaction: (effect) =>
+            record("tx:begin").pipe(
+              Effect.andThen(effect),
+              Effect.tap(() => record("tx:commit")),
+            ) as never,
+        },
+        slackInstances: {
+          disableForBoard: (boardId) => record(`db:slack:disable:${boardId}`),
+        },
+      },
+      "board-slack-cascade" as never,
+    );
+
+    assert.deepEqual(yield* Ref.get(calls), [
+      "cancel:board-slack-cascade",
+      "tx:begin",
+      "db:versions",
+      "db:events",
+      "db:slack:disable:board-slack-cascade",
+      "db:ticketState",
+      "db:board",
+      "tx:commit",
+      "unregister:board-slack-cascade",
+    ]);
+  }).pipe(Effect.provide(SqlitePersistenceMemory)),
 );
 
 it.effect(

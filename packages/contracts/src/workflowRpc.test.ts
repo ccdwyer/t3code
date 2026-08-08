@@ -19,18 +19,31 @@ import {
   WorkflowGenerateWorkflowDraftResult,
   WorkflowListBoardTemplatesResult,
   WorkflowRpcError,
+  MockSlackThreadStreamEvent,
+  SlackAgentRunStreamEvent,
+  WsWorkflowCreateSlackAgentInstanceRpc,
   WsWorkflowAnswerTicketStepRpc,
   WsWorkflowSteerTicketStepRpc,
   WsWorkflowCreateTicketRpc,
   WsWorkflowDeleteBoardRpc,
+  WsWorkflowDeleteSlackAgentInstanceRpc,
+  WsWorkflowDisableSlackAgentInstanceRpc,
+  WsWorkflowEnableSlackAgentInstanceRpc,
   WsWorkflowEditTicketRpc,
+  WsWorkflowGetSlackAgentRunRpc,
   WsWorkflowGetBoardDefinitionRpc,
   WsWorkflowGetBoardVersionRpc,
+  WsWorkflowListSlackAgentInstancesRpc,
   WsWorkflowListBoardVersionsRpc,
   WsWorkflowGetTicketDiffRpc,
   WsWorkflowRenameBoardRpc,
+  WsWorkflowRetrySlackAgentDeliveryRpc,
   WsWorkflowSaveBoardDefinitionRpc,
+  WsWorkflowSimulateSlackMentionRpc,
   WsWorkflowSubscribeBoardRpc,
+  WsWorkflowSubscribeMockSlackThreadRpc,
+  WsWorkflowSubscribeSlackAgentRunRpc,
+  WsWorkflowUpdateSlackAgentInstanceRpc,
   WsWorkflowListOutboundConnectionsRpc,
   WsWorkflowCreateOutboundConnectionRpc,
   WsWorkflowDeleteOutboundConnectionRpc,
@@ -376,6 +389,169 @@ describe("workflow RPC contracts", () => {
         connectionRef: "conn-1",
       });
       assert.equal(deletePayload.connectionRef, "conn-1");
+    }),
+  );
+
+  it("declares Slack-agent websocket method names", () => {
+    assert.equal(WORKFLOW_WS_METHODS.listSlackAgentInstances, "workflow.listSlackAgentInstances");
+    assert.equal(WORKFLOW_WS_METHODS.createSlackAgentInstance, "workflow.createSlackAgentInstance");
+    assert.equal(WORKFLOW_WS_METHODS.updateSlackAgentInstance, "workflow.updateSlackAgentInstance");
+    assert.equal(
+      WORKFLOW_WS_METHODS.disableSlackAgentInstance,
+      "workflow.disableSlackAgentInstance",
+    );
+    assert.equal(WORKFLOW_WS_METHODS.enableSlackAgentInstance, "workflow.enableSlackAgentInstance");
+    assert.equal(WORKFLOW_WS_METHODS.deleteSlackAgentInstance, "workflow.deleteSlackAgentInstance");
+    assert.equal(WORKFLOW_WS_METHODS.simulateSlackMention, "workflow.simulateSlackMention");
+    assert.equal(WORKFLOW_WS_METHODS.getSlackAgentRun, "workflow.getSlackAgentRun");
+    assert.equal(WORKFLOW_WS_METHODS.subscribeSlackAgentRun, "workflow.subscribeSlackAgentRun");
+    assert.equal(WORKFLOW_WS_METHODS.retrySlackAgentDelivery, "workflow.retrySlackAgentDelivery");
+    assert.equal(WORKFLOW_WS_METHODS.subscribeMockSlackThread, "workflow.subscribeMockSlackThread");
+  });
+
+  it("exports Slack-agent RPC definitions", () => {
+    assert.isDefined(WsWorkflowListSlackAgentInstancesRpc);
+    assert.isDefined(WsWorkflowCreateSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowUpdateSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowDisableSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowEnableSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowDeleteSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowSimulateSlackMentionRpc);
+    assert.isDefined(WsWorkflowGetSlackAgentRunRpc);
+    assert.isDefined(WsWorkflowSubscribeSlackAgentRunRpc);
+    assert.isDefined(WsWorkflowRetrySlackAgentDeliveryRpc);
+    assert.isDefined(WsWorkflowSubscribeMockSlackThreadRpc);
+  });
+
+  it.effect("decodes Slack-agent RPC payloads and results", () =>
+    Effect.gen(function* () {
+      const decodeCreate = Schema.decodeUnknownEffect(
+        WsWorkflowCreateSlackAgentInstanceRpc.payloadSchema,
+      );
+      const decodeList = Schema.decodeUnknownEffect(
+        WsWorkflowListSlackAgentInstancesRpc.successSchema,
+      );
+      const decodeSimulate = Schema.decodeUnknownEffect(
+        WsWorkflowSimulateSlackMentionRpc.payloadSchema,
+      );
+      const decodeRun = Schema.decodeUnknownEffect(WsWorkflowGetSlackAgentRunRpc.successSchema);
+      const decodeRetry = Schema.decodeUnknownEffect(
+        WsWorkflowRetrySlackAgentDeliveryRpc.successSchema,
+      );
+      const decodeRunEvent = Schema.decodeUnknownEffect(SlackAgentRunStreamEvent);
+      const decodeThreadEvent = Schema.decodeUnknownEffect(MockSlackThreadStreamEvent);
+
+      const create = yield* decodeCreate({
+        ownerLabel: "Chris",
+        handleSuffix: "chris",
+        target: {
+          projectId: "project-1",
+          boardId: "board-1",
+          initialLane: "implement",
+        },
+        acknowledged: true,
+      });
+      assert.equal(create.handleSuffix, "chris");
+
+      const instance = {
+        instanceId: "inst-1",
+        handle: "t3_chris",
+        ownerLabel: "Chris",
+        botUserId: "bot-1",
+        target: {
+          projectId: "project-1",
+          boardId: "board-1",
+          initialLane: "implement",
+        },
+        enabled: true,
+        state: "enabled",
+        validation: { valid: true },
+        activeRunCount: 0,
+        createdAt: "2026-08-07T11:00:00.000Z",
+        updatedAt: "2026-08-07T11:00:00.000Z",
+      };
+      const list = yield* decodeList({ instances: [instance] });
+      assert.equal(list.instances[0]?.handle, "t3_chris");
+
+      const thread = {
+        workspaceId: "workspace-1",
+        channelId: "channel-1",
+        channelName: "eng",
+        threadTs: "1786123456.000001",
+      };
+      const messages = [
+        {
+          messageId: "msg-1",
+          ts: "1786123456.000001",
+          authorUserId: "user-1",
+          authorLabel: "Theo",
+          text: "<@bot-1> ship it",
+        },
+      ];
+      const simulate = yield* decodeSimulate({
+        instanceId: "inst-1",
+        thread,
+        messages,
+        triggerMessageId: "msg-1",
+      });
+      assert.equal(simulate.messages[0]?.text, "<@bot-1> ship it");
+
+      const delivery = yield* decodeRetry({
+        deliveryId: "delivery-1",
+        runId: "run-1",
+        workflowSequence: 0,
+        state: "pending",
+        attempts: 0,
+        createdAt: "2026-08-07T11:00:00.000Z",
+        updatedAt: "2026-08-07T11:00:00.000Z",
+      });
+      assert.equal(delivery.workflowSequence, 0);
+
+      const run = {
+        runId: "run-1",
+        instanceId: "inst-1",
+        handle: "t3_chris",
+        botUserId: "bot-1",
+        ticketId: "ticket-1",
+        thread,
+        state: "accepted",
+        lastAppliedSequence: -1,
+        createdAt: "2026-08-07T11:00:00.000Z",
+        updatedAt: "2026-08-07T11:00:00.000Z",
+      };
+      const snapshot = {
+        thread,
+        triggerEventId: "evt-1",
+        triggerMessageId: "msg-1",
+        triggerTs: "1786123456.000001",
+        messages,
+        canonicalJsonBytes: 512,
+      };
+      const detail = yield* decodeRun({ run, snapshot, deliveries: [delivery] });
+      assert.equal(detail.snapshot.triggerMessageId, "msg-1");
+
+      const runEvent = yield* decodeRunEvent({ type: "snapshot", run: detail });
+      assert.equal(runEvent.type, "snapshot");
+
+      const threadEvent = yield* decodeThreadEvent({
+        type: "snapshot",
+        thread: {
+          threadId: "thread-1",
+          ref: thread,
+          sourceMessages: messages,
+          statusReplies: [
+            {
+              messageId: "status-1",
+              botUserId: "bot-1",
+              runId: "run-1",
+              text: "Accepted by @t3_chris",
+              updatedAt: "2026-08-07T11:00:00.000Z",
+            },
+          ],
+          updatedAt: "2026-08-07T11:00:00.000Z",
+        },
+      });
+      assert.equal(threadEvent.type, "snapshot");
     }),
   );
 

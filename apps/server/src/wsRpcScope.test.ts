@@ -1,4 +1,9 @@
-import { AuthWorkflowReadScope, WORKFLOW_WS_METHODS, WsRpcGroup } from "@t3tools/contracts";
+import {
+  AuthWorkflowOperateScope,
+  AuthWorkflowReadScope,
+  WORKFLOW_WS_METHODS,
+  WsRpcGroup,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 
 import { RPC_REQUIRED_SCOPE } from "./ws.ts";
@@ -39,4 +44,29 @@ it("the timeline reads require the workflow read scope specifically", () => {
     RPC_REQUIRED_SCOPE.get(WORKFLOW_WS_METHODS.getBoardTimeline),
     AuthWorkflowReadScope,
   );
+});
+
+it("Slack agent reads and streams require read scope while mutations require operate scope", () => {
+  const reads = [
+    WORKFLOW_WS_METHODS.listSlackAgentInstances,
+    WORKFLOW_WS_METHODS.getSlackAgentRun,
+    WORKFLOW_WS_METHODS.subscribeSlackAgentRun,
+    WORKFLOW_WS_METHODS.subscribeMockSlackThread,
+  ];
+  const mutations = [
+    WORKFLOW_WS_METHODS.createSlackAgentInstance,
+    WORKFLOW_WS_METHODS.updateSlackAgentInstance,
+    WORKFLOW_WS_METHODS.disableSlackAgentInstance,
+    WORKFLOW_WS_METHODS.enableSlackAgentInstance,
+    WORKFLOW_WS_METHODS.deleteSlackAgentInstance,
+    WORKFLOW_WS_METHODS.simulateSlackMention,
+    WORKFLOW_WS_METHODS.retrySlackAgentDelivery,
+  ];
+
+  for (const method of reads) {
+    assert.strictEqual(RPC_REQUIRED_SCOPE.get(method), AuthWorkflowReadScope, method);
+  }
+  for (const method of mutations) {
+    assert.strictEqual(RPC_REQUIRED_SCOPE.get(method), AuthWorkflowOperateScope, method);
+  }
 });

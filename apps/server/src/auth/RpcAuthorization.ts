@@ -159,6 +159,17 @@ export const RPC_REQUIRED_SCOPES = {
   [WORKFLOW_WS_METHODS.createWorkflowBoard]: AuthWorkflowOperateScope,
   [WORKFLOW_WS_METHODS.generateWorkflowDraft]: AuthWorkflowOperateScope,
   [WORKFLOW_WS_METHODS.listBoardTemplates]: AuthWorkflowReadScope,
+  [WORKFLOW_WS_METHODS.listSlackAgentInstances]: AuthWorkflowReadScope,
+  [WORKFLOW_WS_METHODS.createSlackAgentInstance]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.updateSlackAgentInstance]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.disableSlackAgentInstance]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.enableSlackAgentInstance]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.deleteSlackAgentInstance]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.simulateSlackMention]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.getSlackAgentRun]: AuthWorkflowReadScope,
+  [WORKFLOW_WS_METHODS.subscribeSlackAgentRun]: AuthWorkflowReadScope,
+  [WORKFLOW_WS_METHODS.retrySlackAgentDelivery]: AuthWorkflowOperateScope,
+  [WORKFLOW_WS_METHODS.subscribeMockSlackThread]: AuthWorkflowReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>(

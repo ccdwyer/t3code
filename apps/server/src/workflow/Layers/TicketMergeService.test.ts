@@ -272,6 +272,28 @@ describe("TicketMergeService scratch cleanup", () => {
       assert.ok(scratchCleanupIndex < firstCommitIndex);
     }),
   );
+
+  it.effect("removes SOURCE_SLACK.md before the merge snapshot commit", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ worktreeStatus: " M src/app.ts\n" });
+      const outcome = yield* Effect.gen(function* () {
+        const merges = yield* TicketMergeService;
+        return yield* merges.merge(mergeInput());
+      }).pipe(Effect.provide(harness.layer));
+
+      assert.deepEqual(outcome, { _tag: "completed" });
+      const scratchDir = ".t3/ticket/ticket-merge";
+      const sourcePath = `${scratchDir}/SOURCE_SLACK.md`;
+      const firstCommitIndex = harness.calls.findIndex((call) => call.args[0] === "commit");
+      const cleanupIndex = harness.calls.findIndex(
+        (call) =>
+          (call.args[0] === "rm" || call.args[0] === "clean") && call.args.includes(scratchDir),
+      );
+      assert.ok(cleanupIndex >= 0);
+      assert.ok(cleanupIndex < firstCommitIndex);
+      assert.isFalse(harness.calls.some((call) => call.args.includes(sourcePath)));
+    }),
+  );
 });
 
 describe("TicketMergeService cleanup templating", () => {

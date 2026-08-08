@@ -273,6 +273,29 @@ describe("TicketPullRequestService open", () => {
     }),
   );
 
+  it.effect("removes SOURCE_SLACK.md before status, snapshot, push, and PR open", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ worktreeStatus: " M src/app.ts\n" });
+      const outcome = yield* runOpen(harness, prInput());
+
+      assert.equal(outcome._tag, "completed");
+      const scratchDir = ".t3/ticket/ticket-pr";
+      const sourcePath = `${scratchDir}/SOURCE_SLACK.md`;
+      const statusIndex = harness.gitCalls.findIndex((c) => c.args[0] === "status");
+      const addIndex = harness.gitCalls.findIndex((c) => c.args[0] === "add");
+      const commitIndex = harness.gitCalls.findIndex((c) => c.args[0] === "commit");
+      const cleanupIndex = harness.gitCalls.findIndex(
+        (c) => (c.args[0] === "rm" || c.args[0] === "clean") && c.args.includes(scratchDir),
+      );
+      assert.ok(cleanupIndex >= 0);
+      assert.ok(cleanupIndex < statusIndex);
+      assert.ok(cleanupIndex < addIndex);
+      assert.ok(cleanupIndex < commitIndex);
+      assert.ok(harness.openPrCalls.length > 0);
+      assert.isFalse(harness.gitCalls.some((c) => c.args.includes(sourcePath)));
+    }),
+  );
+
   it.effect("opens a PR with defaults and commits TicketPrOpened", () =>
     Effect.gen(function* () {
       const harness = makeHarness({});

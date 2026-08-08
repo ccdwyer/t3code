@@ -162,6 +162,22 @@ import type {
   ImportWorkItemsResult,
 } from "./workSource.ts";
 import type { OutboundConnectionView, CreateOutboundConnectionInput } from "./outbound.ts";
+import type {
+  MockSlackSubscribeThreadInput,
+  MockSlackThreadStreamEvent,
+  SlackAgentCreateInstanceInput,
+  SlackAgentCreateInstanceResult,
+  SlackAgentDeliveryView,
+  SlackAgentGetRunInput,
+  SlackAgentInstanceIdInput,
+  SlackAgentListInstancesResult,
+  SlackAgentRetryDeliveryInput,
+  SlackAgentRunDetailView,
+  SlackAgentRunStreamEvent,
+  SlackAgentSimulateMentionInput,
+  SlackAgentSimulateMentionResult,
+  SlackAgentUpdateInstanceInput,
+} from "./slackAgent.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -1584,5 +1600,40 @@ export interface EnvironmentApi {
       readonly externalIds: ReadonlyArray<string>;
       readonly destinationLane?: LaneKey;
     }) => Promise<ImportWorkItemsResult>;
+    listSlackAgentInstances: (
+      input: Record<string, never>,
+    ) => Promise<SlackAgentListInstancesResult>;
+    createSlackAgentInstance: (
+      input: SlackAgentCreateInstanceInput,
+    ) => Promise<SlackAgentCreateInstanceResult>;
+    updateSlackAgentInstance: (
+      input: SlackAgentUpdateInstanceInput,
+    ) => Promise<SlackAgentCreateInstanceResult>;
+    disableSlackAgentInstance: (input: SlackAgentInstanceIdInput) => Promise<void>;
+    enableSlackAgentInstance: (
+      input: SlackAgentInstanceIdInput,
+    ) => Promise<SlackAgentCreateInstanceResult>;
+    deleteSlackAgentInstance: (input: SlackAgentInstanceIdInput) => Promise<void>;
+    simulateSlackMention: (
+      input: SlackAgentSimulateMentionInput,
+    ) => Promise<SlackAgentSimulateMentionResult>;
+    getSlackAgentRun: (input: SlackAgentGetRunInput) => Promise<SlackAgentRunDetailView>;
+    subscribeSlackAgentRun: (
+      input: SlackAgentGetRunInput,
+      callback: (event: SlackAgentRunStreamEvent) => void,
+      options?: {
+        onResubscribe?: () => void;
+      },
+    ) => () => void;
+    retrySlackAgentDelivery: (
+      input: SlackAgentRetryDeliveryInput,
+    ) => Promise<SlackAgentDeliveryView>;
+    subscribeMockSlackThread: (
+      input: MockSlackSubscribeThreadInput,
+      callback: (event: MockSlackThreadStreamEvent) => void,
+      options?: {
+        onResubscribe?: () => void;
+      },
+    ) => () => void;
   };
 }

@@ -25,6 +25,7 @@ import {
   contextForRule,
   matchesTrigger,
 } from "../outbound/outboundEventContext.ts";
+import { SLACK_STATUS_EVENT_TYPES, renderSlackAgentStatus } from "../slack/slackAgentStatus.ts";
 import {
   WorkflowEventCommitter,
   type WorkflowEventCommitterShape,
@@ -157,6 +158,7 @@ const make = Effect.gen(function* () {
       const needsNotification =
         NOTIFIABLE_EVENT_TYPES.has(event.type) && (!isSlaBreach || slaNotifyOnly);
       const needsOutbound = OUTBOUND_EVENT_TYPES.has(event.type);
+      const needsSlackStatus = SLACK_STATUS_EVENT_TYPES.has(event.type);
       const needsLeaveSupersede = RESOLVES_NEEDS_YOU_EVENT_TYPES.has(event.type);
       const needsSlaLaneExitSupersede = LANE_EXIT_EVENT_TYPES.has(event.type);
       // Fast path: events that can never notify, fire an outbound rule, nor resolve
@@ -165,6 +167,7 @@ const make = Effect.gen(function* () {
       if (
         !needsNotification &&
         !needsOutbound &&
+        !needsSlackStatus &&
         !needsLeaveSupersede &&
         !needsSlaLaneExitSupersede
       ) {
@@ -189,11 +192,12 @@ const make = Effect.gen(function* () {
         readonly status: string;
         readonly boardId: string;
         readonly title: string;
+        readonly terminalAt: string | null;
         readonly attentionKind: string | null;
         readonly attentionReason: string | null;
         readonly slaBreachedReason: string | null;
       }>`
-        SELECT status, board_id AS "boardId", title,
+        SELECT status, board_id AS "boardId", title, terminal_at AS "terminalAt",
                attention_kind AS "attentionKind", attention_reason AS "attentionReason",
                sla_breached_reason AS "slaBreachedReason"
         FROM projection_ticket WHERE ticket_id = ${event.ticketId}
@@ -393,6 +397,60 @@ const make = Effect.gen(function* () {
               )
             `;
           }
+        }
+      }
+      if (needsSlackStatus && next !== undefined) {
+        const runRows = yield* sql<{
+          readonly runId: string;
+          readonly prUrl: string | null;
+        }>`
+          SELECT run_id AS "runId", pr_url AS "prUrl"
+          FROM slack_agent_run
+          WHERE ticket_id = ${event.ticketId}
+        `;
+        const run = runRows[0];
+        if (run !== undefined) {
+          const prUrl = event.type === "TicketPrOpened" ? event.payload.url : run.prUrl;
+          const payload = renderSlackAgentStatus({
+            runId: run.runId,
+            ticketId: event.ticketId as string,
+            title: next.title,
+            event: persisted,
+            workflowSequence: persisted.sequence,
+            prUrl,
+            isTerminal: next.terminalAt !== null,
+          });
+          // @effect-diagnostics-next-line preferSchemaOverJson:off - payload is a bounded internal shape stored as durable delivery JSON.
+          const payloadJson = JSON.stringify(payload);
+          const deliveryId = `slack-status-${persisted.sequence}`;
+          const createdAt = yield* nowIso;
+          yield* sql`
+            UPDATE slack_agent_run
+            SET status = ${payload.status},
+                updated_at = ${createdAt},
+                pr_url = ${payload.prUrl ?? null}
+            WHERE run_id = ${run.runId}
+          `;
+          yield* sql`
+            INSERT OR IGNORE INTO slack_agent_delivery (
+              delivery_id, run_id, workflow_sequence, payload_json,
+              kind, operation, delivery_state, attempt_count,
+              next_attempt_at, created_at, updated_at
+            ) VALUES (
+              ${deliveryId}, ${run.runId}, ${persisted.sequence}, ${payloadJson},
+              ${payload.kind}, 'update', 'pending', 0,
+              ${null}, ${createdAt}, ${createdAt}
+            )
+          `;
+          yield* sql`
+            UPDATE slack_agent_delivery
+            SET delivery_state = 'superseded'
+            WHERE run_id = ${run.runId}
+              AND delivery_state IN ('pending', 'failed')
+              AND workflow_sequence > 0
+              AND workflow_sequence < ${persisted.sequence}
+              AND kind NOT IN ('pr_opened', 'done')
+          `;
         }
       }
       return persisted;

@@ -54,6 +54,7 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { SlackChatWorktreePromotion } from "../../slack/Services/SlackChatWorktreePromotion.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -224,6 +225,7 @@ describe("ProviderRuntimeIngestion", () => {
   async function createHarness(options?: {
     serverSettings?: Partial<ServerSettings>;
     hiddenThread?: boolean;
+    settleSlackPromotionTurn?: SlackChatWorktreePromotion["Service"]["settleTurn"];
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     NodeFS.mkdirSync(NodePath.join(workspaceRoot, ".git"));
@@ -252,6 +254,12 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(
+        Layer.mock(SlackChatWorktreePromotion)({
+          promote: () => Effect.die("unused"),
+          settleTurn: options?.settleSlackPromotionTurn ?? (() => Effect.void),
+        }),
+      ),
     );
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -747,6 +755,62 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) => thread.session?.status === "ready" && thread.session?.activeTurnId === null,
       10_000,
     );
+  });
+
+  it("notifies Slack worktree promotion only after turn completion is ingested", async () => {
+    const completedThreads: ThreadId[] = [];
+    const harness = await createHarness({
+      settleSlackPromotionTurn: (completedThreadId, end) =>
+        Effect.sync(() => {
+          if (end.type === "completed") completedThreads.push(completedThreadId);
+        }),
+    });
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-slack-promotion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-slack-promotion"),
+      status: "completed",
+    });
+
+    await harness.drain();
+    expect(completedThreads).toEqual([asThreadId("thread-1")]);
+  });
+
+  it("cancels Slack worktree promotion when the originating turn aborts or exits", async () => {
+    const settled: Array<{ readonly threadId: ThreadId; readonly type: string }> = [];
+    const harness = await createHarness({
+      settleSlackPromotionTurn: (settledThreadId, end) =>
+        Effect.sync(() => {
+          settled.push({ threadId: settledThreadId, type: end.type });
+        }),
+    });
+
+    harness.emit({
+      type: "turn.aborted",
+      eventId: asEventId("evt-turn-aborted-slack-promotion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-slack-promotion"),
+      reason: "interrupted",
+    });
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-session-exited-slack-promotion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+    });
+
+    await harness.drain();
+    expect(settled).toEqual([
+      { threadId: asThreadId("thread-1"), type: "aborted" },
+      { threadId: asThreadId("thread-1"), type: "session-exited" },
+    ]);
   });
 
   it("accepts claude turn lifecycle when seeded thread id is a synthetic placeholder", async () => {

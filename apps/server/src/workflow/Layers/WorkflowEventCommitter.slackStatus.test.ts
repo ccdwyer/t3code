@@ -117,12 +117,12 @@ const insertRun = (runId: string, ticketId: string, prUrl: string | null = null)
       INSERT INTO slack_agent_run (
         run_id, instance_id, external_event_id, workspace_id, channel_id,
         channel_name, thread_key, thread_ts, trigger_ts, snapshot_json,
-        snapshot_sha256, snapshot_bytes, ticket_id, status, pr_url,
+        snapshot_sha256, snapshot_bytes, mode, t3_thread_id, ticket_id, status, pr_url,
         last_applied_sequence, created_at, updated_at
       ) VALUES (
         ${runId}, ${`instance-${runId}`}, ${`event-${runId}`}, 'T123', 'C123',
         'eng', ${`T123:C123:${runId}`}, ${`1000.${runId}`}, ${`1000.${runId}`}, '[]',
-        'sha', 2, ${ticketId}, 'accepted', ${prUrl},
+        'sha', 2, 'workflow', NULL, ${ticketId}, 'accepted', ${prUrl},
         -1, '2026-06-07T00:00:00.000Z', '2026-06-07T00:00:00.000Z'
       )
     `;

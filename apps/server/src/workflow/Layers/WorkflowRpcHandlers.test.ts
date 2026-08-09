@@ -5,13 +5,19 @@ import { assert, it } from "@effect/vitest";
 import {
   type BoardListEntry,
   BoardId,
+  EnvironmentAuthorizationError,
   isParkTarget,
   LaneKey,
+  MockSlackMessageId,
+  MOCK_SLACK_WORKSPACE_ID,
   SlackAgentInvalidTargetError,
+  type SlackAgentInstanceView,
+  type SlackAgentRunSummaryView,
   type ProjectId,
   StepKey,
   StepRunId,
   TicketId,
+  ThreadId,
   WORKFLOW_WS_METHODS,
   WorkflowDefinition,
   type WorkflowDefinition as WorkflowDefinitionType,
@@ -34,6 +40,10 @@ import * as Stream from "effect/Stream";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import {
+  SlackChatBridgeProjectNotFoundError,
+  SlackChatBridgeThreadDeletedError,
+} from "../../slack/Services/SlackChatBridge.ts";
+import {
   proposeBoardImprovement,
   listBoardProposals,
   getBoardProposal,
@@ -46,13 +56,14 @@ import {
   normalizeMockSlackSimulationThread,
   workflowRpcHandlers,
 } from "./WorkflowRpcHandlers.ts";
-import { BOARD_TEMPLATES } from "../boardTemplates.ts";
 import { makeWorkflowBoardSaveLocks } from "./WorkflowBoardSaveLocks.ts";
 import { WorkflowBoardVersionStoreLive } from "./WorkflowBoardVersionStore.ts";
 import { defaultBoardDefinition } from "../defaultBoard.ts";
 import { WorkflowEventStoreError } from "../Services/Errors.ts";
 import { SlackAgentGatewayError } from "../Services/SlackAgentGateway.ts";
+import type { SlackAgentMentionInput } from "../Services/SlackAgentIntake.ts";
 import { buildParkOrigin } from "../parkOrigin.ts";
+import { ProjectWorkspaceResolverError } from "../Services/ProjectWorkspaceResolver.ts";
 import type { ProjectScriptTrustShape } from "../Services/ProjectScriptTrust.ts";
 import type { WorkSourceConnectionStoreShape } from "../Services/WorkSourceConnectionStore.ts";
 import { WorkSourceAuthError } from "../Services/WorkSourceProvider.ts";
@@ -86,6 +97,24 @@ it("maps only declared Slack intake errors through the RPC boundary", () => {
     mapSlackAgentIntakeRpcError(new SlackAgentGatewayError({ message: "database unavailable" }))
       ._tag,
     "WorkflowRpcError",
+  );
+  assert.deepInclude(
+    mapSlackAgentIntakeRpcError(
+      new SlackChatBridgeThreadDeletedError({
+        threadId: "thread-deleted",
+        message: "Linked T3 thread was deleted.",
+      }),
+    ),
+    { _tag: "SlackAgentInvalidTargetError", message: "Linked T3 thread was deleted." },
+  );
+  assert.deepInclude(
+    mapSlackAgentIntakeRpcError(
+      new SlackChatBridgeProjectNotFoundError({
+        projectId: "project-missing",
+        message: "Project was not found.",
+      }),
+    ),
+    { _tag: "SlackAgentInvalidTargetError", message: "Project was not found." },
   );
 });
 
@@ -5596,7 +5625,7 @@ const noopEngineForParkedViewTests = {
   terminalAgentSessionThreadsForTicket: () => Effect.die("unused"),
   stopAgentSessionsForTicket: () => Effect.die("unused"),
   editTicketFieldsUnlocked: () => Effect.die("unused"),
-  withBoardAdmissionLock: (_boardId: BoardId, effect: Effect.Effect<void>) => effect,
+  withBoardAdmissionLock: <A, E, R>(_boardId: BoardId, effect: Effect.Effect<A, E, R>) => effect,
   runLane: () => Effect.void,
   ingestExternalEvent: () => Effect.succeed({ outcome: "noop" as const }),
   resolveApproval: () => Effect.void,
@@ -5662,10 +5691,1418 @@ const parkedViewDeps = (input: {
   projectScriptTrust: noopProjectScriptTrust,
   connectionStore: noopConnectionStore,
   versionStore: noopVersionStore,
-  observeRpcEffect: (_method: unknown, effect: Effect.Effect<unknown>) => effect,
-  observeRpcStreamEffect: (_method: unknown, effect: Stream.Stream<unknown>) =>
-    Stream.unwrap(Effect.succeed(effect)),
+  observeRpcEffect: <A, E, R>(_method: string, effect: Effect.Effect<A, E, R>) => effect,
+  observeRpcStreamEffect: <A, StreamError, StreamContext, EffectError, EffectContext>(
+    _method: string,
+    effect: Effect.Effect<Stream.Stream<A, StreamError, StreamContext>, EffectError, EffectContext>,
+  ) => Stream.unwrap(effect),
 });
+
+const slackInstanceView = (projectId: ProjectId): SlackAgentInstanceView => ({
+  instanceId: "slackinst-test" as never,
+  kind: "mock",
+  workspace: { workspaceId: "mock" as never },
+  handle: "t3_test" as never,
+  ownerLabel: "Test Owner" as never,
+  botUserId: "mockbot-test" as never,
+  target: { projectId },
+  defaultModelSelection: null,
+  enabled: true,
+  state: "enabled",
+  validation: { valid: true },
+  credentialsConfigured: false,
+  connection: { state: "connected" },
+  activeRunCount: 0,
+  createdAt: "2026-08-08T00:00:00.000Z" as never,
+  updatedAt: "2026-08-08T00:00:00.000Z" as never,
+});
+
+it.effect("disabling an identity with active workflow runs requires workflow authorization", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-disable-auth" as ProjectId;
+    const instance = {
+      ...slackInstanceView(projectId),
+      kind: "slack" as const,
+      workspace: { workspaceId: "T123" as never, name: "Work" as never },
+      botUserId: "U123" as never,
+      credentialsConfigured: true,
+      activeRunCount: 1,
+    } satisfies SlackAgentInstanceView;
+    let authorizationCalls = 0;
+    let stopCalls = 0;
+    let disableCalls = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        get: () => Effect.succeed(instance),
+        disable: () =>
+          Effect.sync(() => {
+            disableCalls += 1;
+            return { ...instance, enabled: false, state: "disabled" as const };
+          }),
+      } as never,
+      slackConnections: {
+        startAll: () => Effect.void,
+        startInstance: () => Effect.void,
+        stopInstance: () =>
+          Effect.sync(() => {
+            stopCalls += 1;
+          }),
+        restartInstance: () => Effect.void,
+        testInstance: () => Effect.succeed(instance),
+      },
+      authorizeWorkflowEffect: () =>
+        Effect.sync(() => {
+          authorizationCalls += 1;
+          return new EnvironmentAuthorizationError({
+            message: "missing workflow scope",
+            requiredScope: "workflow:operate",
+          });
+        }).pipe(Effect.flatMap(Effect.fail)),
+    });
+
+    const exit = yield* Effect.exit(
+      invokeWorkflowHandler(handlers, WORKFLOW_WS_METHODS.disableSlackAgentInstance, {
+        instanceId: instance.instanceId,
+      }),
+    );
+
+    assert.equal(exit._tag, "Failure");
+    assert.equal(authorizationCalls, 1);
+    assert.equal(stopCalls, 0);
+    assert.equal(disableCalls, 0);
+  }),
+);
+
+it.effect("Slack agent setup validates the project without loading a workflow board", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-setup" as ProjectId;
+    const instance = {
+      ...slackInstanceView(projectId),
+      kind: "slack" as const,
+      workspace: { workspaceId: "T123" as never, name: "Work" as never },
+      botUserId: "U123" as never,
+      credentialsConfigured: true,
+      connection: { state: "connecting" as const },
+    } satisfies SlackAgentInstanceView;
+    let resolvedProject: ProjectId | null = null;
+    let createdProject: ProjectId | null = null;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      readModel: {
+        ...noopReadModel,
+        getBoard: () => Effect.die("setup validation should not load a workflow board"),
+      },
+      projectWorkspaceResolver: {
+        resolve: (inputProjectId) =>
+          Effect.sync(() => {
+            resolvedProject = inputProjectId;
+            return "/tmp/project";
+          }),
+      },
+      slackInstances: {
+        createReal: (input: { readonly projectId: ProjectId }) =>
+          Effect.sync(() => {
+            createdProject = input.projectId;
+            return instance;
+          }),
+        updateConnectionState: () => Effect.succeed(instance),
+        list: () => Effect.succeed([]),
+        get: () => Effect.succeed(instance),
+        getEnabledByBotUserId: () => Effect.succeed(null),
+        update: () => Effect.succeed(instance),
+        disable: () => Effect.succeed(instance),
+        enable: () => Effect.succeed(instance),
+        delete: () => Effect.void,
+      } as never,
+      slackApi: {
+        validateCredentials: () =>
+          Effect.succeed({
+            workspaceId: "T123",
+            workspaceName: "Work",
+            botUserId: "U123",
+            botUserName: "t3_test",
+          }),
+      },
+      slackConnections: {
+        startAll: () => Effect.void,
+        startInstance: () => Effect.void,
+        stopInstance: () => Effect.void,
+        restartInstance: () => Effect.void,
+        testInstance: () => Effect.succeed(instance),
+      },
+    });
+
+    const result = yield* invokeWorkflowHandler<{ readonly instance: SlackAgentInstanceView }>(
+      handlers,
+      WORKFLOW_WS_METHODS.createSlackAgentInstance,
+      {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: { projectId },
+        appToken: "xapp-test",
+        botToken: "xoxb-test",
+        acknowledged: true,
+      },
+    );
+
+    assert.equal(createdProject, projectId);
+    assert.equal(resolvedProject, projectId);
+    assert.deepEqual(result.instance.validation, { valid: true, path: [] });
+  }),
+);
+
+it.effect("Slack agent setup explains when the bot display name cannot be read", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-display-name-unavailable" as ProjectId;
+    let createCalled = false;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      projectWorkspaceResolver: {
+        resolve: () => Effect.succeed("/tmp/project"),
+      },
+      slackInstances: {
+        createReal: () =>
+          Effect.sync(() => {
+            createCalled = true;
+            return slackInstanceView(projectId);
+          }),
+      } as never,
+      slackApi: {
+        validateCredentials: () =>
+          Effect.succeed({
+            workspaceId: "T123",
+            workspaceName: "Work",
+            botUserId: "U123",
+          }),
+      },
+      slackConnections: {
+        startAll: () => Effect.void,
+        startInstance: () => Effect.void,
+        stopInstance: () => Effect.void,
+        restartInstance: () => Effect.void,
+        testInstance: () => Effect.succeed(slackInstanceView(projectId)),
+      },
+    });
+
+    const error = yield* invokeWorkflowHandler<never>(
+      handlers,
+      WORKFLOW_WS_METHODS.createSlackAgentInstance,
+      {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: { projectId },
+        appToken: "xapp-test",
+        botToken: "xoxb-test",
+        acknowledged: true,
+      },
+    ).pipe(Effect.flip);
+
+    assert.equal(createCalled, false);
+    assert.include(error.message, "users:read");
+    assert.include(error.message, "reinstall");
+  }),
+);
+
+it.effect("Slack credential validation errors are redacted at RPC egress", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-redaction" as ProjectId;
+    let createCalled = false;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        createReal: () =>
+          Effect.sync(() => {
+            createCalled = true;
+            return slackInstanceView(projectId);
+          }),
+      } as never,
+      slackApi: {
+        validateCredentials: () =>
+          Effect.fail({
+            message:
+              "Slack rejected xoxb-secret-token with Authorization: Bearer xapp-secret-token",
+          }) as never,
+      },
+      slackConnections: {
+        startAll: () => Effect.void,
+        startInstance: () => Effect.void,
+        stopInstance: () => Effect.void,
+        restartInstance: () => Effect.void,
+        testInstance: () => Effect.succeed(slackInstanceView(projectId)),
+      },
+    });
+
+    const error = yield* invokeWorkflowHandler<never>(
+      handlers,
+      WORKFLOW_WS_METHODS.createSlackAgentInstance,
+      {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: { projectId },
+        appToken: "xapp-request-token",
+        botToken: "xoxb-request-token",
+        acknowledged: true,
+      },
+    ).pipe(Effect.flip);
+
+    assert.equal(createCalled, false);
+    assert.notInclude(error.message, "xoxb-secret-token");
+    assert.notInclude(error.message, "xapp-secret-token");
+    assert.notInclude(error.message.toLowerCase(), "authorization: bearer xapp");
+    assert.include(error.message, "[redacted-token]");
+    assert.include(error.message.toLowerCase(), "authorization: bearer [redacted]");
+  }),
+);
+
+it.effect("mock Slack agent setup validates linked projects and passes normalized bindings", () =>
+  Effect.gen(function* () {
+    const projectId = "project-mock-slack-setup" as ProjectId;
+    const secondaryProjectId = "project-mock-slack-docs" as ProjectId;
+    const instance = slackInstanceView(projectId);
+    let createdInput: {
+      readonly workspaceId: string;
+      readonly ownerLabel: string;
+      readonly handleSuffix: string;
+      readonly projectId: ProjectId;
+      readonly projects?: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly selector: string;
+      }>;
+    } | null = null;
+    const resolvedProjects: Array<ProjectId> = [];
+    let orchestrationGateCalls = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      projectWorkspaceResolver: {
+        resolve: (id: ProjectId) =>
+          Effect.sync(() => {
+            resolvedProjects.push(id);
+            return "/tmp/project";
+          }),
+      },
+      slackInstances: {
+        createMock: (input: {
+          readonly workspaceId: string;
+          readonly ownerLabel: string;
+          readonly handleSuffix: string;
+          readonly projectId: ProjectId;
+          readonly projects?: ReadonlyArray<{
+            readonly projectId: ProjectId;
+            readonly selector: string;
+          }>;
+        }) =>
+          Effect.sync(() => {
+            createdInput = input;
+            return {
+              ...instance,
+              target: {
+                projectId: input.projectId,
+                ...(input.projects === undefined ? {} : { projects: input.projects }),
+              },
+            } satisfies SlackAgentInstanceView;
+          }),
+      } as never,
+      orchestrationGate: (effect) =>
+        Effect.sync(() => {
+          orchestrationGateCalls += 1;
+        }).pipe(Effect.andThen(effect)),
+      gate: () => Effect.fail(new WorkflowRpcError({ message: "workflow gate must be bypassed" })),
+    });
+
+    const result = yield* invokeWorkflowHandler<{ readonly instance: SlackAgentInstanceView }>(
+      handlers,
+      WORKFLOW_WS_METHODS.createMockSlackAgentInstance,
+      {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: {
+          projectId,
+          projects: [
+            { projectId, selector: "primary" as never },
+            { projectId: secondaryProjectId, selector: "docs" as never },
+          ],
+        },
+        acknowledged: true,
+      },
+    );
+
+    assert.equal(orchestrationGateCalls, 1);
+    assert.deepEqual([...new Set(resolvedProjects)], [projectId, secondaryProjectId]);
+    assert.deepEqual(createdInput, {
+      workspaceId: MOCK_SLACK_WORKSPACE_ID,
+      ownerLabel: "Test Owner",
+      handleSuffix: "test",
+      projectId,
+      projects: [
+        { projectId, selector: "primary" },
+        { projectId: secondaryProjectId, selector: "docs" },
+      ],
+    });
+    assert.deepEqual(result.instance.validation, { valid: true, path: [] });
+  }),
+);
+
+it.effect("mock Slack agent setup rejects an unknown linked project", () =>
+  Effect.gen(function* () {
+    const projectId = "project-mock-slack-known" as ProjectId;
+    const missingProjectId = "project-mock-slack-missing" as ProjectId;
+    let createCalled = false;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      projectWorkspaceResolver: {
+        resolve: (id: ProjectId) =>
+          id === missingProjectId
+            ? Effect.fail(new ProjectWorkspaceResolverError({ message: "missing project" }))
+            : Effect.succeed("/tmp/project"),
+      },
+      slackInstances: {
+        createMock: () =>
+          Effect.sync(() => {
+            createCalled = true;
+            return slackInstanceView(projectId);
+          }),
+      } as never,
+      orchestrationGate: (effect) => effect,
+    });
+
+    const exit = yield* Effect.exit(
+      invokeWorkflowHandler<never>(handlers, WORKFLOW_WS_METHODS.createMockSlackAgentInstance, {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: {
+          projectId,
+          projects: [
+            { projectId, selector: "primary" as never },
+            { projectId: missingProjectId, selector: "docs" as never },
+          ],
+        },
+        acknowledged: true,
+      }),
+    );
+    assert.equal(exit._tag, "Failure");
+    const error = exit._tag === "Failure" ? Cause.squash(exit.cause) : null;
+
+    assert.equal(createCalled, false);
+    assert.instanceOf(error, SlackAgentInvalidTargetError);
+    const invalidTarget = error as SlackAgentInvalidTargetError;
+    assert.include(invalidTarget.message, `Project "${missingProjectId}"`);
+    assert.deepEqual(invalidTarget.path, ["projects.docs.projectId"]);
+  }),
+);
+
+it.effect("mock Slack agent setup rejects duplicate linked project selectors", () =>
+  Effect.gen(function* () {
+    const projectId = "project-mock-slack-dup-default" as ProjectId;
+    const firstProjectId = "project-mock-slack-dup-a" as ProjectId;
+    const secondProjectId = "project-mock-slack-dup-b" as ProjectId;
+    let createCalled = false;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        createMock: () =>
+          Effect.sync(() => {
+            createCalled = true;
+            return slackInstanceView(projectId);
+          }),
+      } as never,
+      orchestrationGate: (effect) => effect,
+    });
+
+    const exit = yield* Effect.exit(
+      invokeWorkflowHandler<never>(handlers, WORKFLOW_WS_METHODS.createMockSlackAgentInstance, {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: {
+          projectId,
+          projects: [
+            { projectId, selector: "primary" as never },
+            { projectId: firstProjectId, selector: "docs" as never },
+            { projectId: secondProjectId, selector: "docs" as never },
+          ],
+        },
+        acknowledged: true,
+      }),
+    );
+    assert.equal(exit._tag, "Failure");
+    const error = exit._tag === "Failure" ? Cause.squash(exit.cause) : null;
+
+    assert.equal(createCalled, false);
+    assert.instanceOf(error, SlackAgentInvalidTargetError);
+    const invalidTarget = error as SlackAgentInvalidTargetError;
+    assert.equal(invalidTarget.message, 'Slack linked project selector "docs" is duplicated.');
+    assert.deepEqual(invalidTarget.path, ["projects.2.selector"]);
+  }),
+);
+
+it.effect("mock Slack agent setup rejects targets whose default project is not linked", () =>
+  Effect.gen(function* () {
+    const projectId = "project-mock-slack-default" as ProjectId;
+    const secondaryProjectId = "project-mock-slack-other" as ProjectId;
+    let createCalled = false;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        createMock: () =>
+          Effect.sync(() => {
+            createCalled = true;
+            return slackInstanceView(projectId);
+          }),
+      } as never,
+      orchestrationGate: (effect) => effect,
+    });
+
+    const exit = yield* Effect.exit(
+      invokeWorkflowHandler<never>(handlers, WORKFLOW_WS_METHODS.createMockSlackAgentInstance, {
+        ownerLabel: "Test Owner",
+        handleSuffix: "test",
+        target: {
+          projectId,
+          projects: [{ projectId: secondaryProjectId, selector: "docs" as never }],
+        },
+        acknowledged: true,
+      }),
+    );
+    assert.equal(exit._tag, "Failure");
+    const error = exit._tag === "Failure" ? Cause.squash(exit.cause) : null;
+
+    assert.equal(createCalled, false);
+    assert.instanceOf(error, SlackAgentInvalidTargetError);
+    const invalidTarget = error as SlackAgentInvalidTargetError;
+    assert.equal(
+      invalidTarget.message,
+      `Default project "${projectId}" must be included in Slack linked projects.`,
+    );
+    assert.deepEqual(invalidTarget.path, ["projects"]);
+  }),
+);
+
+it.effect("Slack agent update replaces linked project bindings with the default project", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-update-default" as ProjectId;
+    const secondaryProjectId = "project-slack-update-docs" as ProjectId;
+    const instance = slackInstanceView(projectId);
+    let updateInput: {
+      readonly ownerLabel?: string | undefined;
+      readonly handleSuffix?: string | undefined;
+      readonly projectId?: ProjectId | undefined;
+      readonly projects?: ReadonlyArray<{
+        readonly projectId: ProjectId;
+        readonly selector: string;
+      }>;
+    } | null = null;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      projectWorkspaceResolver: {
+        resolve: () => Effect.succeed("/tmp/project"),
+      },
+      slackInstances: {
+        get: () => Effect.succeed(instance),
+        update: (
+          _instanceId: SlackAgentInstanceView["instanceId"],
+          input: {
+            readonly ownerLabel?: string | undefined;
+            readonly handleSuffix?: string | undefined;
+            readonly projectId?: ProjectId | undefined;
+            readonly projects?: ReadonlyArray<{
+              readonly projectId: ProjectId;
+              readonly selector: string;
+            }>;
+          },
+        ) =>
+          Effect.sync(() => {
+            updateInput = input;
+            return {
+              ...instance,
+              ownerLabel: input.ownerLabel ?? instance.ownerLabel,
+              target: {
+                projectId: input.projectId ?? instance.target.projectId,
+                ...(input.projects === undefined ? {} : { projects: input.projects }),
+              },
+            } satisfies SlackAgentInstanceView;
+          }),
+      } as never,
+      orchestrationGate: (effect) => effect,
+    });
+
+    const result = yield* invokeWorkflowHandler<{ readonly instance: SlackAgentInstanceView }>(
+      handlers,
+      WORKFLOW_WS_METHODS.updateSlackAgentInstance,
+      {
+        instanceId: instance.instanceId,
+        ownerLabel: "Updated Owner",
+        target: {
+          projectId,
+          projects: [
+            { projectId, selector: "primary" as never },
+            { projectId: secondaryProjectId, selector: "docs" as never },
+          ],
+        },
+      },
+    );
+
+    assert.deepEqual(updateInput, {
+      ownerLabel: "Updated Owner",
+      projectId,
+      projects: [
+        { projectId, selector: "primary" },
+        { projectId: secondaryProjectId, selector: "docs" },
+      ],
+    });
+    assert.deepEqual(result.instance.validation, { valid: true, path: [] });
+  }),
+);
+
+it.effect("Slack credential lifecycle keeps a real identity fixed and restarts its socket", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-credentials" as ProjectId;
+    const instance = {
+      ...slackInstanceView(projectId),
+      kind: "slack" as const,
+      workspace: { workspaceId: "T123" as never, name: "Work" as never },
+      appId: "A123" as never,
+      botUserId: "U123" as never,
+      credentialsConfigured: true,
+      connection: { state: "connected" as const },
+    } satisfies SlackAgentInstanceView;
+    const actions: Array<string> = [];
+    let replacedTokens: { readonly appToken: string; readonly botToken: string } | null = null;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        get: () => Effect.succeed(instance),
+        replaceCredentials: (
+          _instanceId: SlackAgentInstanceView["instanceId"],
+          tokens: { readonly appToken: string; readonly botToken: string },
+        ) =>
+          Effect.sync(() => {
+            actions.push("replace");
+            replacedTokens = tokens;
+            return instance;
+          }),
+        disconnect: () =>
+          Effect.sync(() => {
+            actions.push("disconnect-store");
+            return {
+              ...instance,
+              credentialsConfigured: false,
+              state: "needs_setup" as const,
+              connection: { state: "disconnected" as const },
+            } satisfies SlackAgentInstanceView;
+          }),
+      } as never,
+      slackApi: {
+        validateCredentials: () =>
+          Effect.succeed({
+            workspaceId: "T123",
+            workspaceName: "Work",
+            botUserId: "U123",
+            botUserName: "t3_test",
+            appId: "A123",
+          }),
+      },
+      slackConnections: {
+        startAll: () => Effect.void,
+        startInstance: () =>
+          Effect.sync(() => {
+            actions.push("start");
+          }),
+        stopInstance: () =>
+          Effect.sync(() => {
+            actions.push("stop");
+          }),
+        restartInstance: () => Effect.void,
+        testInstance: () => Effect.succeed(instance),
+      },
+    });
+
+    const connected = yield* invokeWorkflowHandler<{
+      readonly instance: SlackAgentInstanceView;
+    }>(handlers, WORKFLOW_WS_METHODS.connectSlackAgentInstance, {
+      instanceId: instance.instanceId,
+      appToken: "xapp-rotated",
+      botToken: "xoxb-rotated",
+    });
+    assert.deepEqual(replacedTokens, {
+      appToken: "xapp-rotated",
+      botToken: "xoxb-rotated",
+    });
+    assert.deepEqual(actions, ["replace", "start"]);
+    assert.equal(connected.instance.instanceId, instance.instanceId);
+
+    actions.length = 0;
+    const disconnected = yield* invokeWorkflowHandler<{
+      readonly instance: SlackAgentInstanceView;
+    }>(handlers, WORKFLOW_WS_METHODS.disconnectSlackAgentInstance, {
+      instanceId: instance.instanceId,
+    });
+    assert.deepEqual(actions, ["stop", "disconnect-store"]);
+    assert.equal(disconnected.instance.credentialsConfigured, false);
+
+    const tested = yield* invokeWorkflowHandler<{
+      readonly instance: SlackAgentInstanceView;
+      readonly ok: boolean;
+      readonly message?: string;
+    }>(handlers, WORKFLOW_WS_METHODS.testSlackAgentConnection, {
+      instanceId: instance.instanceId,
+    });
+    assert.equal(tested.ok, true);
+    assert.include(tested.message ?? "", "@t3_test");
+  }),
+);
+
+it.effect("Slack token rotation rejects credentials for another bot before storing them", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-identity-mismatch" as ProjectId;
+    const instance = {
+      ...slackInstanceView(projectId),
+      kind: "slack" as const,
+      workspace: { workspaceId: "T123" as never, name: "Work" as never },
+      appId: "A123" as never,
+      botUserId: "U123" as never,
+      credentialsConfigured: true,
+    } satisfies SlackAgentInstanceView;
+    let replaced = false;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        get: () => Effect.succeed(instance),
+        replaceCredentials: () =>
+          Effect.sync(() => {
+            replaced = true;
+            return instance;
+          }),
+      } as never,
+      slackApi: {
+        validateCredentials: () =>
+          Effect.succeed({
+            workspaceId: "T123",
+            workspaceName: "Work",
+            botUserId: "U999",
+            botUserName: "t3_other",
+            appId: "A999",
+          }),
+      },
+      slackConnections: {
+        startAll: () => Effect.void,
+        startInstance: () => Effect.void,
+        stopInstance: () => Effect.void,
+        restartInstance: () => Effect.void,
+        testInstance: () => Effect.succeed(instance),
+      },
+    });
+
+    const exit = yield* Effect.exit(
+      invokeWorkflowHandler(handlers, WORKFLOW_WS_METHODS.connectSlackAgentInstance, {
+        instanceId: instance.instanceId,
+        appToken: "xapp-other",
+        botToken: "xoxb-other",
+      }),
+    );
+
+    assert.equal(exit._tag, "Failure");
+    assert.equal(replaced, false);
+  }),
+);
+
+it.effect(
+  "listSlackAgentInstances marks instances needs_setup when a linked project is unavailable",
+  () =>
+    Effect.gen(function* () {
+      const projectId = "project-slack-list-default" as ProjectId;
+      const missingProjectId = "project-slack-list-missing" as ProjectId;
+      const instance = {
+        ...slackInstanceView(projectId),
+        target: {
+          projectId,
+          projects: [
+            { projectId, selector: "primary" as never },
+            { projectId: missingProjectId, selector: "docs" as never },
+          ],
+        },
+      } satisfies SlackAgentInstanceView;
+      const handlers = workflowRpcHandlers({
+        ...parkedViewDeps({ ticket: {}, definition: null }),
+        projectWorkspaceResolver: {
+          resolve: (id: ProjectId) =>
+            id === missingProjectId
+              ? Effect.fail(new ProjectWorkspaceResolverError({ message: "missing project" }))
+              : Effect.succeed("/tmp/project"),
+        },
+        slackInstances: {
+          list: () => Effect.succeed([instance]),
+        } as never,
+      });
+
+      const result = yield* invokeWorkflowHandler<{
+        readonly instances: ReadonlyArray<SlackAgentInstanceView>;
+      }>(handlers, WORKFLOW_WS_METHODS.listSlackAgentInstances, {});
+
+      assert.equal(result.instances[0]?.state, "needs_setup");
+      assert.deepEqual(result.instances[0]?.validation, {
+        valid: false,
+        reason: `Project "${missingProjectId}" for Slack selector "docs" was not found.`,
+        path: ["projects.docs.projectId"],
+      });
+    }),
+);
+
+it.effect("Slack agent orchestration reads redact or reject workflow-only details", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-auth-redaction" as ProjectId;
+    const workflowRun = {
+      runId: "slackrun-workflow-redaction" as never,
+      instanceId: "slackinst-test" as never,
+      handle: "t3_test" as never,
+      botUserId: "mockbot-test" as never,
+      mode: "workflow" as const,
+      ticketId: "ticket-workflow-redaction" as TicketId,
+      thread: {
+        workspaceId: "mock" as never,
+        channelId: "channel-redaction" as never,
+        channelName: "engineering" as never,
+        threadTs: "1003.000001" as never,
+      },
+      state: "running" as const,
+      prUrl: "https://example.test/pull/1",
+      lastAppliedSequence: 2,
+      createdAt: "2026-08-08T00:00:00.000Z" as never,
+      updatedAt: "2026-08-08T00:00:01.000Z" as never,
+    } satisfies SlackAgentRunSummaryView;
+    const instance = {
+      ...slackInstanceView(projectId),
+      latestRun: {
+        runId: workflowRun.runId,
+        mode: "workflow" as const,
+        ticketId: workflowRun.ticketId,
+        state: "running" as const,
+        prUrl: workflowRun.prUrl,
+        updatedAt: workflowRun.updatedAt,
+      },
+    } satisfies SlackAgentInstanceView;
+    let workflowReadChecks = 0;
+    const denyWorkflowRead = <A, E, R>(_effect: Effect.Effect<A, E, R>) =>
+      Effect.sync(() => {
+        workflowReadChecks += 1;
+        return new EnvironmentAuthorizationError({
+          message: "missing workflow read scope",
+          requiredScope: "workflow:read",
+        });
+      }).pipe(Effect.flatMap(Effect.fail));
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        list: () => Effect.succeed([instance]),
+      } as never,
+      slackRuns: {
+        getRunSummary: () => Effect.succeed(workflowRun),
+      } as never,
+      slackGateway: {
+        subscribeMockThread: () =>
+          Effect.succeed({
+            threadKey: "mock:channel-redaction:1003.000001",
+            workspaceId: "mock",
+            channelId: "channel-redaction",
+            channelName: "engineering",
+            threadTs: "1003.000001",
+            messages: [],
+            statusReplies: {
+              "status-workflow-redaction": {
+                statusMessageId: "status-workflow-redaction",
+                runId: workflowRun.runId,
+                text: `Ticket: ${workflowRun.ticketId}\nPR: ${workflowRun.prUrl}`,
+                updatedAt: "2026-08-08T00:00:01.000Z",
+                history: [],
+              },
+            },
+            updatedAt: "2026-08-08T00:00:01.000Z",
+          }),
+        subscribeMockThreadChanges: () => Effect.succeed(Stream.empty),
+      } as never,
+      authorizeWorkflowReadEffect: denyWorkflowRead,
+    });
+
+    const listed = yield* invokeWorkflowHandler<{
+      readonly instances: ReadonlyArray<SlackAgentInstanceView>;
+    }>(handlers, WORKFLOW_WS_METHODS.listSlackAgentInstances, {});
+    assert.isUndefined(listed.instances[0]?.latestRun);
+
+    const stream = (
+      handlers as unknown as Record<string, (input: unknown) => Stream.Stream<unknown>>
+    )[WORKFLOW_WS_METHODS.subscribeMockSlackThread]!({
+      threadId: "mock:channel-redaction:1003.000001",
+    });
+    const streamExit = yield* Effect.exit(Stream.runCollect(stream.pipe(Stream.take(1))));
+    assert.equal(streamExit._tag, "Failure");
+    assert.equal(workflowReadChecks, 2);
+  }),
+);
+
+it.effect("simulateSlackMention forwards invocation and maps chat run fields", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-chat" as ProjectId;
+    const instance = slackInstanceView(projectId);
+    const triggerMessageId = MockSlackMessageId.make("msg-trigger");
+    let capturedInvocation: unknown;
+    let capturedWorkflowCapability: boolean | undefined;
+    let workflowAuthorized = false;
+    let orchestrationGateCalls = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        create: () => Effect.succeed(instance),
+        list: () => Effect.succeed([]),
+        get: () => Effect.succeed(instance),
+        getEnabledByBotUserId: () => Effect.succeed(instance),
+        update: () => Effect.succeed(instance),
+        disable: () => Effect.succeed(instance),
+        enable: () => Effect.succeed(instance),
+        delete: () => Effect.void,
+      } as never,
+      slackIntake: {
+        acceptMention: (input: SlackAgentMentionInput) =>
+          Effect.sync(() => {
+            capturedInvocation = (input as typeof input & { readonly invocation?: unknown })
+              .invocation;
+            capturedWorkflowCapability = input.workflowAuthorized;
+            return {
+              run: {
+                runId: "slackrun-chat" as never,
+                instanceId: instance.instanceId,
+                handle: instance.handle,
+                botUserId: instance.botUserId,
+                mode: "chat",
+                threadId: "thread-chat" as ThreadId,
+                thread: input.thread,
+                state: "connected",
+                lastAppliedSequence: -1,
+                createdAt: "2026-08-08T00:00:00.000Z" as never,
+                updatedAt: "2026-08-08T00:00:00.000Z" as never,
+              },
+              duplicate: false,
+              statusMessageId: MockSlackMessageId.make("mock-status-slackrun-chat"),
+              createdThread: true,
+            };
+          }) as never,
+      },
+      slackRuns: {
+        findBySourceThread: () => Effect.succeed(null),
+      } as never,
+      authorizeWorkflowEffect: (effect) =>
+        Effect.sync(() => {
+          workflowAuthorized = true;
+        }).pipe(Effect.andThen(effect)),
+      gate: () => Effect.fail(new WorkflowRpcError({ message: "workflow gate must be bypassed" })),
+      orchestrationGate: (effect) =>
+        Effect.sync(() => {
+          orchestrationGateCalls += 1;
+        }).pipe(Effect.andThen(effect)),
+    });
+
+    const result = yield* invokeWorkflowHandler<{
+      readonly mode: "chat" | "workflow";
+      readonly threadId?: ThreadId;
+      readonly ticketId?: TicketId;
+      readonly createdThread: boolean;
+    }>(handlers, WORKFLOW_WS_METHODS.simulateSlackMention, {
+      instanceId: instance.instanceId,
+      thread: {
+        workspaceId: "mock",
+        channelId: "C123",
+        channelName: "engineering",
+        threadTs: "1000.000001",
+      },
+      messages: [
+        {
+          messageId: triggerMessageId,
+          ts: "1000.000002",
+          authorUserId: "U123",
+          authorLabel: "Chris",
+          text: "@t3_test please help",
+        },
+      ],
+      triggerMessageId,
+      invocation: { mode: "chat" },
+    });
+
+    assert.deepEqual(capturedInvocation, { mode: "chat" });
+    assert.equal(capturedWorkflowCapability, false);
+    assert.equal(workflowAuthorized, false);
+    assert.equal(orchestrationGateCalls, 1);
+    assert.equal(result.mode, "chat");
+    assert.equal(result.threadId, "thread-chat");
+    assert.isUndefined(result.ticketId);
+    assert.equal(result.createdThread, true);
+  }),
+);
+
+it.effect("simulateSlackMention rejects real Slack identities before intake", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-real-simulate" as ProjectId;
+    const instance = {
+      ...slackInstanceView(projectId),
+      kind: "slack" as const,
+      workspace: { workspaceId: "T123" as never, name: "Work" as never },
+      botUserId: "U123" as never,
+      credentialsConfigured: true,
+    } satisfies SlackAgentInstanceView;
+    let intakeCalls = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        get: () => Effect.succeed(instance),
+      } as never,
+      slackIntake: {
+        acceptMention: () =>
+          Effect.sync(() => {
+            intakeCalls += 1;
+            throw new Error("intake must not run for real Slack simulation");
+          }) as never,
+      },
+      orchestrationGate: (effect) => effect,
+    });
+
+    const error = yield* invokeWorkflowHandler<never>(
+      handlers,
+      WORKFLOW_WS_METHODS.simulateSlackMention,
+      {
+        instanceId: instance.instanceId,
+        thread: {
+          workspaceId: "mock",
+          channelId: "C123",
+          channelName: "engineering",
+          threadTs: "1000.000001",
+        },
+        messages: [
+          {
+            messageId: MockSlackMessageId.make("msg-real-sim"),
+            ts: "1000.000002",
+            authorUserId: "U123",
+            authorLabel: "Chris",
+            text: "@t3_test please help",
+          },
+        ],
+        triggerMessageId: MockSlackMessageId.make("msg-real-sim"),
+        invocation: { mode: "chat" },
+      },
+    ).pipe(Effect.flip);
+
+    assert.equal(intakeCalls, 0);
+    assert.equal(error.message, "Only mock Slack identities can simulate mentions");
+  }),
+);
+
+it.effect("simulateSlackMention authorizes explicit workflow invocation", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-workflow" as ProjectId;
+    const instance = slackInstanceView(projectId);
+    const triggerMessageId = MockSlackMessageId.make("msg-workflow-trigger");
+    let workflowAuthorizations = 0;
+    let workflowGateCalls = 0;
+    let capturedWorkflowCapability: boolean | undefined;
+    let existingRun: SlackAgentRunSummaryView | null = null;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        create: () => Effect.succeed(instance),
+        list: () => Effect.succeed([]),
+        get: () => Effect.succeed(instance),
+        getEnabledByBotUserId: () => Effect.succeed(instance),
+        update: () => Effect.succeed(instance),
+        disable: () => Effect.succeed(instance),
+        enable: () => Effect.succeed(instance),
+        delete: () => Effect.void,
+      } as never,
+      slackIntake: {
+        acceptMention: (input: SlackAgentMentionInput) =>
+          Effect.sync(() => {
+            capturedWorkflowCapability = input.workflowAuthorized;
+            return {
+              run: {
+                runId: "slackrun-workflow" as never,
+                instanceId: instance.instanceId,
+                handle: instance.handle,
+                botUserId: instance.botUserId,
+                mode: "workflow",
+                ticketId: "ticket-workflow" as TicketId,
+                thread: input.thread,
+                state: "running",
+                lastAppliedSequence: -1,
+                createdAt: "2026-08-08T00:00:00.000Z" as never,
+                updatedAt: "2026-08-08T00:00:00.000Z" as never,
+              },
+              duplicate: false,
+              statusMessageId: MockSlackMessageId.make("mock-status-slackrun-workflow"),
+              createdThread: false,
+            };
+          }) as never,
+      } as never,
+      slackRuns: {
+        findBySourceThread: () => Effect.succeed(existingRun),
+      } as never,
+      authorizeWorkflowEffect: (effect) =>
+        Effect.sync(() => {
+          workflowAuthorizations += 1;
+        }).pipe(Effect.andThen(effect)),
+      gate: (effect) =>
+        Effect.sync(() => {
+          workflowGateCalls += 1;
+        }).pipe(Effect.andThen(effect)),
+      orchestrationGate: () =>
+        Effect.fail(new WorkflowRpcError({ message: "orchestration gate must be bypassed" })),
+    });
+
+    const result = yield* invokeWorkflowHandler<{
+      readonly mode: "chat" | "workflow";
+      readonly ticketId?: TicketId;
+      readonly createdThread: boolean;
+    }>(handlers, WORKFLOW_WS_METHODS.simulateSlackMention, {
+      instanceId: instance.instanceId,
+      thread: {
+        workspaceId: "mock",
+        channelId: "C123",
+        channelName: "engineering",
+        threadTs: "1000.000003",
+      },
+      messages: [
+        {
+          messageId: triggerMessageId,
+          ts: "1000.000004",
+          authorUserId: "U123",
+          authorLabel: "Chris",
+          text: "@t3_test run workflow",
+        },
+      ],
+      triggerMessageId,
+      invocation: {
+        mode: "workflow",
+        target: { boardId: "board-workflow", initialLane: "backlog" },
+      },
+    });
+
+    assert.equal(workflowAuthorizations, 1);
+    assert.equal(capturedWorkflowCapability, true);
+    assert.equal(workflowGateCalls, 1);
+    assert.equal(result.mode, "workflow");
+    assert.equal(result.ticketId, "ticket-workflow");
+    assert.equal(result.createdThread, false);
+
+    existingRun = {
+      runId: "slackrun-workflow" as never,
+      instanceId: instance.instanceId,
+      handle: instance.handle,
+      botUserId: instance.botUserId,
+      mode: "workflow",
+      ticketId: "ticket-workflow" as TicketId,
+      thread: {
+        workspaceId: "mock" as never,
+        channelId: "C123" as never,
+        channelName: "engineering",
+        threadTs: "1000.000003",
+      },
+      state: "running",
+      lastAppliedSequence: -1,
+      createdAt: "2026-08-08T00:00:00.000Z" as never,
+      updatedAt: "2026-08-08T00:00:00.000Z" as never,
+    };
+    yield* invokeWorkflowHandler(handlers, WORKFLOW_WS_METHODS.simulateSlackMention, {
+      instanceId: instance.instanceId,
+      thread: {
+        workspaceId: "mock",
+        channelId: "C123",
+        channelName: "engineering",
+        threadTs: "1000.000003",
+      },
+      messages: [
+        {
+          messageId: MockSlackMessageId.make("msg-workflow-follow-up"),
+          ts: "1000.000005",
+          authorUserId: "U123",
+          authorLabel: "Chris",
+          text: "Please adjust the workflow work",
+        },
+      ],
+      triggerMessageId: MockSlackMessageId.make("msg-workflow-follow-up"),
+    });
+    assert.equal(workflowAuthorizations, 2);
+    assert.equal(workflowGateCalls, 2);
+  }),
+);
+
+it.effect("simulateSlackMention normalizes the mock workspace before workflow authorization", () =>
+  Effect.gen(function* () {
+    const projectId = "project-slack-auth" as ProjectId;
+    const instance = slackInstanceView(projectId);
+    const existingRun: SlackAgentRunSummaryView = {
+      runId: "slackrun-workflow-auth" as never,
+      instanceId: instance.instanceId,
+      handle: instance.handle,
+      botUserId: instance.botUserId,
+      mode: "workflow",
+      ticketId: "ticket-workflow-auth" as TicketId,
+      thread: {
+        workspaceId: "mock" as never,
+        channelId: "C-auth" as never,
+        channelName: "engineering",
+        threadTs: "1001.000001",
+      },
+      state: "running",
+      lastAppliedSequence: -1,
+      createdAt: "2026-08-08T00:00:00.000Z" as never,
+      updatedAt: "2026-08-08T00:00:00.000Z" as never,
+    };
+    let intakeCalls = 0;
+    let authorizationCalls = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      slackInstances: {
+        create: () => Effect.succeed(instance),
+        list: () => Effect.succeed([]),
+        get: () => Effect.succeed(instance),
+        getEnabledByBotUserId: () => Effect.succeed(instance),
+        update: () => Effect.succeed(instance),
+        disable: () => Effect.succeed(instance),
+        enable: () => Effect.succeed(instance),
+        delete: () => Effect.void,
+      } as never,
+      slackRuns: {
+        findBySourceThread: (_instanceId: unknown, workspaceId: string) =>
+          Effect.succeed(workspaceId === "mock" ? existingRun : null),
+      } as never,
+      slackIntake: {
+        acceptMention: () =>
+          Effect.sync(() => {
+            intakeCalls += 1;
+            throw new Error("intake must not run without workflow authorization");
+          }) as never,
+      },
+      authorizeWorkflowEffect: () =>
+        Effect.sync(() => {
+          authorizationCalls += 1;
+          return new EnvironmentAuthorizationError({
+            message: "missing workflow scope",
+            requiredScope: "workflow:operate",
+          });
+        }).pipe(Effect.flatMap(Effect.fail)),
+      gate: (effect) => effect,
+      orchestrationGate: (effect) => effect,
+    });
+
+    const exit = yield* Effect.exit(
+      invokeWorkflowHandler(handlers, WORKFLOW_WS_METHODS.simulateSlackMention, {
+        instanceId: instance.instanceId,
+        thread: {
+          workspaceId: "attacker-controlled",
+          channelId: "C-auth",
+          channelName: "engineering",
+          threadTs: "1001.000001",
+        },
+        messages: [
+          {
+            messageId: "msg-auth-followup",
+            ts: "1001.000002",
+            authorUserId: "U-auth",
+            authorLabel: "Chris",
+            text: "steer workflow without scope",
+          },
+        ],
+        triggerMessageId: "msg-auth-followup",
+      }),
+    );
+
+    assert.equal(exit._tag, "Failure");
+    assert.equal(authorizationCalls, 1);
+    assert.equal(intakeCalls, 0);
+  }),
+);
+
+it.effect("subscribeSlackAgentRun streams chat run deliveries without loading a ticket", () =>
+  Effect.gen(function* () {
+    const delivery = {
+      deliveryId: "delivery-chat" as never,
+      runId: "slackrun-chat" as never,
+      workflowSequence: 0,
+      state: "delivered" as const,
+      attempts: 1,
+      createdAt: "2026-08-08T00:00:00.000Z" as never,
+      updatedAt: "2026-08-08T00:00:01.000Z" as never,
+    };
+    const detail = {
+      run: {
+        runId: "slackrun-chat" as never,
+        instanceId: "slackinst-test" as never,
+        handle: "t3_test" as never,
+        botUserId: "mockbot-test" as never,
+        mode: "chat" as const,
+        threadId: "thread-chat" as ThreadId,
+        thread: {
+          workspaceId: "mock" as never,
+          channelId: "C123" as never,
+          channelName: "engineering" as never,
+          threadTs: "1000.000001" as never,
+          threadKey: "mock:C123:1000.000001" as never,
+        },
+        state: "connected" as const,
+        lastAppliedSequence: -1,
+        createdAt: "2026-08-08T00:00:00.000Z" as never,
+        updatedAt: "2026-08-08T00:00:00.000Z" as never,
+      },
+      snapshot: {
+        thread: {
+          workspaceId: "mock" as never,
+          channelId: "C123" as never,
+          channelName: "engineering" as never,
+          threadTs: "1000.000001" as never,
+          threadKey: "mock:C123:1000.000001" as never,
+        },
+        triggerEventId: "event-chat" as never,
+        triggerMessageId: "msg-trigger" as never,
+        triggerTs: "1000.000002" as never,
+        messages: [],
+        canonicalJsonBytes: 2,
+      },
+      deliveries: [delivery],
+    };
+    let ticketLoads = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      readModel: {
+        ...noopReadModel,
+        getTicketDetail: () =>
+          Effect.sync(() => {
+            ticketLoads += 1;
+            return null;
+          }),
+      },
+      slackRuns: {
+        createRunWithAcceptedDelivery: () => Effect.die("unused"),
+        getRun: () => Effect.succeed(detail),
+        getRunSummary: () => Effect.succeed(detail.run),
+        getRunByTicketId: () => Effect.succeed(null),
+        getRunByDeliveryId: () => Effect.succeed(detail.run),
+        findByExternalEvent: () => Effect.succeed(null),
+        findBySourceThread: () => Effect.succeed(null),
+        findRootChatByChannel: () => Effect.succeed(null),
+        findChatByThreadId: () => Effect.succeed(detail.run),
+        relinkChatThread: () => Effect.die("unused"),
+        reserveIngestedEvent: () => Effect.succeed(true),
+        markIngestedEventDelivered: () => Effect.void,
+        seedDeliveredIngestedEvents: () => Effect.void,
+        enqueueDelivery: () => Effect.succeed(delivery),
+        listDeliveries: () => Effect.succeed([delivery]),
+        markDeliverySent: () => Effect.void,
+        markDeliveryFailed: () => Effect.void,
+        markDeliverySuperseded: () => Effect.void,
+        updateRunStatus: () => Effect.void,
+        pruneRunlessMockThreads: () => Effect.succeed(0),
+      },
+      slackDeliveryDispatcher: {
+        retryDelivery: () => Effect.succeed(null),
+        subscribeRunChanges: () => Effect.succeed(Stream.make(delivery)),
+      },
+    });
+    const stream = (
+      handlers as unknown as Record<string, (input: unknown) => Stream.Stream<unknown>>
+    )[WORKFLOW_WS_METHODS.subscribeSlackAgentRun]!({
+      runId: "slackrun-chat",
+    });
+    const events = yield* Stream.runCollect(stream.pipe(Stream.take(2)));
+    const eventArray = [...events];
+
+    assert.equal(ticketLoads, 0);
+    assert.equal(eventArray.length, 2);
+    assert.deepInclude(eventArray, { type: "snapshot", run: detail });
+  }),
+);
+
+it.effect("workflow Slack run reads, streams, and retries require workflow scopes", () =>
+  Effect.gen(function* () {
+    const delivery = {
+      deliveryId: "delivery-workflow-auth" as never,
+      runId: "slackrun-workflow-authz" as never,
+      workflowSequence: 0,
+      state: "failed" as const,
+      attempts: 1,
+      lastError: "temporary",
+      createdAt: "2026-08-08T00:00:00.000Z" as never,
+      updatedAt: "2026-08-08T00:00:01.000Z" as never,
+    };
+    const detail = {
+      run: {
+        runId: "slackrun-workflow-authz" as never,
+        instanceId: "slackinst-authz" as never,
+        handle: "t3_authz" as never,
+        botUserId: "mockbot-authz" as never,
+        mode: "workflow" as const,
+        ticketId: "ticket-workflow-authz" as TicketId,
+        thread: {
+          workspaceId: "mock" as never,
+          channelId: "C-authz" as never,
+          channelName: "engineering" as never,
+          threadTs: "1002.000001" as never,
+        },
+        state: "running" as const,
+        lastAppliedSequence: -1,
+        createdAt: "2026-08-08T00:00:00.000Z" as never,
+        updatedAt: "2026-08-08T00:00:00.000Z" as never,
+      },
+      snapshot: {
+        thread: {
+          workspaceId: "mock" as never,
+          channelId: "C-authz" as never,
+          channelName: "engineering" as never,
+          threadTs: "1002.000001" as never,
+        },
+        triggerEventId: "event-authz" as never,
+        triggerMessageId: "message-authz" as never,
+        triggerTs: "1002.000002" as never,
+        messages: [],
+        canonicalJsonBytes: 2,
+      },
+      deliveries: [delivery],
+    };
+    let workflowReadAuthorizations = 0;
+    let workflowOperateAuthorizations = 0;
+    const handlers = workflowRpcHandlers({
+      ...parkedViewDeps({ ticket: {}, definition: null }),
+      readModel: {
+        ...noopReadModel,
+        getTicketDetail: () => Effect.succeed(null),
+      },
+      slackRuns: {
+        getRun: () => Effect.succeed(detail),
+        getRunByDeliveryId: () => Effect.succeed(detail.run),
+      } as never,
+      slackDeliveryDispatcher: {
+        retryDelivery: () => Effect.succeed(delivery),
+        subscribeRunChanges: () => Effect.succeed(Stream.empty),
+      },
+      authorizeWorkflowReadEffect: (effect) =>
+        Effect.sync(() => {
+          workflowReadAuthorizations += 1;
+        }).pipe(Effect.andThen(effect)),
+      authorizeWorkflowEffect: (effect) =>
+        Effect.sync(() => {
+          workflowOperateAuthorizations += 1;
+        }).pipe(Effect.andThen(effect)),
+      orchestrationGate: (effect) => effect,
+    });
+
+    yield* invokeWorkflowHandler(handlers, WORKFLOW_WS_METHODS.getSlackAgentRun, {
+      runId: detail.run.runId,
+    });
+    const stream = (
+      handlers as unknown as Record<string, (input: unknown) => Stream.Stream<unknown>>
+    )[WORKFLOW_WS_METHODS.subscribeSlackAgentRun]!({ runId: detail.run.runId });
+    yield* Stream.runCollect(stream.pipe(Stream.take(1)));
+    yield* invokeWorkflowHandler(handlers, WORKFLOW_WS_METHODS.retrySlackAgentDelivery, {
+      deliveryId: delivery.deliveryId,
+    });
+
+    assert.equal(workflowReadAuthorizations, 2);
+    assert.equal(workflowOperateAuthorizations, 1);
+  }),
+);
 
 it.effect(
   "workflowRpcHandlers getTicketDetail assembles the parked view with re-resolved actions",

@@ -1,6 +1,6 @@
 // @effect-diagnostics globalTimers:off
 import { assert, it } from "@effect/vitest";
-import type { StepOutcome } from "@t3tools/contracts";
+import { MessageId, type StepOutcome } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -635,6 +635,12 @@ commentLayer("postTicketMessage", (it) => {
 
       yield* engine.postTicketMessage({
         ticketId,
+        messageId: MessageId.make("message-comment-idempotent"),
+        text: "Note to self: check auth flow.",
+      });
+      yield* engine.postTicketMessage({
+        ticketId,
+        messageId: MessageId.make("message-comment-idempotent"),
         text: "Note to self: check auth flow.",
       });
 

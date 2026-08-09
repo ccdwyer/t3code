@@ -2,6 +2,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
+  MessageId,
   ProjectId,
   ThreadId,
   type OrchestrationCommand,
@@ -212,6 +213,47 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
       }
 
       expect(normalizeDeleteEvent(forcedResult)).toEqual(normalizeDeleteEvent(sequentialEvents));
+    }),
+  );
+
+  it.effect("rejects starting a new turn on a deleted thread", () =>
+    Effect.gen(function* () {
+      const readModel = yield* seedReadModel;
+      const deleted = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.delete",
+          commandId: asCommandId("cmd-thread-delete-before-turn"),
+          threadId: asThreadId("thread-delete-1"),
+        },
+        readModel,
+      });
+      const deletedEvent = Array.isArray(deleted) ? deleted[0] : deleted;
+      const withDeletedThread = yield* projectEvent(readModel, {
+        ...deletedEvent!,
+        sequence: readModel.snapshotSequence + 1,
+      });
+
+      const error = yield* Effect.flip(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.turn.start",
+            commandId: asCommandId("cmd-turn-after-delete"),
+            threadId: asThreadId("thread-delete-1"),
+            message: {
+              messageId: MessageId.make("message-after-delete"),
+              role: "user",
+              text: "This must not be appended.",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          },
+          readModel: withDeletedThread,
+        }),
+      );
+
+      expect(error.message).toContain("was deleted");
     }),
   );
 });

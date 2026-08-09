@@ -54,6 +54,11 @@ export interface ProjectionFullThreadDiffContext {
   readonly toCheckpointRef: CheckpointRef | null;
 }
 
+export interface ProjectionThreadLifecycleShell {
+  readonly thread: OrchestrationThreadShell;
+  readonly deletedAt: string | null;
+}
+
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
@@ -162,6 +167,11 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /** Narrow shell lookup that retains archived/deleted lifecycle state for durable links. */
+  readonly getThreadLifecycleShellById?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionThreadLifecycleShell>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread detail snapshot by id.

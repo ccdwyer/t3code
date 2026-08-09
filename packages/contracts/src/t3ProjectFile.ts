@@ -11,6 +11,7 @@ export const T3_PROJECT_FILE_SCHEMA_URL = "https://t3.codes/schema/t3.json";
 
 const T3_PROJECT_FILE_PATH_MAX_LENGTH = 512;
 const T3_PROJECT_FILE_MAX_SCRIPTS = 50;
+const T3_PROJECT_FILE_MAX_WORKTREE_SEED_PATHS = 20;
 
 // Annotations go on the encoded (string) side so they survive into the
 // published JSON Schema; decoding still trims and re-validates non-emptiness.
@@ -58,6 +59,27 @@ export const T3ProjectFileScript = Schema.Struct({
 });
 export type T3ProjectFileScript = typeof T3ProjectFileScript.Type;
 
+const WorktreeSeedPath = trimmedNonEmpty(
+  {
+    description:
+      'Workspace-relative directory or file copied into a new worktree with copy-on-write when the host filesystem supports it (e.g. "node_modules"). Unsupported hosts skip seeding and continue normal setup.',
+  },
+  T3_PROJECT_FILE_PATH_MAX_LENGTH,
+).check(
+  Schema.makeFilter((input) => {
+    if (/^(?:[/\\]|[a-zA-Z]:[/\\])/.test(input)) {
+      return "Worktree seed paths must be relative to the workspace root.";
+    }
+    const segments = input.split(/[/\\]+/);
+    return (
+      (segments.length > 0 &&
+        segments.every((segment) => segment !== "" && segment !== "." && segment !== "..") &&
+        !segments.includes(".git")) ||
+      "Worktree seed paths cannot traverse directories or include .git."
+    );
+  }),
+);
+
 export const T3ProjectFile = Schema.Struct({
   $schema: Schema.optionalKey(
     Schema.String.annotate({
@@ -79,6 +101,14 @@ export const T3ProjectFile = Schema.Struct({
         description: "Project scripts shared with everyone who opens this repository in T3 Code.",
       })
       .check(Schema.isMaxLength(T3_PROJECT_FILE_MAX_SCRIPTS)),
+  ),
+  worktreeSeedPaths: Schema.optionalKey(
+    Schema.Array(WorktreeSeedPath)
+      .annotate({
+        description:
+          "Optional workspace-relative paths to seed into new worktrees with filesystem copy-on-write. macOS uses cp -cR, Linux/WSL uses cp --reflink=always, and unsupported filesystems or Windows skip the seed without falling back to a full copy.",
+      })
+      .check(Schema.isMaxLength(T3_PROJECT_FILE_MAX_WORKTREE_SEED_PATHS)),
   ),
 }).annotate({
   title: "T3 project file",

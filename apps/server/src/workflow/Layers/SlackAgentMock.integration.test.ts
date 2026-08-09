@@ -1,6 +1,8 @@
 // @effect-diagnostics globalTimers:off
 import { assert, it } from "@effect/vitest";
 import {
+  BoardId,
+  LaneKey,
   MockSlackChannelId,
   MockSlackMessageId,
   MockSlackUserId,
@@ -11,10 +13,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { MigrationsLive } from "../../persistence/Migrations.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { SlackChatBridge } from "../../slack/Services/SlackChatBridge.ts";
+import { SlackChatReplyRelay } from "../../slack/Services/SlackChatReplyRelay.ts";
 import { BoardRegistry } from "../Services/BoardRegistry.ts";
 import { SlackAgentDeliveryDispatcher } from "../Services/SlackAgentDeliveryDispatcher.ts";
 import { SlackAgentGateway } from "../Services/SlackAgentGateway.ts";
@@ -66,12 +72,37 @@ const blockingExecutor = Layer.succeed(StepExecutor, {
   continueWithAnswers: () => Effect.die("no continuation in Slack integration tests"),
 } satisfies StepExecutorShape);
 
+const testSecretStore = Layer.succeed(ServerSecretStore.ServerSecretStore, {
+  get: () => Effect.succeed(Option.none()),
+  set: () => Effect.void,
+  create: () => Effect.void,
+  getOrCreateRandom: () => Effect.die("unused"),
+  remove: () => Effect.void,
+} satisfies ServerSecretStore.ServerSecretStore["Service"]);
+
+const unusedChatBridge = Layer.succeed(
+  SlackChatBridge,
+  SlackChatBridge.of({
+    deliverUserMessage: () => Effect.die("chat bridge is unused by workflow-mode integration"),
+  }),
+);
+
+const unusedChatReplyRelay = Layer.succeed(
+  SlackChatReplyRelay,
+  SlackChatReplyRelay.of({
+    notifyChatLinked: () => Effect.void,
+    start: () => Effect.void,
+  }),
+);
+
 const layer = it.layer(
   SlackAgentIntakeLive.pipe(
     Layer.provideMerge(SlackAgentInstanceStoreLive),
     Layer.provideMerge(SlackAgentRunStoreLive),
     Layer.provideMerge(makeSlackAgentDeliveryDispatcherLive()),
     Layer.provideMerge(MockSlackGatewayLive),
+    Layer.provideMerge(unusedChatBridge),
+    Layer.provideMerge(unusedChatReplyRelay),
     Layer.provideMerge(WorkflowEngineLayer),
     Layer.provideMerge(WorkflowEventCommitterLive),
     Layer.provideMerge(WorkflowBoardSaveLocksLive),
@@ -88,6 +119,7 @@ const layer = it.layer(
     ),
     Layer.provideMerge(blockingExecutor),
     Layer.provideMerge(DeterministicWorkflowIds),
+    Layer.provideMerge(testSecretStore),
     Layer.provideMerge(WorkflowFoundationLive),
     Layer.provideMerge(MigrationsLive),
     Layer.provideMerge(SqlitePersistenceMemory),
@@ -126,6 +158,14 @@ const mentionFor = (
       },
     ],
     triggerMessageId: MockSlackMessageId.make(`trigger-${suffix}`),
+    workflowAuthorized: true,
+    invocation: {
+      mode: "workflow",
+      target: {
+        boardId: BoardId.make("slack-integration-board"),
+        initialLane: LaneKey.make("implement"),
+      },
+    },
   }) as const;
 
 const ticketPrOpened = (
@@ -199,24 +239,18 @@ layer("SlackAgentMock integration", (it) => {
             ownerLabel: "Chris",
             handleSuffix: "chris",
             projectId: ProjectId.make("project-slack"),
-            boardId: "slack-integration-board" as never,
-            initialLane: "implement" as never,
           }),
           instances.create({
             workspaceId: "mock",
             ownerLabel: "Theo",
             handleSuffix: "theo",
             projectId: ProjectId.make("project-slack"),
-            boardId: "slack-integration-board" as never,
-            initialLane: "implement" as never,
           }),
           instances.create({
             workspaceId: "mock",
             ownerLabel: "Julius",
             handleSuffix: "julius",
             projectId: ProjectId.make("project-slack"),
-            boardId: "slack-integration-board" as never,
-            initialLane: "implement" as never,
           }),
         ]);
 
@@ -284,7 +318,7 @@ layer("SlackAgentMock integration", (it) => {
           const branch = `workflow/${result.run.ticketId}`;
           yield* committer.commit(
             ticketPrOpened(
-              result.run.ticketId,
+              result.run.ticketId!,
               `event-pr-${index + 1}`,
               101 + index,
               `https://github.com/acme/t3code/pull/${101 + index}`,
@@ -315,7 +349,7 @@ layer("SlackAgentMock integration", (it) => {
         }
 
         const beforeTicketCleanup = accepted[0]!;
-        yield* readModel.deleteTicketState(beforeTicketCleanup.run.ticketId);
+        yield* readModel.deleteTicketState(beforeTicketCleanup.run.ticketId!);
         assert.isNull(yield* runs.getRun(beforeTicketCleanup.run.runId));
         assert.isNull(yield* gateway.subscribeMockThread(beforeTicketCleanup.run.thread));
         assert.equal(yield* countRows("slack_agent_run"), 2);

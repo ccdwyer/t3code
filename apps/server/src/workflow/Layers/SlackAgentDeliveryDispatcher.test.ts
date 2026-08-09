@@ -69,19 +69,24 @@ const encodePayloadJson = Schema.encodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ workflowSequence: Schema.Number })),
 );
 
-const insertRun = (runId: string, statusMessageId: string | null = "msg-1") =>
+const insertRun = (
+  runId: string,
+  statusMessageId: string | null = "msg-1",
+  mode: "chat" | "workflow" = "workflow",
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO slack_agent_run (
         run_id, instance_id, external_event_id, workspace_id, channel_id,
         channel_name, thread_key, thread_ts, trigger_ts, snapshot_json,
-        snapshot_sha256, snapshot_bytes, ticket_id, status, status_message_id,
+        snapshot_sha256, snapshot_bytes, mode, t3_thread_id, ticket_id, status, status_message_id,
         last_applied_sequence, created_at, updated_at
       ) VALUES (
         ${runId}, ${`instance-${runId}`}, ${`event-${runId}`}, 'T123', 'C123',
         'eng', ${`T123:C123:${runId}`}, ${`1000.${runId}`}, ${`1000.${runId}`}, '[]',
-        'sha', 2, ${`ticket-${runId}`}, 'running', ${statusMessageId},
+        'sha', 2, ${mode}, ${mode === "chat" ? `thread-${runId}` : null},
+        ${mode === "workflow" ? `ticket-${runId}` : null}, 'running', ${statusMessageId},
         -1, '2026-06-07T00:00:00.000Z', '2026-06-07T00:00:00.000Z'
       )
     `;
@@ -287,6 +292,57 @@ it.effect("accepted failure leaves later updates unsent behind sequence zero", (
     assert.equal((yield* readDelivery("run-hol-0")).deliveryState, "retrying");
     assert.equal((yield* readDelivery("run-hol-0")).attemptCount, 1);
     assert.equal((yield* readDelivery("run-hol-1")).deliveryState, "pending");
+  }).pipe(Effect.provide(makeLayer(gateway)));
+});
+
+it.effect("supersedes an accepted post when a newer inline status already exists", () => {
+  const gateway: SlackAgentGateway["Service"] = {
+    snapshotThreadThroughTrigger: () => Effect.die("not needed"),
+    subscribeMockThread: () => Effect.die("not needed"),
+    subscribeMockThreadChanges: () => Effect.die("not needed"),
+    postOrUpdateStatus: () => Effect.die("a stale accepted post must not reach the gateway"),
+  };
+
+  return Effect.gen(function* () {
+    yield* createTables;
+    yield* insertRun("run-inline-won", "msg-follow-up", "chat");
+    yield* insertDelivery({ runId: "run-inline-won", sequence: 0 });
+
+    const dispatcher = yield* SlackAgentDeliveryDispatcher;
+    yield* dispatcher.sweep();
+
+    assert.equal((yield* readDelivery("run-inline-won-0")).deliveryState, "superseded");
+    const run = yield* readRun("run-inline-won");
+    assert.equal(run.statusMessageId, "msg-follow-up");
+    assert.equal(run.lastAppliedSequence, -1);
+  }).pipe(Effect.provide(makeLayer(gateway)));
+});
+
+it.effect("chat-only sweeps leave workflow deliveries pending", () => {
+  const calls: Array<string> = [];
+  const gateway: SlackAgentGateway["Service"] = {
+    snapshotThreadThroughTrigger: () => Effect.die("not needed"),
+    subscribeMockThread: () => Effect.die("not needed"),
+    subscribeMockThreadChanges: () => Effect.die("not needed"),
+    postOrUpdateStatus: (input) => {
+      calls.push(input.runId);
+      return Effect.succeed({ threadKey: "thread", statusMessageId: `msg-${input.runId}` });
+    },
+  };
+
+  return Effect.gen(function* () {
+    yield* createTables;
+    yield* insertRun("run-chat-only", null, "chat");
+    yield* insertDelivery({ runId: "run-chat-only", sequence: 0 });
+    yield* insertRun("run-workflow-held", null, "workflow");
+    yield* insertDelivery({ runId: "run-workflow-held", sequence: 0 });
+
+    const dispatcher = yield* SlackAgentDeliveryDispatcher;
+    yield* dispatcher.sweep({ chatOnly: true });
+
+    assert.deepEqual(calls, ["run-chat-only"]);
+    assert.equal((yield* readDelivery("run-chat-only-0")).deliveryState, "delivered");
+    assert.equal((yield* readDelivery("run-workflow-held-0")).deliveryState, "pending");
   }).pipe(Effect.provide(makeLayer(gateway)));
 });
 

@@ -7,6 +7,19 @@ import { ServerConfig } from "../config.ts";
 import { ProjectionThreadActivityRepositoryLive } from "../persistence/Layers/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
+import { SlackChatBridgeLive } from "../slack/Layers/SlackChatBridge.ts";
+import { SlackChatReplyRelayLive } from "../slack/Layers/SlackChatReplyRelay.ts";
+import { SlackChatWorktreeCoordinatorLive } from "../slack/Layers/SlackChatWorktreeCoordinator.ts";
+import { SlackChatWorktreeJanitorLive } from "../slack/Layers/SlackChatWorktreeJanitor.ts";
+import { SlackChatWorktreePromotionLive } from "../slack/Layers/SlackChatWorktreePromotion.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
+import { WorktreeSeedServiceLive } from "../project/WorktreeSeedServiceLive.ts";
+import { SlackApiLayer } from "../slack/Layers/SlackApi.ts";
+import { SlackConnectionManagerLive } from "../slack/Layers/SlackConnectionManager.ts";
+import { SlackEventProcessorLive } from "../slack/Layers/SlackEventProcessor.ts";
+import { RealSlackGatewayLive } from "../slack/Layers/RealSlackGateway.ts";
+import { SlackGatewayRouterLive } from "../slack/Layers/SlackGatewayRouter.ts";
 import { ApprovalGateLive } from "./Layers/ApprovalGate.ts";
 import { BoardDiscoveryLive } from "./Layers/BoardDiscovery.ts";
 import { BoardRegistryLive } from "./Layers/BoardRegistry.ts";
@@ -74,20 +87,19 @@ import {
   TicketWorktreeLocatorLive,
 } from "./Layers/TicketArtifactFinalizer.ts";
 import { TicketArtifactPathsLive, TicketArtifactStoreLive } from "./Layers/TicketArtifactStore.ts";
-import { MockSlackGatewayLive } from "./Layers/MockSlackGateway.ts";
+import { MockSlackGatewayProviderLive } from "./Layers/MockSlackGateway.ts";
 import { makeSlackAgentDeliveryDispatcherLive } from "./Layers/SlackAgentDeliveryDispatcher.ts";
 import { SlackAgentInstanceStoreLive } from "./Layers/SlackAgentInstanceStore.ts";
 import { SlackAgentIntakeLive } from "./Layers/SlackAgentIntake.ts";
 import { SlackAgentRunStoreLive } from "./Layers/SlackAgentRunStore.ts";
 import { WorkflowFoundationLive } from "./WorkflowFoundationLive.ts";
 
-// Shared mock-Slack persistence/gateway layer. Reusing this exact Layer value
-// lets Effect memoize one instance when recovery, discovery, intake, and RPC
-// surfaces all need access to the same stores and gateway.
+// Shared Slack persistence. Reusing this exact Layer value lets Effect memoize
+// one instance when recovery, discovery, intake, and RPC surfaces all need the
+// same stores.
 const SlackAgentInfrastructureLive = Layer.mergeAll(
   SlackAgentInstanceStoreLive,
   SlackAgentRunStoreLive,
-  MockSlackGatewayLive,
 );
 
 // PR steps run through the GitHub port. GitHubPortLive leaks GitHubCli +
@@ -258,12 +270,58 @@ const WorkSourceLive = WorkflowSourceSyncerLive.pipe(
   Layer.provideMerge(WorkSourceConnectionStoreLive),
 );
 
-// Mock-first personal Slack agents. The gateway is deliberately local/SQL-only;
-// no Slack SDK, OAuth token, or network client exists in this layer. Store and
-// gateway outputs remain visible so ws.ts can expose the authenticated RPCs.
+// Per-developer Slack identities. Each real identity owns one Socket Mode
+// connection and local secret-backed credentials; the development mock lab
+// remains available through the same gateway port without being the default.
+const RealSlackGatewayStackLive = RealSlackGatewayLive.pipe(
+  Layer.provideMerge(SlackApiLayer),
+  Layer.provideMerge(SlackAgentInfrastructureLive),
+);
+
+const SlackGatewayLive = SlackGatewayRouterLive.pipe(
+  Layer.provideMerge(MockSlackGatewayProviderLive),
+  Layer.provideMerge(RealSlackGatewayStackLive),
+);
+
+const SlackChatReplyRelayStackLive = SlackChatReplyRelayLive.pipe(
+  Layer.provideMerge(SlackAgentInfrastructureLive),
+  Layer.provideMerge(SlackApiLayer),
+);
+
+const WorktreeSeedServiceStackLive = WorktreeSeedServiceLive.pipe(
+  Layer.provideMerge(T3ProjectFileLoader.layer),
+  Layer.provideMerge(ProcessRunner.layer),
+);
+
+const SlackAgentIntakeStackLive = SlackAgentIntakeLive.pipe(
+  Layer.provideMerge(SlackAgentInfrastructureLive),
+  Layer.provideMerge(SlackGatewayLive),
+  Layer.provideMerge(SlackChatReplyRelayStackLive),
+  Layer.provide(SlackChatBridgeLive),
+);
+
+const SlackEventProcessorStackLive = SlackEventProcessorLive.pipe(
+  Layer.provideMerge(SlackAgentIntakeStackLive),
+);
+
+const SlackConnectionManagerStackLive = SlackConnectionManagerLive.pipe(
+  Layer.provideMerge(SlackEventProcessorStackLive),
+);
+
 const SlackAgentLive = Layer.mergeAll(
-  SlackAgentIntakeLive.pipe(Layer.provideMerge(SlackAgentInfrastructureLive)),
-  makeSlackAgentDeliveryDispatcherLive().pipe(Layer.provideMerge(MockSlackGatewayLive)),
+  SlackConnectionManagerStackLive,
+  SlackChatReplyRelayStackLive,
+  SlackChatWorktreeJanitorLive.pipe(
+    Layer.provideMerge(SlackAgentInfrastructureLive),
+    Layer.provideMerge(SlackChatWorktreeCoordinatorLive),
+  ),
+  SlackChatWorktreePromotionLive.pipe(
+    Layer.provideMerge(SlackAgentInfrastructureLive),
+    Layer.provideMerge(SlackGatewayLive),
+    Layer.provideMerge(WorktreeSeedServiceStackLive),
+    Layer.provideMerge(SlackChatWorktreeCoordinatorLive),
+  ),
+  makeSlackAgentDeliveryDispatcherLive().pipe(Layer.provideMerge(SlackGatewayLive)),
 );
 
 // Outbound-webhook stack. The dispatcher drains durable

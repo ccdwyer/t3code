@@ -8,6 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import {
+  MockSlackGateway,
   SlackAgentGateway,
   SlackAgentGatewayError,
   type MockSlackStatusReply,
@@ -242,17 +243,19 @@ const make = Effect.gen(function* () {
           const statusReplies =
             existing === null ? {} : parseStatusReplies(existing.statusRepliesJson);
           const existingForRun = Object.values(statusReplies).find(
-            (reply) => reply.runId === input.runId,
+            (reply) => reply.runId === input.runId && reply.standalone !== true,
           );
-          const statusMessageId =
-            input.statusMessageId ??
-            existingForRun?.statusMessageId ??
-            statusMessageIdFor(input.runId);
+          const statusMessageId = input.forceNewMessage
+            ? `${statusMessageIdFor(input.runId)}-${input.deliveryId}`
+            : (input.statusMessageId ??
+              existingForRun?.statusMessageId ??
+              statusMessageIdFor(input.runId));
           const current = statusReplies[statusMessageId] ?? {
             statusMessageId,
             runId: input.runId,
             text: "",
             updatedAt: at,
+            standalone: input.forceNewMessage || undefined,
             history: [],
           };
           if (current.history.some((entry) => entry.deliveryId === input.deliveryId)) {
@@ -267,6 +270,7 @@ const make = Effect.gen(function* () {
             runId: current.runId,
             text: input.text,
             updatedAt: at,
+            standalone: current.standalone,
             history: [
               ...current.history,
               {
@@ -333,4 +337,9 @@ const make = Effect.gen(function* () {
   } satisfies SlackAgentGatewayShape;
 });
 
-export const MockSlackGatewayLive = Layer.effect(SlackAgentGateway, make);
+export const MockSlackGatewayProviderLive = Layer.effect(MockSlackGateway, make);
+
+export const MockSlackGatewayLive = Layer.effect(
+  SlackAgentGateway,
+  MockSlackGateway.pipe(Effect.map((gateway) => SlackAgentGateway.of(gateway))),
+).pipe(Layer.provide(MockSlackGatewayProviderLive));

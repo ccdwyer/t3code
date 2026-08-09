@@ -58,22 +58,28 @@ describe("isTemporaryWorktreeBranch", () => {
     expect(
       isTemporaryWorktreeBranch(
         buildTemporaryWorktreeBranchName((byteLength) => {
-          expect(byteLength).toBe(4);
-          return "DEADBEEF";
+          expect(byteLength).toBe(8);
+          return "DEADBEEFCAFEBABE";
         }),
       ),
     ).toBe(true);
   });
 
   it("matches generated temporary worktree refs", () => {
+    expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/deadbeefcafebabe`)).toBe(true);
+    expect(isTemporaryWorktreeBranch(` ${WORKTREE_BRANCH_PREFIX}/deadbeefcafebabe `)).toBe(true);
+    expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/DEADBEEFCAFEBABE`)).toBe(true);
+  });
+
+  it("matches legacy 8-hex temporary worktree refs", () => {
     expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/deadbeef`)).toBe(true);
     expect(isTemporaryWorktreeBranch(` ${WORKTREE_BRANCH_PREFIX}/deadbeef `)).toBe(true);
     expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/DEADBEEF`)).toBe(true);
   });
 
-  it("normalizes a UUID-shaped random callback to the canonical 8-hex form", () => {
+  it("normalizes a UUID-shaped random callback to the canonical 16-hex form", () => {
     expect(buildTemporaryWorktreeBranchName(() => "f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12")).toBe(
-      `${WORKTREE_BRANCH_PREFIX}/f4ae4e0e`,
+      `${WORKTREE_BRANCH_PREFIX}/f4ae4e0ef9714d48`,
     );
   });
 

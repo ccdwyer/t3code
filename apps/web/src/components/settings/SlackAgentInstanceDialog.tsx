@@ -1,6 +1,15 @@
-import type { BoardListEntry, WorkflowDefinitionEncoded } from "@t3tools/contracts";
-import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import type { ModelSelection, ServerProvider, WorkflowDefinitionEncoded } from "@t3tools/contracts";
+import type { UnifiedSettings } from "@t3tools/contracts/settings";
+import { createModelSelection } from "@t3tools/shared/model";
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+  PlusIcon,
+} from "lucide-react";
+import { useMemo, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -15,8 +24,17 @@ import {
   DialogTrigger,
 } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
-import { Spinner } from "~/components/ui/spinner";
+import { Textarea } from "~/components/ui/textarea";
 import type { SlackAgentWorkflowApi } from "~/workflow/useWorkflowApi";
+import { ProviderModelPicker } from "~/components/chat/ProviderModelPicker";
+import { TraitsPicker } from "~/components/chat/TraitsPicker";
+import { getCustomModelOptionsByInstance, resolveAppModelSelectionState } from "~/modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+  sortProviderInstanceEntries,
+} from "~/providerInstances";
+import { buildSlackAppManifest } from "./slackAppManifest";
 
 export interface SlackAgentWizardProject {
   readonly id: string;
@@ -33,13 +51,31 @@ export interface SlackAgentWizardBoard {
 export interface SlackAgentWizardDraft {
   readonly ownerLabel: string;
   readonly handleSuffix: string;
-  readonly projectId: string;
-  readonly boardId: string;
-  readonly initialLane: string;
+  readonly appConfigured: boolean;
+  readonly appToken: string;
+  readonly botToken: string;
+  readonly projectIds: ReadonlyArray<string>;
+  readonly defaultProjectId: string;
+  readonly defaultModelSelection?: ModelSelection | null;
   readonly acknowledged: boolean;
 }
 
-export type SlackAgentWizardStep = "identity" | "project" | "target" | "review";
+export interface SlackAgentDefaultModelPickerConfig {
+  readonly settings: UnifiedSettings;
+  readonly serverProviders: ReadonlyArray<ServerProvider>;
+}
+
+export interface SlackAgentProjectLink {
+  readonly projectId: string;
+  readonly selector: string;
+}
+
+export interface SlackAgentMultiProjectTarget {
+  readonly projectId: string;
+  readonly projects?: ReadonlyArray<SlackAgentProjectLink>;
+}
+
+export type SlackAgentWizardStep = "identity" | "slack-app" | "tokens" | "project" | "review";
 
 export interface SlackAgentInitialLaneTarget {
   readonly laneKey: string;
@@ -53,8 +89,9 @@ const WIZARD_STEPS: ReadonlyArray<{
   readonly label: string;
 }> = [
   { key: "identity", label: "Identity" },
-  { key: "project", label: "Project" },
-  { key: "target", label: "Workflow target" },
+  { key: "slack-app", label: "Slack App" },
+  { key: "tokens", label: "Tokens" },
+  { key: "project", label: "Projects" },
   { key: "review", label: "Review" },
 ];
 
@@ -68,6 +105,83 @@ export function normalizeSlackHandleSuffix(value: string): string {
     .toLowerCase()
     .replace(/^@?t3_/, "")
     .replace(/[^a-z0-9_]/g, "");
+}
+
+export function normalizeSlackProjectSelector(value: string): string {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64)
+      .replace(/-+$/g, "") || "project"
+  );
+}
+
+export function buildSlackProjectLinks(input: {
+  readonly projectIds: ReadonlyArray<string>;
+  readonly projects: ReadonlyArray<SlackAgentWizardProject>;
+}): ReadonlyArray<SlackAgentProjectLink> {
+  const projectById = new Map(input.projects.map((project) => [project.id, project]));
+  const nextOrdinalByBase = new Map<string, number>();
+  const usedSelectors = new Set<string>();
+  return input.projectIds.map((projectId) => {
+    const project = projectById.get(projectId);
+    const baseSelector = normalizeSlackProjectSelector(project?.title ?? projectId);
+    let ordinal = nextOrdinalByBase.get(baseSelector) ?? 1;
+    while (true) {
+      const suffix = ordinal === 1 ? "" : `-${ordinal}`;
+      const selector = `${baseSelector.slice(0, 64 - suffix.length)}${suffix}`;
+      ordinal += 1;
+      if (usedSelectors.has(selector)) continue;
+      nextOrdinalByBase.set(baseSelector, ordinal);
+      usedSelectors.add(selector);
+      return { projectId, selector };
+    }
+  });
+}
+
+export function ensureSlackDefaultProjectId(
+  selectedProjectIds: ReadonlyArray<string>,
+  defaultProjectId: string,
+): string {
+  if (selectedProjectIds.includes(defaultProjectId)) return defaultProjectId;
+  return selectedProjectIds[0] ?? "";
+}
+
+export function normalizeSlackAgentTarget(target: {
+  readonly projectId: string;
+  readonly projects?:
+    | ReadonlyArray<{
+        readonly projectId: string;
+        readonly selector?: string | undefined;
+      }>
+    | undefined;
+}): {
+  readonly defaultProjectId: string;
+  readonly projects: ReadonlyArray<SlackAgentProjectLink>;
+} {
+  const normalizedProjects =
+    target.projects?.map((project) => ({
+      projectId: String(project.projectId),
+      selector: normalizeSlackProjectSelector(project.selector ?? String(project.projectId)),
+    })) ?? [];
+  const projects =
+    normalizedProjects.length === 0
+      ? [
+          {
+            projectId: String(target.projectId),
+            selector: String(target.projectId),
+          },
+        ]
+      : normalizedProjects;
+  return {
+    defaultProjectId: projects.some((project) => project.projectId === target.projectId)
+      ? String(target.projectId)
+      : (projects[0]?.projectId ?? String(target.projectId)),
+    projects,
+  };
 }
 
 function traceSlackAgentLaneTarget(
@@ -142,8 +256,9 @@ export function getAvailableSlackAgentBoards(
 export function getSlackAgentWizardStepState(draft: SlackAgentWizardDraft): {
   readonly activeStep: SlackAgentWizardStep;
   readonly identityComplete: boolean;
+  readonly slackAppComplete: boolean;
+  readonly tokensComplete: boolean;
   readonly projectComplete: boolean;
-  readonly targetComplete: boolean;
   readonly reviewComplete: boolean;
 } {
   const suffix = normalizeSlackHandleSuffix(draft.handleSuffix);
@@ -153,44 +268,199 @@ export function getSlackAgentWizardStepState(draft: SlackAgentWizardDraft): {
     suffix.length > 0 &&
     handle.length >= 3 &&
     handle.length <= 32;
-  const projectComplete = identityComplete && draft.projectId.trim().length > 0;
-  const targetComplete =
-    projectComplete && draft.boardId.trim().length > 0 && draft.initialLane.trim().length > 0;
-  const reviewComplete = targetComplete && draft.acknowledged;
+  const slackAppComplete = identityComplete && draft.appConfigured;
+  const tokensComplete =
+    slackAppComplete &&
+    draft.appToken.trim().startsWith("xapp-") &&
+    draft.botToken.trim().startsWith("xoxb-");
+  const defaultProjectId = ensureSlackDefaultProjectId(draft.projectIds, draft.defaultProjectId);
+  const projectComplete = tokensComplete && draft.projectIds.length > 0 && defaultProjectId !== "";
+  const reviewComplete = projectComplete && draft.acknowledged;
 
   return {
     activeStep: !identityComplete
       ? "identity"
-      : !projectComplete
-        ? "project"
-        : !targetComplete
-          ? "target"
-          : "review",
+      : !slackAppComplete
+        ? "slack-app"
+        : !tokensComplete
+          ? "tokens"
+          : !projectComplete
+            ? "project"
+            : "review",
     identityComplete,
+    slackAppComplete,
+    tokensComplete,
     projectComplete,
-    targetComplete,
     reviewComplete,
   };
 }
 
 export function buildSlackAgentCreateInput(draft: SlackAgentWizardDraft) {
+  const defaultProjectId = ensureSlackDefaultProjectId(draft.projectIds, draft.defaultProjectId);
   return {
     ownerLabel: draft.ownerLabel.trim(),
     handleSuffix: normalizeSlackHandleSuffix(draft.handleSuffix),
+    appToken: draft.appToken.trim(),
+    botToken: draft.botToken.trim(),
     target: {
-      projectId: draft.projectId.trim(),
-      boardId: draft.boardId.trim(),
-      initialLane: draft.initialLane.trim(),
+      projectId: defaultProjectId,
+      projects: buildSlackProjectLinks({
+        projectIds: draft.projectIds,
+        projects: [],
+      }),
     },
+    defaultModelSelection: draft.defaultModelSelection ?? null,
     acknowledged: true,
   };
 }
 
-function coerceBoard(entry: BoardListEntry): SlackAgentWizardBoard {
+export function formatSlackAgentDefaultModelSelection(input: {
+  readonly selection: ModelSelection | null | undefined;
+  readonly modelPickerConfig?: SlackAgentDefaultModelPickerConfig | undefined;
+}): string {
+  if (input.selection == null) return "Project default";
+  const entries = input.modelPickerConfig
+    ? sortProviderInstanceEntries(
+        applyProviderInstanceSettings(
+          deriveProviderInstanceEntries(input.modelPickerConfig.serverProviders),
+          input.modelPickerConfig.settings,
+        ),
+      )
+    : [];
+  const entry = entries.find((candidate) => candidate.instanceId === input.selection?.instanceId);
+  const model = entry?.models.find((candidate) => candidate.slug === input.selection?.model);
+  const instanceLabel = entry?.displayName ?? String(input.selection.instanceId);
+  const modelLabel = model?.shortName ?? model?.name ?? input.selection.model;
+  return `${instanceLabel} · ${modelLabel}`;
+}
+
+export function SlackAgentDefaultModelControl({
+  value,
+  modelPickerConfig,
+  disabled = false,
+  onChange,
+}: {
+  readonly value: ModelSelection | null;
+  readonly modelPickerConfig?: SlackAgentDefaultModelPickerConfig | undefined;
+  readonly disabled?: boolean;
+  readonly onChange: (selection: ModelSelection | null) => void;
+}) {
+  if (modelPickerConfig === undefined) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Default chat model: {formatSlackAgentDefaultModelSelection({ selection: value })}
+      </p>
+    );
+  }
+
+  const fallbackSelection = resolveAppModelSelectionState(
+    modelPickerConfig.settings,
+    modelPickerConfig.serverProviders,
+  );
+  const activeSelection = value ?? fallbackSelection;
+  const instanceEntries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(modelPickerConfig.serverProviders),
+      modelPickerConfig.settings,
+    ),
+  );
+  const activeEntry = instanceEntries.find(
+    (entry) => entry.instanceId === activeSelection.instanceId,
+  );
+  const modelOptionsByInstance = getCustomModelOptionsByInstance(
+    modelPickerConfig.settings,
+    modelPickerConfig.serverProviders,
+    activeSelection.instanceId,
+    activeSelection.model,
+  );
+  const useSpecificModel = value !== null;
+
+  return (
+    <div className="space-y-2 rounded-md border border-border px-3 py-2">
+      <label className="flex items-start gap-2 text-sm text-foreground">
+        <input
+          className="mt-1"
+          type="checkbox"
+          checked={useSpecificModel}
+          disabled={disabled}
+          onChange={(event) => {
+            onChange(
+              event.currentTarget.checked
+                ? createModelSelection(
+                    fallbackSelection.instanceId,
+                    fallbackSelection.model,
+                    fallbackSelection.options,
+                  )
+                : null,
+            );
+          }}
+        />
+        <span>
+          <span className="block font-medium">
+            Use a specific chat model for this Slack identity
+          </span>
+          <span className="block text-xs text-muted-foreground">
+            Off uses each selected project&apos;s default model.
+          </span>
+        </span>
+      </label>
+      {useSpecificModel ? (
+        <div className="flex flex-wrap items-center gap-2 pl-6">
+          <ProviderModelPicker
+            activeInstanceId={activeSelection.instanceId}
+            model={activeSelection.model}
+            lockedProvider={null}
+            instanceEntries={instanceEntries}
+            modelOptionsByInstance={modelOptionsByInstance}
+            disabled={disabled}
+            compact
+            triggerVariant="outline"
+            triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+            triggerAriaLabel="Slack identity default chat model"
+            onInstanceModelChange={(instanceId, model) => {
+              onChange(createModelSelection(instanceId, model));
+            }}
+          />
+          {activeEntry !== undefined ? (
+            <TraitsPicker
+              provider={activeEntry.driverKind}
+              instanceId={activeEntry.instanceId}
+              models={activeEntry.models}
+              model={activeSelection.model}
+              prompt=""
+              onPromptChange={() => undefined}
+              modelOptions={activeSelection.options}
+              allowPromptInjectedEffort={false}
+              triggerVariant="outline"
+              triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+              disabled={disabled}
+              onModelOptionsChange={(options) => {
+                onChange(
+                  createModelSelection(activeSelection.instanceId, activeSelection.model, options),
+                );
+              }}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function buildSlackAgentCreateInputForProjects(
+  draft: SlackAgentWizardDraft,
+  projects: ReadonlyArray<SlackAgentWizardProject>,
+) {
+  const defaultProjectId = ensureSlackDefaultProjectId(draft.projectIds, draft.defaultProjectId);
   return {
-    boardId: String(entry.boardId),
-    name: entry.name,
-    error: entry.error,
+    ...buildSlackAgentCreateInput(draft),
+    target: {
+      projectId: defaultProjectId,
+      projects: buildSlackProjectLinks({
+        projectIds: draft.projectIds,
+        projects,
+      }),
+    },
   };
 }
 
@@ -198,7 +468,10 @@ function stepIndex(step: SlackAgentWizardStep): number {
   return WIZARD_STEPS.findIndex((candidate) => candidate.key === step);
 }
 
-function firstProjectTitle(projects: ReadonlyArray<SlackAgentWizardProject>, projectId: string) {
+export function firstProjectTitle(
+  projects: ReadonlyArray<SlackAgentWizardProject>,
+  projectId: string,
+) {
   return projects.find((project) => project.id === projectId)?.title ?? projectId;
 }
 
@@ -213,12 +486,13 @@ function StepHeader({
 }) {
   const maxReachable = stepIndex(state.activeStep);
   return (
-    <ol className="grid gap-2 sm:grid-cols-4">
+    <ol className="grid gap-2 sm:grid-cols-5">
       {WIZARD_STEPS.map((step, index) => {
         const complete =
           (step.key === "identity" && state.identityComplete) ||
+          (step.key === "slack-app" && state.slackAppComplete) ||
+          (step.key === "tokens" && state.tokensComplete) ||
           (step.key === "project" && state.projectComplete) ||
-          (step.key === "target" && state.targetComplete) ||
           (step.key === "review" && state.reviewComplete);
         const reachable = index <= maxReachable;
         return (
@@ -248,32 +522,26 @@ function StepHeader({
 export function SlackAgentInstanceDialog({
   api,
   projects = EMPTY_PROJECTS,
+  modelPickerConfig,
   onCreated,
 }: {
-  readonly api: Pick<
-    SlackAgentWorkflowApi,
-    "createSlackAgentInstance" | "listBoards" | "getBoardDefinition"
-  >;
+  readonly api: Pick<SlackAgentWorkflowApi, "createSlackAgentInstance">;
   readonly projects?: ReadonlyArray<SlackAgentWizardProject>;
+  readonly modelPickerConfig?: SlackAgentDefaultModelPickerConfig | undefined;
   readonly onCreated: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState<SlackAgentWizardStep>("identity");
   const [ownerLabel, setOwnerLabel] = useState("");
   const [handleSuffix, setHandleSuffix] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [boardId, setBoardId] = useState("");
-  const [initialLane, setInitialLane] = useState("");
+  const [appConfigured, setAppConfigured] = useState(false);
+  const [appToken, setAppToken] = useState("");
+  const [botToken, setBotToken] = useState("");
+  const [projectIds, setProjectIds] = useState<ReadonlyArray<string>>([]);
+  const [defaultProjectId, setDefaultProjectId] = useState("");
+  const [defaultModelSelection, setDefaultModelSelection] = useState<ModelSelection | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
-  const [boardsByProject, setBoardsByProject] = useState<
-    ReadonlyMap<string, ReadonlyArray<SlackAgentWizardBoard>>
-  >(new Map());
-  const [boardDefinitions, setBoardDefinitions] = useState<
-    ReadonlyMap<string, WorkflowDefinitionEncoded>
-  >(new Map());
-  const [boardsLoading, setBoardsLoading] = useState(false);
-  const [definitionLoading, setDefinitionLoading] = useState(false);
-  const [targetLoadError, setTargetLoadError] = useState<string | null>(null);
+  const [manifestCopied, setManifestCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -281,123 +549,62 @@ export function SlackAgentInstanceDialog({
     () => ({
       ownerLabel,
       handleSuffix,
-      projectId,
-      boardId,
-      initialLane,
+      appConfigured,
+      appToken,
+      botToken,
+      projectIds,
+      defaultProjectId,
+      defaultModelSelection,
       acknowledged,
     }),
-    [acknowledged, boardId, handleSuffix, initialLane, ownerLabel, projectId],
+    [
+      acknowledged,
+      appConfigured,
+      appToken,
+      botToken,
+      defaultModelSelection,
+      defaultProjectId,
+      handleSuffix,
+      ownerLabel,
+      projectIds,
+    ],
   );
   const stepState = useMemo(() => getSlackAgentWizardStepState(draft), [draft]);
   const normalizedSuffix = useMemo(() => normalizeSlackHandleSuffix(handleSuffix), [handleSuffix]);
   const handle = `t3_${normalizedSuffix}`;
-  const availableBoards = useMemo(
-    () => getAvailableSlackAgentBoards(projectId, boardsByProject),
-    [boardsByProject, projectId],
+  const manifest = useMemo(
+    () => buildSlackAppManifest({ handle, ownerLabel }),
+    [handle, ownerLabel],
   );
-  const selectedBoardDefinition = boardId.trim().length > 0 ? boardDefinitions.get(boardId) : null;
-  const laneTargets = useMemo(
-    () => getSlackAgentInitialLaneTargets(selectedBoardDefinition ?? null),
-    [selectedBoardDefinition],
+  const defaultLinkedProjectId = ensureSlackDefaultProjectId(projectIds, defaultProjectId);
+  const linkedProjectAliases = useMemo(
+    () => buildSlackProjectLinks({ projectIds, projects }),
+    [projectIds, projects],
   );
-  const selectedLaneTarget = laneTargets.find((target) => target.laneKey === initialLane) ?? null;
-  const selectedBoardName =
-    availableBoards.find((board) => board.boardId === boardId)?.name ?? boardId;
-
-  useEffect(() => {
-    if (!open || projectId.trim().length === 0 || boardsByProject.has(projectId)) return;
-    let active = true;
-    setBoardsLoading(true);
-    setTargetLoadError(null);
-    void api
-      .listBoards({ projectId } as Parameters<typeof api.listBoards>[0])
-      .then((entries) => {
-        if (!active) return;
-        setBoardsByProject((current) => {
-          const next = new Map(current);
-          next.set(projectId, entries.map(coerceBoard));
-          return next;
-        });
-      })
-      .catch((caught: unknown) => {
-        if (active) {
-          setTargetLoadError(caught instanceof Error ? caught.message : "Could not load boards.");
-        }
-      })
-      .finally(() => {
-        if (active) setBoardsLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, boardsByProject, open, projectId]);
-
-  useEffect(() => {
-    if (!open || boardId.trim().length === 0 || boardDefinitions.has(boardId)) return;
-    let active = true;
-    setDefinitionLoading(true);
-    setTargetLoadError(null);
-    void api
-      .getBoardDefinition({ boardId } as Parameters<typeof api.getBoardDefinition>[0])
-      .then((result) => {
-        if (!active) return;
-        setBoardDefinitions((current) => {
-          const next = new Map(current);
-          next.set(boardId, result.definition);
-          return next;
-        });
-      })
-      .catch((caught: unknown) => {
-        if (active) {
-          setTargetLoadError(
-            caught instanceof Error ? caught.message : "Could not load board definition.",
-          );
-        }
-      })
-      .finally(() => {
-        if (active) setDefinitionLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, boardDefinitions, boardId, open]);
-
-  useEffect(() => {
-    if (boardId.trim().length === 0) return;
-    if (laneTargets.length === 0) {
-      if (initialLane.length > 0) setInitialLane("");
-      return;
-    }
-    if (!laneTargets.some((target) => target.laneKey === initialLane)) {
-      setInitialLane(laneTargets[0]?.laneKey ?? "");
-    }
-  }, [boardId, initialLane, laneTargets]);
 
   const reset = () => {
     setCurrentStep("identity");
     setOwnerLabel("");
     setHandleSuffix("");
-    setProjectId("");
-    setBoardId("");
-    setInitialLane("");
+    setAppConfigured(false);
+    setAppToken("");
+    setBotToken("");
+    setProjectIds([]);
+    setDefaultProjectId("");
+    setDefaultModelSelection(null);
     setAcknowledged(false);
-    setBoardsByProject(new Map());
-    setBoardDefinitions(new Map());
-    setTargetLoadError(null);
+    setManifestCopied(false);
     setSubmitError(null);
   };
 
-  const chooseProject = (nextProjectId: string) => {
-    setProjectId(nextProjectId);
-    setBoardId("");
-    setInitialLane("");
-    setTargetLoadError(null);
-  };
-
-  const chooseBoard = (nextBoardId: string) => {
-    setBoardId(nextBoardId);
-    setInitialLane("");
-    setTargetLoadError(null);
+  const toggleProject = (nextProjectId: string) => {
+    setProjectIds((current) => {
+      const next = current.includes(nextProjectId)
+        ? current.filter((projectId) => projectId !== nextProjectId)
+        : [...current, nextProjectId];
+      setDefaultProjectId((currentDefault) => ensureSlackDefaultProjectId(next, currentDefault));
+      return next;
+    });
   };
 
   const goNext = () => {
@@ -414,17 +621,27 @@ export function SlackAgentInstanceDialog({
 
   const canGoNext =
     (currentStep === "identity" && stepState.identityComplete) ||
-    (currentStep === "project" && stepState.projectComplete) ||
-    (currentStep === "target" && stepState.targetComplete);
+    (currentStep === "slack-app" && stepState.slackAppComplete) ||
+    (currentStep === "tokens" && stepState.tokensComplete) ||
+    (currentStep === "project" && stepState.projectComplete);
+
+  const copyManifest = () => {
+    void navigator.clipboard?.writeText(manifest).then(() => {
+      setManifestCopied(true);
+    });
+  };
 
   const submit = async () => {
     if (!stepState.reviewComplete) return;
+    const input = buildSlackAgentCreateInputForProjects(draft, projects) as Parameters<
+      typeof api.createSlackAgentInstance
+    >[0];
+    setAppToken("");
+    setBotToken("");
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await api.createSlackAgentInstance(
-        buildSlackAgentCreateInput(draft) as Parameters<typeof api.createSlackAgentInstance>[0],
-      );
+      await api.createSlackAgentInstance(input);
       reset();
       setOpen(false);
       onCreated();
@@ -447,16 +664,16 @@ export function SlackAgentInstanceDialog({
         render={
           <Button size="xs">
             <PlusIcon className="size-3.5" />
-            Add mock bot
+            Add identity
           </Button>
         }
       />
       <DialogPopup className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add Slack agent mock</DialogTitle>
+          <DialogTitle>Add Slack app identity</DialogTitle>
           <DialogDescription>
-            Create a local mock bot identity. This does not connect to slack.com or store Slack
-            credentials.
+            Configure a per-developer Slack app identity such as @t3_chris, validate its local
+            Socket Mode tokens, and link it to one or more T3 projects.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-5">
@@ -488,8 +705,102 @@ export function SlackAgentInstanceDialog({
             </div>
           ) : null}
 
+          {currentStep === "slack-app" ? (
+            <div className="space-y-4">
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  Create a Slack app from this manifest, then install it to the workspace where the
+                  bot should receive mentions and thread replies.
+                </p>
+                <a
+                  className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+                  href="https://api.slack.com/apps?new_app=1"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open Slack app creation
+                  <ExternalLinkIcon className="size-3.5" />
+                </a>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-foreground">Slack app manifest</span>
+                  <Button type="button" size="xs" variant="outline" onClick={copyManifest}>
+                    <CopyIcon className="size-3.5" />
+                    {manifestCopied ? "Copied" : "Copy manifest"}
+                  </Button>
+                </div>
+                <Textarea
+                  readOnly
+                  rows={14}
+                  value={manifest}
+                  className="font-mono text-xs leading-relaxed"
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+              </div>
+              <label className="flex gap-2 rounded-md border border-border px-3 py-2 text-xs text-foreground">
+                <input
+                  className="mt-0.5"
+                  type="checkbox"
+                  checked={appConfigured}
+                  onChange={(event) => setAppConfigured(event.currentTarget.checked)}
+                />
+                <span>
+                  I created the Slack app from this manifest and installed it to the target
+                  workspace.
+                </span>
+              </label>
+            </div>
+          ) : null}
+
+          {currentStep === "tokens" ? (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                In Slack, create an app-level token under Basic Information with the{" "}
+                <code className="rounded bg-muted px-1 py-0.5">connections:write</code> scope, then
+                copy its <code className="rounded bg-muted px-1 py-0.5">xapp-</code> value here.
+                Copy the <code className="rounded bg-muted px-1 py-0.5">xoxb-</code> Bot User OAuth
+                Token from OAuth &amp; Permissions after installing the app.
+              </p>
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-foreground">
+                  App-level token
+                </span>
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={appToken}
+                  placeholder="xapp-..."
+                  onChange={(event) => setAppToken(event.currentTarget.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-foreground">
+                  Bot User OAuth Token
+                </span>
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={botToken}
+                  placeholder="xoxb-..."
+                  onChange={(event) => setBotToken(event.currentTarget.value)}
+                />
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Tokens are submitted to the connected T3 environment for local validation and are
+                cleared from this form immediately after submit.
+              </p>
+            </div>
+          ) : null}
+
           {currentStep === "project" ? (
             <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Map @{handle} to any registered T3 project. The first Slack mention creates a normal
+                visible T3 Chat thread in the default project; later messages in the linked Slack
+                thread are forwarded as new turns. Use project selectors in Slack to target another
+                linked project.
+              </p>
               {projects.length === 0 ? (
                 <p className="rounded-md border border-border px-3 py-3 text-sm text-muted-foreground">
                   No registered projects were found in the connected environment.
@@ -497,90 +808,62 @@ export function SlackAgentInstanceDialog({
               ) : (
                 <div className="grid gap-2">
                   {projects.map((project) => (
-                    <button
+                    <label
                       key={project.id}
                       className={`rounded-md border px-3 py-2 text-left ${
-                        projectId === project.id
+                        projectIds.includes(project.id)
                           ? "border-primary bg-primary/5"
                           : "border-border hover:bg-muted/50"
                       }`}
-                      type="button"
-                      onClick={() => chooseProject(project.id)}
                     >
-                      <span className="block text-sm font-medium text-foreground">
-                        {project.title}
+                      <span className="flex items-start gap-2">
+                        <input
+                          className="mt-1"
+                          type="checkbox"
+                          checked={projectIds.includes(project.id)}
+                          onChange={() => toggleProject(project.id)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium text-foreground">
+                            {project.title}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {project.workspaceRoot ?? project.id}
+                          </span>
+                        </span>
+                        <input
+                          className="mt-1"
+                          type="radio"
+                          name="slack-default-project"
+                          aria-label={`Use ${project.title} as default`}
+                          checked={defaultLinkedProjectId === project.id}
+                          disabled={!projectIds.includes(project.id)}
+                          onChange={() => setDefaultProjectId(project.id)}
+                        />
                       </span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {project.workspaceRoot ?? project.id}
-                      </span>
-                    </button>
+                    </label>
                   ))}
                 </div>
               )}
-            </div>
-          ) : null}
-
-          {currentStep === "target" ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block">
-                  <span className="mb-1.5 block text-xs font-medium text-foreground">
-                    Workflow board
-                  </span>
-                  <select
-                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-                    value={boardId}
-                    disabled={boardsLoading || availableBoards.length === 0}
-                    onChange={(event) => chooseBoard(event.currentTarget.value)}
-                  >
-                    <option value="">Choose board</option>
-                    {availableBoards.map((board) => (
-                      <option key={board.boardId} value={board.boardId}>
-                        {board.name}
-                      </option>
+              {linkedProjectAliases.length > 0 ? (
+                <div className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground">
+                  <p className="font-medium text-foreground">Linked project selectors</p>
+                  <ul className="mt-1 space-y-1">
+                    {linkedProjectAliases.map((project) => (
+                      <li key={project.projectId}>
+                        {project.projectId === defaultLinkedProjectId ? "Default: " : null}
+                        {firstProjectTitle(projects, project.projectId)} · project:
+                        {project.selector}
+                      </li>
                     ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="mb-1.5 block text-xs font-medium text-foreground">
-                    Initial lane/path
-                  </span>
-                  <select
-                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
-                    value={initialLane}
-                    disabled={definitionLoading || laneTargets.length === 0}
-                    onChange={(event) => setInitialLane(event.currentTarget.value)}
-                  >
-                    <option value="">Choose lane</option>
-                    {laneTargets.map((target) => (
-                      <option key={target.laneKey} value={target.laneKey}>
-                        {target.pathLabel}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {boardsLoading || definitionLoading ? (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Spinner className="size-3.5" />
-                  Loading workflow target options...
-                </p>
+                  </ul>
+                </div>
               ) : null}
-              {targetLoadError !== null ? (
-                <p className="text-sm text-destructive">{targetLoadError}</p>
-              ) : null}
-              {projectId !== "" && !boardsLoading && availableBoards.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No readable workflow boards were found for{" "}
-                  {firstProjectTitle(projects, projectId)}.
-                </p>
-              ) : null}
-              {boardId !== "" && !definitionLoading && laneTargets.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  This board has no automatic lane whose success path runs an agent before opening a
-                  pull request.
-                </p>
-              ) : null}
+              <SlackAgentDefaultModelControl
+                value={defaultModelSelection}
+                modelPickerConfig={modelPickerConfig}
+                onChange={setDefaultModelSelection}
+              />
             </div>
           ) : null}
 
@@ -592,23 +875,45 @@ export function SlackAgentInstanceDialog({
                   <dd className="font-medium text-foreground">{ownerLabel.trim()}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Handle</dt>
+                  <dt className="text-xs text-muted-foreground">Slack identity</dt>
                   <dd className="font-medium text-foreground">@{handle}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Tokens</dt>
+                  <dd className="font-medium text-foreground">App-level and bot tokens ready</dd>
                 </div>
                 <div>
                   <dt className="text-xs text-muted-foreground">Project</dt>
                   <dd className="font-medium text-foreground">
-                    {firstProjectTitle(projects, projectId)}
+                    {firstProjectTitle(projects, defaultLinkedProjectId)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-muted-foreground">Board</dt>
-                  <dd className="font-medium text-foreground">{selectedBoardName}</dd>
+                  <dt className="text-xs text-muted-foreground">Linked projects</dt>
+                  <dd className="font-medium text-foreground">{linkedProjectAliases.length}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Default chat model</dt>
+                  <dd className="font-medium text-foreground">
+                    {formatSlackAgentDefaultModelSelection({
+                      selection: defaultModelSelection,
+                      modelPickerConfig,
+                    })}
+                  </dd>
                 </div>
                 <div className="sm:col-span-2">
-                  <dt className="text-xs text-muted-foreground">Automatic path</dt>
+                  <dt className="text-xs text-muted-foreground">Selectors</dt>
                   <dd className="font-medium text-foreground">
-                    {selectedLaneTarget?.pathLabel ?? initialLane}
+                    {linkedProjectAliases
+                      .map((project) => `project:${project.selector}`)
+                      .join(", ")}
+                  </dd>
+                </div>
+                <div className="sm:col-span-2">
+                  <dt className="text-xs text-muted-foreground">Thread behavior</dt>
+                  <dd className="font-medium text-foreground">
+                    First mention creates a T3 Chat thread in the default project unless a selector
+                    names another linked project; later Slack replies continue it.
                   </dd>
                 </div>
               </dl>
@@ -620,8 +925,10 @@ export function SlackAgentInstanceDialog({
                   onChange={(event) => setAcknowledged(event.currentTarget.checked)}
                 />
                 <span>
-                  People represented in the mock workspace can start an agent that changes code and
-                  opens a pull request in this project. This is a mock-only Slack setup.
+                  Anyone in this Slack workspace who can mention or message the app can start model
+                  turns in linked projects. When a request needs workspace changes, the agent can
+                  promote it to an isolated worktree and run a full-access continuation on this
+                  computer. Replies in the linked Slack thread continue the same T3 Chat thread.
                 </span>
               </label>
             </div>
@@ -649,7 +956,7 @@ export function SlackAgentInstanceDialog({
               disabled={!stepState.reviewComplete || submitting}
               onClick={() => void submit()}
             >
-              {submitting ? "Creating..." : "Create mock bot"}
+              {submitting ? "Creating..." : "Create Slack identity"}
             </Button>
           )}
         </DialogFooter>

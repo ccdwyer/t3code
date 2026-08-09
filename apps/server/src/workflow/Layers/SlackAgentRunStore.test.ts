@@ -22,7 +22,7 @@ const layer = it.layer(
 );
 
 const snapshotJson =
-  '{"thread":{"workspaceId":"workspace-1","channelId":"channel-1","channelName":"general","threadTs":"1000.000001","threadKey":"thread-1"},"triggerEventId":"event-1","triggerMessageId":"message-1","triggerTs":"1000.000002","canonicalJsonBytes":2,"messages":[]}';
+  '{"workspaceId":"workspace-1","channelId":"channel-1","channelName":"general","threadTs":"1000.000001","triggerEventId":"event-1","triggerMessageId":"message-1","triggerTs":"1000.000002","messages":[]}';
 
 const snapshotSha = NodeCrypto.createHash("sha256").update(snapshotJson).digest("hex");
 
@@ -34,8 +34,6 @@ const createInstance = (suffix: string) =>
       ownerLabel: suffix,
       handleSuffix: suffix,
       projectId: "project-1" as never,
-      boardId: "board-1" as never,
-      initialLane: "todo" as never,
     });
   });
 
@@ -59,6 +57,7 @@ layer("SlackAgentRunStore", (it) => {
           snapshotJson,
           snapshotSha256: snapshotSha,
           snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+          mode: "workflow",
           ticketId: "ticket-create" as never,
           status: "accepted",
           acceptedPayloadJson: '{"text":"accepted"}',
@@ -67,10 +66,41 @@ layer("SlackAgentRunStore", (it) => {
 
       assert.equal(run.state, "accepted");
       assert.equal(run.ticketId, "ticket-create");
+      assert.equal(run.projectId, "project-1");
       const deliveries = yield* runs.listDeliveries(run.runId);
       assert.equal(deliveries.length, 1);
       assert.equal(deliveries[0]?.workflowSequence, 0);
       assert.equal(deliveries[0]?.state, "pending");
+    }),
+  );
+
+  it.effect("persists explicit run project ids", () =>
+    Effect.gen(function* () {
+      const runs = yield* SlackAgentRunStore;
+      const instance = yield* createInstance("run_project");
+
+      const run = yield* runs.createRunWithAcceptedDelivery({
+        instanceId: instance.instanceId,
+        projectId: "project-selected" as never,
+        externalEventId: "event-project",
+        workspaceId: "workspace-1",
+        channelId: "channel-project",
+        channelName: "general",
+        threadKey: "thread-project",
+        threadTs: "1120.000001",
+        triggerTs: "1120.000002",
+        snapshotJson,
+        snapshotSha256: snapshotSha,
+        snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "workflow",
+        ticketId: "ticket-project" as never,
+        status: "accepted",
+        acceptedPayloadJson: "{}",
+      });
+
+      assert.equal(run.projectId, "project-selected");
+      assert.equal((yield* runs.getRunSummary(run.runId))?.projectId, "project-selected");
+      assert.equal((yield* runs.getRun(run.runId))?.run.projectId, "project-selected");
     }),
   );
 
@@ -95,6 +125,7 @@ layer("SlackAgentRunStore", (it) => {
               snapshotJson,
               snapshotSha256: snapshotSha,
               snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+              mode: "workflow",
               ticketId: "ticket-rollback" as never,
               status: "accepted",
               acceptedPayloadJson: "{}",
@@ -120,6 +151,35 @@ layer("SlackAgentRunStore", (it) => {
     }),
   );
 
+  it.effect("finds the Slack chat linked to a T3 thread", () =>
+    Effect.gen(function* () {
+      const runs = yield* SlackAgentRunStore;
+      const instance = yield* createInstance("thread_lookup");
+      const threadId = "thread-linked-chat" as never;
+
+      const created = yield* runs.createRunWithAcceptedDelivery({
+        instanceId: instance.instanceId,
+        externalEventId: "event-thread-lookup",
+        workspaceId: "workspace-1",
+        channelId: "channel-thread-lookup",
+        channelName: "mobile-dev",
+        threadKey: "thread-lookup",
+        threadTs: "1250.000001",
+        triggerTs: "1250.000002",
+        snapshotJson,
+        snapshotSha256: snapshotSha,
+        snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "chat",
+        threadId,
+        status: "connected",
+        acceptedPayloadJson: '{"text":"connected"}',
+      });
+
+      assert.deepStrictEqual(yield* runs.findChatByThreadId(threadId), created);
+      assert.equal(yield* runs.findChatByThreadId("thread-unlinked"), null);
+    }),
+  );
+
   it.effect("dedupes by external event, source thread, ticket, and workflow sequence", () =>
     Effect.gen(function* () {
       const runs = yield* SlackAgentRunStore;
@@ -136,6 +196,7 @@ layer("SlackAgentRunStore", (it) => {
         snapshotJson,
         snapshotSha256: snapshotSha,
         snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "workflow",
         ticketId: "ticket-dedupe" as never,
         status: "accepted",
         acceptedPayloadJson: "{}",
@@ -169,6 +230,152 @@ layer("SlackAgentRunStore", (it) => {
     }),
   );
 
+  it.effect("creates chat runs by thread id and tracks ingested event delivery", () =>
+    Effect.gen(function* () {
+      const runs = yield* SlackAgentRunStore;
+      const instance = yield* createInstance("run_chat");
+      const created = yield* runs.createRunWithAcceptedDelivery({
+        instanceId: instance.instanceId,
+        externalEventId: "event-chat",
+        workspaceId: "workspace-1",
+        channelId: "channel-chat",
+        channelName: "general",
+        threadKey: "thread-chat",
+        threadTs: "1350.000001",
+        triggerTs: "1350.000002",
+        snapshotJson,
+        snapshotSha256: snapshotSha,
+        snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "chat",
+        threadId: "thread-chat-created" as never,
+        status: "connected",
+        acceptedPayloadJson: "{}",
+      });
+
+      assert.equal(created.mode, "chat");
+      assert.equal(created.threadId, "thread-chat-created");
+      const acceptedDelivery = (yield* runs.listDeliveries(created.runId))[0]!;
+      assert.equal(
+        (yield* runs.getRunByDeliveryId(acceptedDelivery.deliveryId))?.runId,
+        created.runId,
+      );
+      const rootChat = yield* runs.createRunWithAcceptedDelivery({
+        instanceId: instance.instanceId,
+        externalEventId: "event-chat-root",
+        workspaceId: "workspace-1",
+        channelId: "channel-chat-root",
+        channelName: "direct-message",
+        threadKey: "thread-chat-root",
+        threadTs: "1360.000001",
+        triggerTs: "1360.000001",
+        snapshotJson,
+        snapshotSha256: snapshotSha,
+        snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "chat",
+        threadId: "thread-chat-root-created" as never,
+        status: "connected",
+        acceptedPayloadJson: "{}",
+      });
+      assert.equal(
+        (yield* runs.findRootChatByChannel(instance.instanceId, "workspace-1", "channel-chat-root"))
+          ?.runId,
+        rootChat.runId,
+      );
+
+      assert.equal(
+        yield* runs.reserveIngestedEvent({
+          runId: created.runId,
+          externalEventId: "event-chat-followup",
+          triggerMessageId: "message-chat-followup",
+          messageId: "message-chat-followup",
+        }),
+        false,
+      );
+      yield* runs.markIngestedEventDelivered({
+        runId: created.runId,
+        externalEventId: "event-chat-followup",
+        triggerMessageId: "message-chat-followup",
+      });
+      assert.equal(
+        yield* runs.reserveIngestedEvent({
+          runId: created.runId,
+          externalEventId: "event-chat-followup",
+          triggerMessageId: "message-chat-followup",
+          messageId: "message-chat-followup",
+        }),
+        true,
+      );
+      assert.equal(
+        (yield* runs.findByExternalEvent(instance.instanceId, "event-chat-followup"))?.runId,
+        created.runId,
+      );
+
+      assert.equal(
+        yield* runs.reserveIngestedEvent({
+          runId: created.runId,
+          externalEventId: "event-chat-retry",
+          triggerMessageId: "message-chat-pending",
+          messageId: "message-chat-pending",
+        }),
+        false,
+      );
+      yield* runs.markIngestedEventDelivered({
+        runId: created.runId,
+        externalEventId: "event-chat-retry-new-id",
+        triggerMessageId: "message-chat-pending",
+      });
+      assert.equal(
+        yield* runs.reserveIngestedEvent({
+          runId: created.runId,
+          externalEventId: "event-chat-retry-newer-id",
+          triggerMessageId: "message-chat-pending",
+          messageId: "message-chat-pending",
+        }),
+        true,
+      );
+
+      yield* runs.seedDeliveredIngestedEvents({
+        runId: created.runId,
+        events: [
+          {
+            externalEventId: "snapshot-event-1",
+            triggerMessageId: "snapshot-message-1",
+            messageId: "snapshot-message-1",
+          },
+        ],
+      });
+      assert.equal(
+        yield* runs.reserveIngestedEvent({
+          runId: created.runId,
+          externalEventId: "snapshot-retry-1",
+          triggerMessageId: "snapshot-message-1",
+          messageId: "snapshot-message-1",
+        }),
+        true,
+      );
+
+      const missingThread = yield* Effect.exit(
+        runs.createRunWithAcceptedDelivery({
+          instanceId: instance.instanceId,
+          externalEventId: "event-chat-invalid",
+          workspaceId: "workspace-1",
+          channelId: "channel-chat-invalid",
+          channelName: "general",
+          threadKey: "thread-chat-invalid",
+          threadTs: "1360.000001",
+          triggerTs: "1360.000002",
+          snapshotJson,
+          snapshotSha256: snapshotSha,
+          snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+          mode: "chat",
+          status: "connected",
+          acceptedPayloadJson: "{}",
+        }),
+      );
+      assert.equal(missingThread._tag, "Failure");
+    }),
+  );
+
   it.effect("maps dispatcher delivery states to contract delivery states", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -186,6 +393,7 @@ layer("SlackAgentRunStore", (it) => {
         snapshotJson,
         snapshotSha256: snapshotSha,
         snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "workflow",
         ticketId: "ticket-state" as never,
         status: "accepted",
         acceptedPayloadJson: "{}",
@@ -222,6 +430,7 @@ layer("SlackAgentRunStore", (it) => {
         snapshotJson,
         snapshotSha256: snapshotSha,
         snapshotBytes: Buffer.byteLength(snapshotJson, "utf8"),
+        mode: "workflow",
         ticketId: "ticket-update" as never,
         status: "accepted",
         acceptedPayloadJson: "{}",

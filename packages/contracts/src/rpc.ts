@@ -12,8 +12,10 @@ import { OutboundConnectionView, CreateOutboundConnectionInput } from "./outboun
 import {
   MockSlackSubscribeThreadInput,
   MockSlackThreadStreamEvent,
+  SlackAgentConnectInstanceInput,
   SlackAgentCreateInstanceInput,
   SlackAgentCreateInstanceResult,
+  SlackAgentCreateMockInstanceInput,
   SlackAgentDeliveryView,
   SlackAgentGetRunInput,
   SlackAgentInstanceIdInput,
@@ -24,6 +26,8 @@ import {
   SlackAgentRunStreamEvent,
   SlackAgentSimulateMentionInput,
   SlackAgentSimulateMentionResult,
+  SlackAgentTestConnectionInput,
+  SlackAgentTestConnectionResult,
   SlackAgentUpdateInstanceInput,
 } from "./slackAgent.ts";
 
@@ -1329,6 +1333,42 @@ export const WsWorkflowCreateSlackAgentInstanceRpc = Rpc.make(
   },
 );
 
+export const WsWorkflowCreateMockSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.createMockSlackAgentInstance,
+  {
+    payload: SlackAgentCreateMockInstanceInput,
+    success: SlackAgentCreateInstanceResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowConnectSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.connectSlackAgentInstance,
+  {
+    payload: SlackAgentConnectInstanceInput,
+    success: SlackAgentCreateInstanceResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowDisconnectSlackAgentInstanceRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.disconnectSlackAgentInstance,
+  {
+    payload: SlackAgentInstanceIdInput,
+    success: SlackAgentCreateInstanceResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsWorkflowTestSlackAgentConnectionRpc = Rpc.make(
+  WORKFLOW_WS_METHODS.testSlackAgentConnection,
+  {
+    payload: SlackAgentTestConnectionInput,
+    success: SlackAgentTestConnectionResult,
+    error: Schema.Union([SlackAgentRpcError, WorkflowRpcError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsWorkflowUpdateSlackAgentInstanceRpc = Rpc.make(
   WORKFLOW_WS_METHODS.updateSlackAgentInstance,
   {
@@ -1596,6 +1636,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsWorkflowImportWorkItemsRpc,
   WsWorkflowListSlackAgentInstancesRpc,
   WsWorkflowCreateSlackAgentInstanceRpc,
+  WsWorkflowCreateMockSlackAgentInstanceRpc,
+  WsWorkflowConnectSlackAgentInstanceRpc,
+  WsWorkflowDisconnectSlackAgentInstanceRpc,
+  WsWorkflowTestSlackAgentConnectionRpc,
   WsWorkflowUpdateSlackAgentInstanceRpc,
   WsWorkflowDisableSlackAgentInstanceRpc,
   WsWorkflowEnableSlackAgentInstanceRpc,

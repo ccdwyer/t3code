@@ -29,6 +29,7 @@ export interface SlackStatusPostInput {
   readonly deliveryId: string;
   readonly text: string;
   readonly statusMessageId?: string | undefined;
+  readonly forceNewMessage?: boolean | undefined;
   readonly now?: string | undefined;
 }
 
@@ -48,6 +49,7 @@ export interface MockSlackStatusReply {
   readonly runId: string;
   readonly text: string;
   readonly updatedAt: string;
+  readonly standalone?: boolean | undefined;
   readonly history: ReadonlyArray<{
     readonly deliveryId: string;
     readonly text: string;
@@ -83,4 +85,8 @@ export interface SlackAgentGatewayShape {
 
 export class SlackAgentGateway extends Context.Service<SlackAgentGateway, SlackAgentGatewayShape>()(
   "t3/workflow/Services/SlackAgentGateway",
+) {}
+
+export class MockSlackGateway extends Context.Service<MockSlackGateway, SlackAgentGatewayShape>()(
+  "t3/workflow/Services/SlackAgentGateway/MockSlackGateway",
 ) {}

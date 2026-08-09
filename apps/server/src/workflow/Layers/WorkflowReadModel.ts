@@ -589,10 +589,13 @@ const make = Effect.gen(function* () {
           WHERE other_run.workspace_id = mock_slack_thread.workspace_id
             AND other_run.channel_id = mock_slack_thread.channel_id
             AND other_run.thread_ts = mock_slack_thread.thread_ts
-            AND other_run.ticket_id NOT IN (
-              SELECT ticket_id
-              FROM projection_ticket
-              WHERE board_id = ${boardId}
+            AND (
+              other_run.ticket_id IS NULL
+              OR other_run.ticket_id NOT IN (
+                SELECT ticket_id
+                FROM projection_ticket
+                WHERE board_id = ${boardId}
+              )
             )
         )
     `).pipe(
@@ -970,7 +973,7 @@ const make = Effect.gen(function* () {
           WHERE other_run.workspace_id = mock_slack_thread.workspace_id
             AND other_run.channel_id = mock_slack_thread.channel_id
             AND other_run.thread_ts = mock_slack_thread.thread_ts
-            AND other_run.ticket_id <> ${ticketId}
+            AND (other_run.ticket_id IS NULL OR other_run.ticket_id <> ${ticketId})
         )
     `).pipe(
       Effect.andThen(

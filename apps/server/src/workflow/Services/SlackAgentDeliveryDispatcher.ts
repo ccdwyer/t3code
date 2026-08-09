@@ -6,7 +6,7 @@ import type * as Stream from "effect/Stream";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 export interface SlackAgentDeliveryDispatcherShape {
-  readonly sweep: () => Effect.Effect<void>;
+  readonly sweep: (options?: { readonly chatOnly?: boolean | undefined }) => Effect.Effect<void>;
   readonly recoverStaleClaims: () => Effect.Effect<void>;
   readonly retryDelivery: (
     deliveryId: string,
@@ -14,7 +14,9 @@ export interface SlackAgentDeliveryDispatcherShape {
   readonly subscribeRunChanges: (
     runId: string,
   ) => Effect.Effect<Stream.Stream<SlackAgentDeliveryView>, never, Scope.Scope>;
-  readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+  readonly start: (options?: {
+    readonly chatOnly?: boolean | undefined;
+  }) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 export class SlackAgentDeliveryDispatcher extends Context.Service<

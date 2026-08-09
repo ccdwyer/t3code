@@ -53,6 +53,10 @@ import Migration0037 from "./Migrations/037_ProjectionTurnsKeysetIndex.ts";
 import Migration0038 from "./Migrations/038_ProjectionThreadsPinOrderKey.ts";
 import Migration0039 from "./Migrations/039_WorkflowSchema.ts";
 import Migration0040 from "./Migrations/040_SlackAgentMock.ts";
+import Migration0041 from "./Migrations/041_SlackAgentChatMode.ts";
+import Migration0042 from "./Migrations/042_RealSlackAgent.ts";
+import Migration0043 from "./Migrations/043_SlackAgentMultiProject.ts";
+import Migration0044 from "./Migrations/044_SlackAgentDefaultModelSelection.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -105,6 +109,10 @@ export const migrationEntries = [
   [38, "ProjectionThreadsPinOrderKey", Migration0038],
   [39, "WorkflowSchema", Migration0039],
   [40, "SlackAgentMock", Migration0040],
+  [41, "SlackAgentChatMode", Migration0041],
+  [42, "RealSlackAgent", Migration0042],
+  [43, "SlackAgentMultiProject", Migration0043],
+  [44, "SlackAgentDefaultModelSelection", Migration0044],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

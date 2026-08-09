@@ -34,6 +34,8 @@ export interface SlackThreadSnapshotInput {
   readonly maxMessages?: number | undefined;
   readonly maxBytes?: number | undefined;
   readonly byteLengthOverride?: number | undefined;
+  /** Real Slack intake may discard oldest context until the durable snapshot fits. */
+  readonly trimToFit?: boolean | undefined;
 }
 
 export interface SlackThreadSnapshotMessage {
@@ -160,42 +162,86 @@ export const buildSlackThreadSnapshot = Effect.fn("buildSlackThreadSnapshot")(fu
     });
   }
 
-  const canonicalPayload = {
-    workspaceId: input.workspaceId,
-    channelId: input.channelId,
-    channelName: input.channelName,
-    threadTs: input.threadTs,
-    triggerEventId: input.triggerEventId,
-    triggerTs: input.triggerTs,
-    triggerMessageId: triggerMessage.messageId,
-    messages,
-  };
-  const canonicalJson = encodeJsonString(canonicalPayload);
-  const byteLength = input.byteLengthOverride ?? new TextEncoder().encode(canonicalJson).byteLength;
   const maxMessages = input.maxMessages ?? SLACK_THREAD_SNAPSHOT_MAX_MESSAGES;
   if (messages.length > maxMessages) {
+    const canonicalJsonBytes = new TextEncoder().encode(
+      encodeJsonString({
+        workspaceId: input.workspaceId,
+        channelId: input.channelId,
+        channelName: input.channelName,
+        threadTs: input.threadTs,
+        triggerEventId: input.triggerEventId,
+        triggerTs: input.triggerTs,
+        triggerMessageId: triggerMessage.messageId,
+        messages,
+      }),
+    ).byteLength;
     return yield* new SlackThreadSnapshotError({
       reason: "too_many_messages",
       message: `Slack thread snapshot has ${messages.length} messages; the limit is ${maxMessages}.`,
       messageCount: messages.length,
-      canonicalJsonBytes: byteLength,
+      canonicalJsonBytes,
     });
   }
 
   const maxBytes = input.maxBytes ?? SLACK_THREAD_SNAPSHOT_MAX_BYTES;
-  if (byteLength > maxBytes) {
+  const encodeSnapshot = (candidateMessages: ReadonlyArray<SlackThreadSnapshotMessage>) => {
+    const payload = {
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      channelName: input.channelName,
+      threadTs: input.threadTs,
+      triggerEventId: input.triggerEventId,
+      triggerTs: input.triggerTs,
+      triggerMessageId: triggerMessage.messageId,
+      messages: candidateMessages,
+    };
+    const canonicalJson = encodeJsonString(payload);
+    return {
+      payload,
+      canonicalJson,
+      byteLength: input.byteLengthOverride ?? new TextEncoder().encode(canonicalJson).byteLength,
+    };
+  };
+
+  let encoded = encodeSnapshot(messages);
+  if (
+    encoded.byteLength > maxBytes &&
+    input.trimToFit === true &&
+    input.byteLengthOverride === undefined
+  ) {
+    const triggerIndex = messages.findIndex(
+      (message) => message.messageId === triggerMessage.messageId,
+    );
+    let low = 0;
+    let high = triggerIndex;
+    let smallestFit: ReturnType<typeof encodeSnapshot> | undefined;
+    while (low <= high) {
+      const start = Math.floor((low + high) / 2);
+      const candidate = encodeSnapshot(messages.slice(start, triggerIndex + 1));
+      if (candidate.byteLength <= maxBytes) {
+        smallestFit = candidate;
+        high = start - 1;
+      } else {
+        low = start + 1;
+      }
+    }
+    if (smallestFit !== undefined) encoded = smallestFit;
+  }
+
+  if (encoded.byteLength > maxBytes) {
     return yield* new SlackThreadSnapshotError({
       reason: "snapshot_too_large",
-      message: `Slack thread snapshot is ${byteLength} bytes; the limit is ${maxBytes}.`,
-      messageCount: messages.length,
-      canonicalJsonBytes: byteLength,
+      message: `Slack thread snapshot is ${encoded.byteLength} bytes; the limit is ${maxBytes}.`,
+      messageCount: encoded.payload.messages.length,
+      canonicalJsonBytes: encoded.byteLength,
     });
   }
 
   return {
-    ...canonicalPayload,
-    canonicalJson,
-    byteLength,
+    ...encoded.payload,
+    canonicalJson: encoded.canonicalJson,
+    byteLength: encoded.byteLength,
   } satisfies SlackThreadSnapshot;
 });
 
@@ -207,7 +253,7 @@ export const renderSlackThreadSnapshotMarkdown = (snapshot: SlackThreadSnapshot)
     `Channel: #${snapshot.channelName} (${snapshot.channelId})`,
     `Thread: ${snapshot.threadTs}`,
     `Trigger event: ${snapshot.triggerEventId}`,
-    `Mock permalink: slack://mock/${snapshot.workspaceId}/${snapshot.channelId}/${snapshot.threadTs}`,
+    `Slack source: ${snapshot.workspaceId}/${snapshot.channelId}/${snapshot.threadTs}`,
     "",
   ];
 

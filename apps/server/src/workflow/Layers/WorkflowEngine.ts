@@ -3564,7 +3564,10 @@ const make = Effect.gen(function* () {
           message: "ticket not found",
         });
       }
-      const messageId = yield* ids.messageId();
+      const messageId = input.messageId ?? (yield* ids.messageId());
+      if (detail.messages.some((message) => message.messageId === messageId)) {
+        return;
+      }
       yield* commit({
         type: "TicketMessagePosted",
         ticketId: input.ticketId,
@@ -3940,7 +3943,11 @@ const make = Effect.gen(function* () {
       // survived a supersede. Resuming it would write StepUserResolved/running
       // over the parked row. Fail typed instead of orphaning the park.
       const parkedCheck = yield* read.getTicketDetail(ticketId);
+      const messageId = input.messageId ?? (yield* ids.messageId());
+      const messageAlreadyPosted =
+        parkedCheck?.messages.some((message) => message.messageId === messageId) ?? false;
       if (parkedCheck?.ticket.status === "parked") {
+        if (messageAlreadyPosted) return;
         return yield* new WorkflowEventStoreError({
           message: "ticket is parked",
         });
@@ -3954,6 +3961,7 @@ const make = Effect.gen(function* () {
             ? awaitingState.providerResponseKind
             : null;
       if (responseKind !== "user-input") {
+        if (messageAlreadyPosted) return;
         return yield* new WorkflowEventStoreError({
           message: "ticket answer requires an awaiting user-input step",
         });
@@ -3983,22 +3991,23 @@ const make = Effect.gen(function* () {
         }
       });
 
-      const messageId = yield* ids.messageId();
-      yield* commit(
-        {
-          type: "TicketMessagePosted",
-          ticketId,
-          payload: {
-            messageId,
-            stepRunId: input.stepRunId,
-            author: "user",
-            body: text,
-            attachments,
-            createdAt: (yield* nowIso) as never,
+      if (!messageAlreadyPosted) {
+        yield* commit(
+          {
+            type: "TicketMessagePosted",
+            ticketId,
+            payload: {
+              messageId,
+              stepRunId: input.stepRunId,
+              author: "user",
+              body: text,
+              attachments,
+              createdAt: (yield* nowIso) as never,
+            },
           },
-        },
-        parkedAppendPrecondition,
-      );
+          parkedAppendPrecondition,
+        );
+      }
 
       const { providerResponses } = yield* getOptionalServices;
       if (

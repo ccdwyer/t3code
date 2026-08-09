@@ -11,6 +11,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { SlackChatWorktreePromotion } from "../slack/Services/SlackChatWorktreePromotion.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -34,9 +35,23 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
+const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
+  Layer.provideMerge(
+    Layer.mock(SlackChatWorktreePromotion)({
+      promote: (requestedThreadId) =>
+        Effect.succeed({
+          threadId: requestedThreadId,
+          state: "prepared" as const,
+          branch: "t3code/1234abcd",
+          worktreePath: "/tmp/worktrees/slack-chat",
+          baseBranch: "develop",
+          continuationScheduled: true,
+        }),
+      settleTurn: () => Effect.void,
+    }),
+  ),
 );
 
 it("normalizes empty successful notification responses to accepted", () => {
@@ -223,6 +238,27 @@ it.effect("registers annotated tools and preserves authenticated request context
       const navigateTool = server.tools.find(({ tool }) => tool.name === "preview_navigate");
       expect(navigateTool?.tool.annotations?.destructiveHint).toBe(false);
       expect(navigateTool?.tool.annotations?.openWorldHint).toBe(true);
+
+      const promotionTool = server.tools.find(
+        ({ tool }) => tool.name === "promote_slack_chat_worktree",
+      );
+      expect(promotionTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(promotionTool?.tool.annotations?.destructiveHint).toBe(false);
+      expect(promotionTool?.tool.annotations?.idempotentHint).toBe(true);
+
+      const promotion = yield* server
+        .callTool({ name: "promote_slack_chat_worktree", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(promotion.isError).toBe(false);
+      expect(promotion.structuredContent).toMatchObject({
+        threadId,
+        state: "prepared",
+        baseBranch: "develop",
+        continuationScheduled: true,
+      });
 
       const status = yield* server
         .callTool({ name: "preview_status", arguments: {} })

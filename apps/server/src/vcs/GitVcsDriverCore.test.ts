@@ -1363,6 +1363,41 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* fileSystem.exists(worktreePath), false);
       }),
     );
+
+    it.effect("prunes a missing registered worktree so its branch can be rehydrated", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const pathService = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const worktreePath = pathService.join(
+          yield* makeTmpDir("git-stale-worktrees-"),
+          "stale-worktree",
+        );
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: initialBranch,
+          newRefName: "feature/stale-registration",
+        });
+        yield* fileSystem.remove(worktreePath, { recursive: true });
+
+        yield* driver.pruneWorktrees({ cwd });
+        const rehydrated = yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: "feature/stale-registration",
+        });
+
+        assert.equal(rehydrated.worktree.path, worktreePath);
+        assert.equal(
+          yield* git(worktreePath, ["branch", "--show-current"]),
+          "feature/stale-registration",
+        );
+      }),
+    );
   });
 
   describe("remote operations", () => {
@@ -1470,11 +1505,13 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         const remote = yield* makeTmpDir("git-remote-");
         const peer = yield* makeTmpDir("git-peer-");
         const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const defaultBranch = "develop";
+        yield* git(cwd, ["branch", "-m", initialBranch, defaultBranch]);
         yield* git(remote, ["init", "--bare"]);
         yield* git(cwd, ["remote", "add", "origin", remote]);
-        yield* git(cwd, ["push", "-u", "origin", initialBranch]);
-        yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${initialBranch}`]);
-        const beforeFetch = yield* git(cwd, ["rev-parse", `refs/remotes/origin/${initialBranch}`]);
+        yield* git(cwd, ["push", "-u", "origin", defaultBranch]);
+        yield* git(remote, ["symbolic-ref", "HEAD", `refs/heads/${defaultBranch}`]);
+        const beforeFetch = yield* git(cwd, ["rev-parse", `refs/remotes/origin/${defaultBranch}`]);
 
         yield* git(peer, ["clone", remote, "."]);
         yield* git(peer, ["config", "user.email", "test@test.com"]);
@@ -1482,30 +1519,34 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* writeTextFile(peer, "remote-change.txt", "remote\n");
         yield* git(peer, ["add", "remote-change.txt"]);
         yield* git(peer, ["commit", "-m", "remote change"]);
-        yield* git(peer, ["push", "origin", initialBranch]);
+        yield* git(peer, ["push", "origin", defaultBranch]);
         const remoteHead = yield* git(peer, ["rev-parse", "HEAD"]);
         assert.notEqual(beforeFetch, remoteHead);
 
         const driver = yield* GitVcsDriver.GitVcsDriver;
         yield* driver.fetchRemote({ cwd, remoteName: "origin" });
+        assert.equal(
+          yield* driver.resolveRemoteDefaultBranch({ cwd, remoteName: "origin" }),
+          defaultBranch,
+        );
 
         const resolvedBase = yield* driver.resolveRemoteTrackingCommit({
           cwd,
-          refName: initialBranch,
+          refName: defaultBranch,
           fallbackRemoteName: "origin",
         });
         const explicitlyResolvedBase = yield* driver.resolveRemoteTrackingCommit({
           cwd,
-          refName: `origin/${initialBranch}`,
+          refName: `origin/${defaultBranch}`,
           fallbackRemoteName: "origin",
         });
 
         assert.deepEqual(resolvedBase, {
           commitSha: remoteHead,
-          remoteRefName: `origin/${initialBranch}`,
+          remoteRefName: `origin/${defaultBranch}`,
         });
         assert.deepEqual(explicitlyResolvedBase, resolvedBase);
-        assert.equal(yield* git(cwd, ["rev-parse", initialBranch]), beforeFetch);
+        assert.equal(yield* git(cwd, ["rev-parse", defaultBranch]), beforeFetch);
 
         const pathService = yield* Path.Path;
         const worktreePath = pathService.join(
@@ -1523,7 +1564,7 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(worktreePath, ["rev-parse", "HEAD"]), remoteHead);
         assert.equal(
           yield* driver.readConfigValue(worktreePath, "branch.t3code/fetched-origin.gh-merge-base"),
-          initialBranch,
+          defaultBranch,
         );
         assert.equal(
           yield* driver.readConfigValue(worktreePath, "branch.t3code/fetched-origin.remote"),

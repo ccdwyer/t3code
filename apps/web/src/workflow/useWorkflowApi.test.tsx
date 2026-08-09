@@ -1,9 +1,9 @@
 import { RegistryContext } from "@effect/atom-react";
-import type { EnvironmentApi } from "@t3tools/contracts";
 import { EnvironmentId } from "@t3tools/contracts";
 import { AsyncResult, type AtomRegistry } from "effect/unstable/reactivity";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { WorkflowApiWithSlack } from "./useWorkflowApi";
 
 const {
   executeAtomQuery,
@@ -11,28 +11,40 @@ const {
   listWorkSourceConnectionsAtom,
   getTicketDetailAtom,
   getBoardDefinitionAtom,
+  listSlackAgentInstancesAtom,
   listWorkSourceConnections,
   getTicketDetail,
   getBoardDefinition,
+  listSlackAgentInstances,
   saveBoardDefinition,
   createWorkSourceConnection,
+  createMockSlackAgentInstance,
+  connectSlackAgentInstance,
+  testSlackAgentConnection,
   boardRaw,
 } = vi.hoisted(() => {
   const listWorkSourceConnectionsAtom = { label: "listWorkSourceConnections" };
   const getTicketDetailAtom = { label: "getTicketDetail" };
   const getBoardDefinitionAtom = { label: "getBoardDefinition" };
+  const listSlackAgentInstancesAtom = { label: "listSlackAgentInstances" };
   const command = { label: "command" };
+  const slackCommand = { label: "slackCommand" };
   return {
     executeAtomQuery: vi.fn(),
     runAtomCommand: vi.fn(),
     listWorkSourceConnectionsAtom,
     getTicketDetailAtom,
     getBoardDefinitionAtom,
+    listSlackAgentInstancesAtom,
     listWorkSourceConnections: vi.fn(() => listWorkSourceConnectionsAtom),
     getTicketDetail: vi.fn(() => getTicketDetailAtom),
     getBoardDefinition: vi.fn(() => getBoardDefinitionAtom),
+    listSlackAgentInstances: vi.fn(() => listSlackAgentInstancesAtom),
     saveBoardDefinition: command,
     createWorkSourceConnection: command,
+    createMockSlackAgentInstance: slackCommand,
+    connectSlackAgentInstance: slackCommand,
+    testSlackAgentConnection: slackCommand,
     boardRaw: vi.fn(() => ({ label: "boardRaw" })),
   };
 });
@@ -67,6 +79,7 @@ vi.mock("../state/workflow", () => {
       getBoardProposal: query("getBoardProposal"),
       listImportableWorkItems: query("listImportableWorkItems"),
       listNeedsAttentionTickets: query("listNeedsAttentionTickets"),
+      listSlackAgentInstances,
       board: query("board"),
       boardRaw,
       createBoard: command,
@@ -99,6 +112,20 @@ vi.mock("../state/workflow", () => {
       createOutboundConnection: command,
       deleteOutboundConnection: command,
       importWorkItems: command,
+      createSlackAgentInstance: command,
+      createMockSlackAgentInstance,
+      updateSlackAgentInstance: command,
+      disableSlackAgentInstance: command,
+      enableSlackAgentInstance: command,
+      deleteSlackAgentInstance: command,
+      connectSlackAgentInstance,
+      disconnectSlackAgentInstance: command,
+      testSlackAgentConnection,
+      retrySlackAgentDelivery: command,
+      simulateSlackMention: command,
+      getSlackAgentRun: query("getSlackAgentRun"),
+      subscribeSlackAgentRun: query("subscribeSlackAgentRun"),
+      subscribeMockSlackThread: query("subscribeMockSlackThread"),
     },
   };
 });
@@ -124,10 +151,12 @@ function makeFakeRegistry(input?: { readonly emitOnMount?: unknown }) {
   return { registry, refresh };
 }
 
-function renderWorkflowApi(registry: AtomRegistry.AtomRegistry): EnvironmentApi["workflow"] {
-  let captured: EnvironmentApi["workflow"] | undefined;
+function renderWorkflowApi(registry: AtomRegistry.AtomRegistry): WorkflowApiWithSlack {
+  let captured: WorkflowApiWithSlack | undefined;
   function Probe() {
-    captured = useWorkflowApi(EnvironmentId.make("environment-1"));
+    captured = useWorkflowApi(
+      EnvironmentId.make("environment-1"),
+    ) as unknown as WorkflowApiWithSlack;
     return null;
   }
   renderToStaticMarkup(
@@ -148,6 +177,7 @@ describe("useWorkflowApi freshness", () => {
     listWorkSourceConnections.mockClear();
     getTicketDetail.mockClear();
     getBoardDefinition.mockClear();
+    listSlackAgentInstances.mockClear();
     boardRaw.mockClear();
   });
 
@@ -220,6 +250,82 @@ describe("useWorkflowApi freshness", () => {
     });
 
     expect(refresh).toHaveBeenCalledWith(getBoardDefinitionAtom);
+  });
+
+  it("invalidates listSlackAgentInstances after reconnecting Slack tokens", async () => {
+    const { registry, refresh } = makeFakeRegistry();
+    const result = { instance: { instanceId: "instance-1" } };
+    runAtomCommand.mockResolvedValue(AsyncResult.success(result));
+
+    const api = renderWorkflowApi(registry);
+    await api.connectSlackAgentInstance({
+      instanceId: "instance-1" as never,
+      appToken: "xapp-token" as never,
+      botToken: "xoxb-token" as never,
+    });
+
+    expect(runAtomCommand).toHaveBeenCalledWith(
+      registry,
+      connectSlackAgentInstance,
+      expect.objectContaining({
+        input: expect.objectContaining({
+          appToken: "xapp-token",
+          botToken: "xoxb-token",
+        }),
+      }),
+      expect.objectContaining({ reportFailure: false }),
+    );
+    expect(refresh).toHaveBeenCalledWith(listSlackAgentInstancesAtom);
+  });
+
+  it("invalidates listSlackAgentInstances after creating a mock Slack identity", async () => {
+    const { registry, refresh } = makeFakeRegistry();
+    const result = { instance: { instanceId: "instance-1" } };
+    runAtomCommand.mockResolvedValue(AsyncResult.success(result));
+
+    const api = renderWorkflowApi(registry);
+    await api.createMockSlackAgentInstance({
+      ownerLabel: "Chris" as never,
+      handleSuffix: "chris" as never,
+      target: { projectId: "project-1" as never },
+      acknowledged: true,
+    });
+
+    expect(runAtomCommand).toHaveBeenCalledWith(
+      registry,
+      createMockSlackAgentInstance,
+      expect.objectContaining({
+        input: expect.objectContaining({
+          ownerLabel: "Chris",
+          handleSuffix: "chris",
+        }),
+      }),
+      expect.objectContaining({ reportFailure: false }),
+    );
+    expect(refresh).toHaveBeenCalledWith(listSlackAgentInstancesAtom);
+  });
+
+  it("invalidates listSlackAgentInstances after testing a Slack connection", async () => {
+    const { registry, refresh } = makeFakeRegistry();
+    runAtomCommand.mockResolvedValue(
+      AsyncResult.success({
+        ok: true,
+        instance: { instanceId: "instance-1" },
+      }),
+    );
+
+    const api = renderWorkflowApi(registry);
+    await api.testSlackAgentConnection({ instanceId: "instance-1" as never });
+
+    expect(runAtomCommand).toHaveBeenCalledWith(
+      registry,
+      testSlackAgentConnection,
+      expect.objectContaining({
+        input: { instanceId: "instance-1" },
+      }),
+      expect.objectContaining({ reportFailure: false }),
+    );
+    expect(refresh).toHaveBeenCalledWith(listSlackAgentInstancesAtom);
   });
 
   it("subscribeBoard observes the initial snapshot emitted synchronously while the stream mounts", () => {

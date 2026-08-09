@@ -86,14 +86,19 @@ A typed signal emitted when an async milestone completes, such as `checkpoint.ba
 
 #### Slack agent instance
 
-A personal mock bot configuration, such as `@t3_chris`, that targets one project workflow board and
-one automatic entry lane. It is routed by an immutable mock bot user id rather than by parsing the
-display handle.
+A per-developer bot configuration, such as `@t3_chris`, with one Socket Mode connection and one or
+more linked T3 projects. One linked project is the default; a new Slack thread can choose another
+with its configured `project:<alias>` selector. A real instance stores Slack credentials in the
+environment's local secret store and is routed by immutable workspace and bot user ids rather than
+by parsing the display handle. Its default invocation creates or continues an ordinary visible T3
+Chat thread; workflow kickoff is explicit per source thread.
 
 #### Slack run
 
-The durable mapping from one accepted mock Slack mention to one workflow ticket. A run owns the
-captured thread snapshot, status delivery state, and links back to the originating mock thread.
+The durable mapping from one bot plus Slack source thread to one linked project and either one
+ordinary T3 Chat thread or one workflow ticket. A run owns the initial captured snapshot, follow-up
+event deduplication, status delivery state, and links back to the originating Slack thread. The
+chosen project is fixed for the life of the run even if the bot's default later changes.
 
 #### Mock workspace
 

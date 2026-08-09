@@ -313,6 +313,26 @@ export function createWorkflowEnvironmentAtoms<R, E>(
       tag: WORKFLOW_WS_METHODS.createSlackAgentInstance,
       concurrency: serialPerEnv,
     }),
+    createMockSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:create-mock-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.createMockSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    connectSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:connect-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.connectSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    disconnectSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:disconnect-slack-agent-instance",
+      tag: WORKFLOW_WS_METHODS.disconnectSlackAgentInstance,
+      concurrency: serialPerEnv,
+    }),
+    testSlackAgentConnection: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:workflow:test-slack-agent-connection",
+      tag: WORKFLOW_WS_METHODS.testSlackAgentConnection,
+      concurrency: serialPerEnv,
+    }),
     updateSlackAgentInstance: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:workflow:update-slack-agent-instance",
       tag: WORKFLOW_WS_METHODS.updateSlackAgentInstance,

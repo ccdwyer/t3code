@@ -28,9 +28,18 @@ import {
   type VcsStatusResult,
 } from "@t3tools/contracts";
 
+import { makeKeyedSemaphore } from "../utils/keyedSemaphore.ts";
 import * as GitManager from "./GitManager.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+
+export interface LatestDefaultBranchWorktreeResult {
+  readonly worktree: VcsCreateWorktreeResult["worktree"];
+  readonly remoteName: string;
+  readonly baseBranch: string;
+  readonly baseCommit: string;
+  readonly baseRefName: string;
+}
 
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
@@ -65,6 +74,14 @@ export class GitWorkflowService extends Context.Service<
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+    readonly createWorktreeFromLatestDefaultBranch: (input: {
+      readonly cwd: string;
+      readonly newRefName: string;
+    }) => Effect.Effect<LatestDefaultBranchWorktreeResult, GitCommandError>;
+    readonly createWorktreeFromExistingBranch: (input: {
+      readonly cwd: string;
+      readonly refName: string;
+    }) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
     readonly fetchRemote: (input: {
       readonly cwd: string;
       readonly remoteName: string;
@@ -138,6 +155,7 @@ export const make = Effect.gen(function* () {
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
+  const repositoryMutationLocks = yield* makeKeyedSemaphore;
 
   const ensureGit = Effect.fn("GitWorkflowService.ensureGit")(function* (
     operation: string,
@@ -253,6 +271,101 @@ export const make = Effect.gen(function* () {
     (input: Input) =>
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
+  const findLocalRef = Effect.fn("GitWorkflowService.findLocalRef")(function* (
+    cwd: string,
+    refName: string,
+  ) {
+    const listed = yield* git.listRefs({
+      cwd,
+      query: refName,
+      refKind: "local",
+      refresh: true,
+      limit: 100,
+    });
+    return listed.refs.find((ref) => ref.name === refName) ?? null;
+  });
+
+  const createWorktreeFromLatestDefaultBranch: GitWorkflowService["Service"]["createWorktreeFromLatestDefaultBranch"] =
+    Effect.fn("GitWorkflowService.createWorktreeFromLatestDefaultBranch")(function* (input) {
+      yield* ensureGitCommand(
+        "GitWorkflowService.createWorktreeFromLatestDefaultBranch",
+        input.cwd,
+      );
+      return yield* repositoryMutationLocks.withPermit(
+        input.cwd,
+        Effect.gen(function* () {
+          const remoteName = yield* git.resolvePrimaryRemoteName(input.cwd);
+          yield* git.fetchRemote({ cwd: input.cwd, remoteName });
+          const baseBranch = yield* git.resolveRemoteDefaultBranch({
+            cwd: input.cwd,
+            remoteName,
+          });
+          const resolvedBase = yield* git.resolveRemoteTrackingCommit({
+            cwd: input.cwd,
+            refName: baseBranch,
+            fallbackRemoteName: remoteName,
+          });
+          yield* git.pruneWorktrees({ cwd: input.cwd });
+          const existingRef = yield* findLocalRef(input.cwd, input.newRefName);
+          const created =
+            existingRef?.worktreePath !== null && existingRef?.worktreePath !== undefined
+              ? {
+                  worktree: {
+                    path: existingRef.worktreePath,
+                    refName: input.newRefName,
+                  },
+                }
+              : yield* git.createWorktree(
+                  existingRef === null
+                    ? {
+                        cwd: input.cwd,
+                        refName: resolvedBase.commitSha,
+                        newRefName: input.newRefName,
+                        baseRefName: resolvedBase.remoteRefName,
+                        path: null,
+                      }
+                    : {
+                        cwd: input.cwd,
+                        refName: input.newRefName,
+                        path: null,
+                      },
+                );
+          return {
+            worktree: created.worktree,
+            remoteName,
+            baseBranch,
+            baseCommit: resolvedBase.commitSha,
+            baseRefName: resolvedBase.remoteRefName,
+          };
+        }),
+      );
+    });
+
+  const createWorktreeFromExistingBranch: GitWorkflowService["Service"]["createWorktreeFromExistingBranch"] =
+    Effect.fn("GitWorkflowService.createWorktreeFromExistingBranch")(function* (input) {
+      yield* ensureGitCommand("GitWorkflowService.createWorktreeFromExistingBranch", input.cwd);
+      return yield* repositoryMutationLocks.withPermit(
+        input.cwd,
+        Effect.gen(function* () {
+          yield* git.pruneWorktrees({ cwd: input.cwd });
+          const existingRef = yield* findLocalRef(input.cwd, input.refName);
+          if (existingRef?.worktreePath !== null && existingRef?.worktreePath !== undefined) {
+            return {
+              worktree: {
+                path: existingRef.worktreePath,
+                refName: input.refName,
+              },
+            };
+          }
+          return yield* git.createWorktree({
+            cwd: input.cwd,
+            refName: input.refName,
+            path: null,
+          });
+        }),
+      );
+    });
+
   return GitWorkflowService.of({
     status: (input) =>
       detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
@@ -303,6 +416,8 @@ export const make = Effect.gen(function* () {
       ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
         Effect.andThen(git.createWorktree(input)),
       ),
+    createWorktreeFromLatestDefaultBranch,
+    createWorktreeFromExistingBranch,
     fetchRemote: (input) =>
       ensureGitCommand("GitWorkflowService.fetchRemote", input.cwd).pipe(
         Effect.andThen(git.fetchRemote(input)),

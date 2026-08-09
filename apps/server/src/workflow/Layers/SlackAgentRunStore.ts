@@ -2,6 +2,7 @@ import type {
   MockSlackThreadRef,
   SlackAgentDeliveryState,
   SlackAgentDeliveryView,
+  SlackAgentInvocationMode,
   SlackAgentRunDetailView,
   SlackAgentRunSummaryView,
 } from "@t3tools/contracts";
@@ -33,9 +34,12 @@ type DbDeliveryState =
 interface RunSummaryRow {
   readonly run_id: string;
   readonly instance_id: string;
+  readonly project_id: string | null;
   readonly handle: string;
   readonly bot_user_id: string;
-  readonly ticket_id: string;
+  readonly mode: SlackAgentInvocationMode;
+  readonly t3_thread_id: string | null;
+  readonly ticket_id: string | null;
   readonly workspace_id: string;
   readonly channel_id: string;
   readonly channel_name: string;
@@ -108,9 +112,12 @@ const toThread = (row: RunSummaryRow): MockSlackThreadRef => ({
 const toRunSummary = (row: RunSummaryRow): SlackAgentRunSummaryView => ({
   runId: row.run_id as never,
   instanceId: row.instance_id as never,
+  ...(row.project_id === null ? {} : { projectId: row.project_id as never }),
   handle: row.handle as never,
   botUserId: row.bot_user_id as never,
-  ticketId: row.ticket_id as never,
+  mode: row.mode,
+  ...(row.t3_thread_id === null ? {} : { threadId: row.t3_thread_id as never }),
+  ...(row.ticket_id === null ? {} : { ticketId: row.ticket_id as never }),
   thread: toThread(row),
   state: row.status,
   ...(row.status_message_id === null ? {} : { statusMessageId: row.status_message_id as never }),
@@ -146,8 +153,11 @@ const make = Effect.gen(function* () {
       SELECT
         r.run_id,
         r.instance_id,
+        r.project_id,
         i.handle,
         i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
         r.ticket_id,
         r.workspace_id,
         r.channel_id,
@@ -197,8 +207,11 @@ const make = Effect.gen(function* () {
           SELECT
             r.run_id,
             r.instance_id,
+        r.project_id,
             i.handle,
             i.bot_user_id,
+            r.mode,
+            r.t3_thread_id,
             r.ticket_id,
             r.workspace_id,
             r.channel_id,
@@ -250,8 +263,11 @@ const make = Effect.gen(function* () {
       SELECT
         r.run_id,
         r.instance_id,
+        r.project_id,
         i.handle,
         i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
         r.ticket_id,
         r.workspace_id,
         r.channel_id,
@@ -270,16 +286,16 @@ const make = Effect.gen(function* () {
       LIMIT 1
     `).pipe(Effect.map((rows) => rows[0] ?? null));
 
-  const findByExternalEvent: SlackAgentRunStoreShape["findByExternalEvent"] = (
-    instanceId,
-    externalEventId,
-  ) =>
+  const getRunByDeliveryId: SlackAgentRunStoreShape["getRunByDeliveryId"] = (deliveryId) =>
     selectRunRows(sql<RunSummaryRow>`
       SELECT
         r.run_id,
         r.instance_id,
+        r.project_id,
         i.handle,
         i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
         r.ticket_id,
         r.workspace_id,
         r.channel_id,
@@ -294,7 +310,48 @@ const make = Effect.gen(function* () {
         r.updated_at
       FROM slack_agent_run AS r
       JOIN slack_agent_instance AS i ON i.instance_id = r.instance_id
-      WHERE r.instance_id = ${String(instanceId)} AND r.external_event_id = ${externalEventId}
+      JOIN slack_agent_delivery AS d ON d.run_id = r.run_id
+      WHERE d.delivery_id = ${String(deliveryId)}
+      LIMIT 1
+    `).pipe(Effect.map((rows) => rows[0] ?? null));
+
+  const findByExternalEvent: SlackAgentRunStoreShape["findByExternalEvent"] = (
+    instanceId,
+    externalEventId,
+  ) =>
+    selectRunRows(sql<RunSummaryRow>`
+      SELECT
+        r.run_id,
+        r.instance_id,
+        r.project_id,
+        i.handle,
+        i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
+        r.ticket_id,
+        r.workspace_id,
+        r.channel_id,
+        r.channel_name,
+        r.thread_key,
+        r.thread_ts,
+        r.status,
+        r.status_message_id,
+        r.pr_url,
+        r.last_applied_sequence,
+        r.created_at,
+        r.updated_at
+      FROM slack_agent_run AS r
+      JOIN slack_agent_instance AS i ON i.instance_id = r.instance_id
+      WHERE r.instance_id = ${String(instanceId)}
+        AND (
+          r.external_event_id = ${externalEventId}
+          OR EXISTS (
+            SELECT 1
+            FROM slack_agent_ingested_event AS event
+            WHERE event.run_id = r.run_id
+              AND event.external_event_id = ${externalEventId}
+          )
+        )
       LIMIT 1
     `).pipe(Effect.map((rows) => rows[0] ?? null));
 
@@ -308,8 +365,11 @@ const make = Effect.gen(function* () {
       SELECT
         r.run_id,
         r.instance_id,
+        r.project_id,
         i.handle,
         i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
         r.ticket_id,
         r.workspace_id,
         r.channel_id,
@@ -328,6 +388,72 @@ const make = Effect.gen(function* () {
         AND r.workspace_id = ${workspaceId}
         AND r.channel_id = ${channelId}
         AND r.thread_ts = ${threadTs}
+      LIMIT 1
+    `).pipe(Effect.map((rows) => rows[0] ?? null));
+
+  const findRootChatByChannel: SlackAgentRunStoreShape["findRootChatByChannel"] = (
+    instanceId,
+    workspaceId,
+    channelId,
+  ) =>
+    selectRunRows(sql<RunSummaryRow>`
+      SELECT
+        r.run_id,
+        r.instance_id,
+        r.project_id,
+        i.handle,
+        i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
+        r.ticket_id,
+        r.workspace_id,
+        r.channel_id,
+        r.channel_name,
+        r.thread_key,
+        r.thread_ts,
+        r.status,
+        r.status_message_id,
+        r.pr_url,
+        r.last_applied_sequence,
+        r.created_at,
+        r.updated_at
+      FROM slack_agent_run AS r
+      JOIN slack_agent_instance AS i ON i.instance_id = r.instance_id
+      WHERE r.instance_id = ${String(instanceId)}
+        AND r.workspace_id = ${workspaceId}
+        AND r.channel_id = ${channelId}
+        AND r.mode = 'chat'
+        AND r.thread_ts = r.trigger_ts
+      ORDER BY r.created_at ASC, r.run_id ASC
+      LIMIT 1
+    `).pipe(Effect.map((rows) => rows[0] ?? null));
+
+  const findChatByThreadId: SlackAgentRunStoreShape["findChatByThreadId"] = (threadId) =>
+    selectRunRows(sql<RunSummaryRow>`
+      SELECT
+        r.run_id,
+        r.instance_id,
+        r.project_id,
+        i.handle,
+        i.bot_user_id,
+        r.mode,
+        r.t3_thread_id,
+        r.ticket_id,
+        r.workspace_id,
+        r.channel_id,
+        r.channel_name,
+        r.thread_key,
+        r.thread_ts,
+        r.status,
+        r.status_message_id,
+        r.pr_url,
+        r.last_applied_sequence,
+        r.created_at,
+        r.updated_at
+      FROM slack_agent_run AS r
+      JOIN slack_agent_instance AS i ON i.instance_id = r.instance_id
+      WHERE r.mode = 'chat'
+        AND r.t3_thread_id = ${String(threadId)}
       LIMIT 1
     `).pipe(Effect.map((rows) => rows[0] ?? null));
 
@@ -381,6 +507,16 @@ const make = Effect.gen(function* () {
 
   const createRunWithAcceptedDelivery: SlackAgentRunStoreShape["createRunWithAcceptedDelivery"] =
     Effect.fn("SlackAgentRunStore.createRunWithAcceptedDelivery")(function* (input) {
+      if (input.mode === "chat" && (input.threadId === undefined || input.threadId === null)) {
+        return yield* new SlackAgentRunStoreError({
+          message: "Chat Slack agent runs require a threadId",
+        });
+      }
+      if (input.mode === "workflow" && (input.ticketId === undefined || input.ticketId === null)) {
+        return yield* new SlackAgentRunStoreError({
+          message: "Workflow Slack agent runs require a ticketId",
+        });
+      }
       const eventId = yield* ids.eventId();
       const runId = String(input.runId ?? `slackrun-${eventId}`);
       const now = DateTime.formatIso(yield* DateTime.now);
@@ -390,7 +526,9 @@ const make = Effect.gen(function* () {
           INSERT INTO slack_agent_run (
             run_id,
             instance_id,
+            project_id,
             external_event_id,
+            mode,
             workspace_id,
             channel_id,
             channel_name,
@@ -400,6 +538,7 @@ const make = Effect.gen(function* () {
             snapshot_json,
             snapshot_sha256,
             snapshot_bytes,
+            t3_thread_id,
             ticket_id,
             status,
             status_message_id,
@@ -410,7 +549,13 @@ const make = Effect.gen(function* () {
           ) VALUES (
             ${runId},
             ${String(input.instanceId)},
+            COALESCE(${input.projectId ?? null}, (
+              SELECT project_id
+              FROM slack_agent_instance
+              WHERE instance_id = ${String(input.instanceId)}
+            )),
             ${input.externalEventId},
+            ${input.mode},
             ${input.workspaceId},
             ${input.channelId},
             ${input.channelName},
@@ -420,7 +565,8 @@ const make = Effect.gen(function* () {
             ${input.snapshotJson},
             ${input.snapshotSha256},
             ${input.snapshotBytes},
-            ${input.ticketId},
+            ${input.threadId ?? null},
+            ${input.ticketId ?? null},
             ${input.status},
             NULL,
             NULL,
@@ -519,15 +665,143 @@ const make = Effect.gen(function* () {
       "Failed to update Slack agent run status",
       sql`
         UPDATE slack_agent_run
-        SET status = ${input.status},
-            pr_url = ${input.prUrl === undefined ? (current.prUrl ?? null) : input.prUrl},
-            status_message_id = ${input.statusMessageId === undefined ? (current.statusMessageId ?? null) : input.statusMessageId},
-            last_applied_sequence = ${input.lastAppliedSequence ?? current.lastAppliedSequence},
+        SET status = COALESCE(${input.status ?? null}, status),
+            pr_url = CASE
+              WHEN ${input.prUrl === undefined ? 0 : 1} = 0 THEN pr_url
+              ELSE ${input.prUrl ?? null}
+            END,
+            status_message_id = CASE
+              WHEN ${input.statusMessageId === undefined ? 0 : 1} = 0 THEN status_message_id
+              ELSE ${input.statusMessageId ?? null}
+            END,
+            last_applied_sequence = COALESCE(${input.lastAppliedSequence ?? null}, last_applied_sequence),
             updated_at = ${now}
         WHERE run_id = ${String(input.runId)}
       `,
     );
   });
+
+  const relinkChatThread: SlackAgentRunStoreShape["relinkChatThread"] = Effect.fn(
+    "SlackAgentRunStore.relinkChatThread",
+  )(function* (input) {
+    const current = yield* runSummaryById(String(input.runId));
+    if (current === null || current.mode !== "chat") {
+      return yield* new SlackAgentRunStoreError({
+        message: "Slack chat run not found",
+      });
+    }
+    const now = DateTime.formatIso(yield* DateTime.now);
+    yield* wrap(
+      "Failed to relink Slack chat thread",
+      sql`
+        UPDATE slack_agent_run
+        SET t3_thread_id = ${String(input.threadId)},
+            updated_at = ${now}
+        WHERE run_id = ${String(input.runId)}
+          AND mode = 'chat'
+      `,
+    );
+    const updated = yield* runSummaryById(String(input.runId));
+    if (updated === null) {
+      return yield* new SlackAgentRunStoreError({
+        message: "Relinked Slack chat run disappeared",
+      });
+    }
+    return updated;
+  });
+
+  const reserveIngestedEvent: SlackAgentRunStoreShape["reserveIngestedEvent"] = Effect.fn(
+    "SlackAgentRunStore.reserveIngestedEvent",
+  )(function* (input) {
+    const now = DateTime.formatIso(yield* DateTime.now);
+    yield* wrap(
+      "Failed to reserve Slack agent ingested event",
+      sql`
+        INSERT OR IGNORE INTO slack_agent_ingested_event (
+          run_id,
+          external_event_id,
+          trigger_message_id,
+          message_id,
+          state,
+          created_at,
+          delivered_at
+        ) VALUES (
+          ${String(input.runId)},
+          ${input.externalEventId},
+          ${input.triggerMessageId},
+          ${input.messageId},
+          'pending',
+          ${now},
+          NULL
+        )
+      `,
+    );
+    const rows = yield* wrap(
+      "Failed to read Slack agent ingested event",
+      sql<{ readonly state: "pending" | "delivered" }>`
+        SELECT state
+        FROM slack_agent_ingested_event
+        WHERE run_id = ${String(input.runId)}
+          AND (
+            external_event_id = ${input.externalEventId}
+            OR trigger_message_id = ${input.triggerMessageId}
+          )
+        LIMIT 1
+      `,
+    );
+    return rows[0]?.state === "delivered";
+  });
+
+  const markIngestedEventDelivered: SlackAgentRunStoreShape["markIngestedEventDelivered"] =
+    Effect.fn("SlackAgentRunStore.markIngestedEventDelivered")(function* (input) {
+      const now = DateTime.formatIso(yield* DateTime.now);
+      yield* wrap(
+        "Failed to mark Slack agent ingested event delivered",
+        sql`
+          UPDATE slack_agent_ingested_event
+          SET state = 'delivered',
+              delivered_at = ${now}
+          WHERE run_id = ${String(input.runId)}
+            AND (
+              external_event_id = ${input.externalEventId}
+              OR trigger_message_id = ${input.triggerMessageId}
+            )
+        `,
+      );
+    });
+
+  const seedDeliveredIngestedEvents: SlackAgentRunStoreShape["seedDeliveredIngestedEvents"] =
+    Effect.fn("SlackAgentRunStore.seedDeliveredIngestedEvents")(function* (input) {
+      if (input.events.length === 0) return;
+      const now = DateTime.formatIso(yield* DateTime.now);
+      yield* Effect.forEach(
+        input.events,
+        (event) =>
+          wrap(
+            "Failed to seed delivered Slack agent ingested event",
+            sql`
+              INSERT OR IGNORE INTO slack_agent_ingested_event (
+                run_id,
+                external_event_id,
+                trigger_message_id,
+                message_id,
+                state,
+                created_at,
+                delivered_at
+              ) VALUES (
+                ${String(input.runId)},
+                ${event.externalEventId},
+                ${event.triggerMessageId},
+                ${event.messageId},
+                'delivered',
+                ${now},
+                ${now}
+              )
+            `,
+          ),
+        { discard: true },
+      );
+    });
 
   const pruneRunlessMockThreads: SlackAgentRunStoreShape["pruneRunlessMockThreads"] = (cutoffIso) =>
     Effect.gen(function* () {
@@ -568,8 +842,15 @@ const make = Effect.gen(function* () {
     getRun,
     getRunSummary,
     getRunByTicketId,
+    getRunByDeliveryId,
     findByExternalEvent,
     findBySourceThread,
+    findRootChatByChannel,
+    findChatByThreadId,
+    relinkChatThread,
+    reserveIngestedEvent,
+    markIngestedEventDelivered,
+    seedDeliveredIngestedEvents,
     enqueueDelivery,
     listDeliveries,
     markDeliverySent,

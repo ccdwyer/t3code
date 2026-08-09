@@ -18,6 +18,8 @@ import {
   type AuthAccessStreamEvent,
   type AuthEnvironmentScope,
   AuthSessionId,
+  AuthWorkflowOperateScope,
+  AuthWorkflowReadScope,
   CommandId,
   type DiscoveredLocalServerList,
   EventId,
@@ -160,6 +162,8 @@ import { SlackAgentGateway } from "./workflow/Services/SlackAgentGateway.ts";
 import { SlackAgentInstanceStore } from "./workflow/Services/SlackAgentInstanceStore.ts";
 import { SlackAgentIntake } from "./workflow/Services/SlackAgentIntake.ts";
 import { SlackAgentRunStore } from "./workflow/Services/SlackAgentRunStore.ts";
+import { SlackApi } from "./slack/Services/SlackApi.ts";
+import { SlackConnectionManager } from "./slack/Services/SlackConnectionManager.ts";
 import { workflowRpcHandlers } from "./workflow/Layers/WorkflowRpcHandlers.ts";
 import { ticketBaseRef } from "./workflow/ticketRefs.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -559,6 +563,14 @@ const makeWsRpcLayer = (
       const slackAgentDeliveryDispatcher = Context.getOption(
         (yield* Effect.context<never>()) as Context.Context<SlackAgentDeliveryDispatcher>,
         SlackAgentDeliveryDispatcher,
+      );
+      const slackApi = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackApi>,
+        SlackApi,
+      );
+      const slackConnections = Context.getOption(
+        (yield* Effect.context<never>()) as Context.Context<SlackConnectionManager>,
+        SlackConnectionManager,
       );
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1311,8 +1323,25 @@ const makeWsRpcLayer = (
         ...(Option.isSome(slackAgentDeliveryDispatcher)
           ? { slackDeliveryDispatcher: slackAgentDeliveryDispatcher.value }
           : {}),
+        ...(Option.isSome(slackApi) ? { slackApi: slackApi.value } : {}),
+        ...(Option.isSome(slackConnections) ? { slackConnections: slackConnections.value } : {}),
+        authorizeWorkflowEffect: (effect) => authorizeEffect(AuthWorkflowOperateScope, effect),
+        authorizeWorkflowReadEffect: (effect) => authorizeEffect(AuthWorkflowReadScope, effect),
         observeRpcEffect,
         observeRpcStreamEffect,
+        orchestrationGate: <A, E, R>(
+          effect: Effect.Effect<A, E, R>,
+        ): Effect.Effect<A, E | WorkflowRpcError, R> =>
+          startup.awaitCommandReady.pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkflowRpcError({
+                  message: "Server runtime is not ready (server is starting up)",
+                  cause,
+                }),
+            ),
+            Effect.andThen(effect),
+          ),
         // Gate mutating workflow RPCs behind startup + workflow-recovery
         // readiness (mirrors how orchestration commands go through
         // startup.enqueueCommand): defer the effect until recovery is done, and

@@ -5,7 +5,18 @@ import {
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { BoardId, BoardStreamItem, EnvironmentApi, EnvironmentId } from "@t3tools/contracts";
+import type {
+  BoardId,
+  BoardStreamItem,
+  EnvironmentApi,
+  EnvironmentId,
+  SlackAgentConnectInstanceInput,
+  SlackAgentCreateInstanceResult,
+  SlackAgentCreateMockInstanceInput,
+  SlackAgentInstanceIdInput,
+  SlackAgentTestConnectionInput,
+  SlackAgentTestConnectionResult,
+} from "@t3tools/contracts";
 import { AsyncResult, type Atom, type AtomRegistry } from "effect/unstable/reactivity";
 import { useContext, useMemo } from "react";
 
@@ -27,7 +38,21 @@ export type SlackAgentWorkflowApi = Pick<
   | "subscribeSlackAgentRun"
   | "retrySlackAgentDelivery"
   | "subscribeMockSlackThread"
->;
+> & {
+  readonly createMockSlackAgentInstance: (
+    input: SlackAgentCreateMockInstanceInput,
+  ) => Promise<SlackAgentCreateInstanceResult>;
+  readonly connectSlackAgentInstance: (
+    input: SlackAgentConnectInstanceInput,
+  ) => Promise<SlackAgentCreateInstanceResult>;
+  readonly disconnectSlackAgentInstance: (
+    input: SlackAgentInstanceIdInput,
+  ) => Promise<SlackAgentCreateInstanceResult>;
+  readonly testSlackAgentConnection: (
+    input: SlackAgentTestConnectionInput,
+  ) => Promise<SlackAgentTestConnectionResult>;
+};
+export type WorkflowApiWithSlack = WorkflowApi & SlackAgentWorkflowApi;
 export type SlackAgentInstanceView = Awaited<
   ReturnType<WorkflowApi["listSlackAgentInstances"]>
 >["instances"][number];
@@ -223,7 +248,24 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
       return result;
     };
 
-    return {
+    const refreshSlackAgentInstances = (): void => {
+      const family = slackAtoms.listSlackAgentInstances;
+      if (typeof family !== "function") return;
+      refreshQuery(
+        family as (target: {
+          readonly environmentId: EnvironmentId;
+          readonly input: Record<string, never>;
+        }) => Atom.Atom<unknown>,
+        {},
+      );
+    };
+
+    const afterSlackAgentMutation = <A>(result: A): A => {
+      refreshSlackAgentInstances();
+      return result;
+    };
+
+    const api: WorkflowApiWithSlack = {
       listBoards: (input) => readQuery(w.listBoards, input),
       createBoard: (input) =>
         run(w.createBoard, input).then((result) => {
@@ -353,21 +395,45 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
         runOptionalSlackCommand<
           Awaited<ReturnType<WorkflowApi["createSlackAgentInstance"]>>,
           typeof input
-        >("createSlackAgentInstance", input),
+        >("createSlackAgentInstance", input).then(afterSlackAgentMutation),
+      createMockSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<SlackAgentCreateInstanceResult, typeof input>(
+          "createMockSlackAgentInstance",
+          input,
+        ).then(afterSlackAgentMutation),
+      connectSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<SlackAgentCreateInstanceResult, typeof input>(
+          "connectSlackAgentInstance",
+          input,
+        ).then(afterSlackAgentMutation),
+      disconnectSlackAgentInstance: (input) =>
+        runOptionalSlackCommand<SlackAgentCreateInstanceResult, typeof input>(
+          "disconnectSlackAgentInstance",
+          input,
+        ).then(afterSlackAgentMutation),
+      testSlackAgentConnection: (input) =>
+        runOptionalSlackCommand<SlackAgentTestConnectionResult, typeof input>(
+          "testSlackAgentConnection",
+          input,
+        ).then(afterSlackAgentMutation),
       updateSlackAgentInstance: (input) =>
         runOptionalSlackCommand<
           Awaited<ReturnType<WorkflowApi["updateSlackAgentInstance"]>>,
           typeof input
-        >("updateSlackAgentInstance", input),
+        >("updateSlackAgentInstance", input).then(afterSlackAgentMutation),
       disableSlackAgentInstance: (input) =>
-        runOptionalSlackCommand<void, typeof input>("disableSlackAgentInstance", input),
+        runOptionalSlackCommand<void, typeof input>("disableSlackAgentInstance", input).then(
+          afterSlackAgentMutation,
+        ),
       enableSlackAgentInstance: (input) =>
         runOptionalSlackCommand<
           Awaited<ReturnType<WorkflowApi["enableSlackAgentInstance"]>>,
           typeof input
-        >("enableSlackAgentInstance", input),
+        >("enableSlackAgentInstance", input).then(afterSlackAgentMutation),
       deleteSlackAgentInstance: (input) =>
-        runOptionalSlackCommand<void, typeof input>("deleteSlackAgentInstance", input),
+        runOptionalSlackCommand<void, typeof input>("deleteSlackAgentInstance", input).then(
+          afterSlackAgentMutation,
+        ),
       retrySlackAgentDelivery: (input) =>
         runOptionalSlackCommand<
           Awaited<ReturnType<WorkflowApi["retrySlackAgentDelivery"]>>,
@@ -398,6 +464,7 @@ export function useWorkflowApi(environmentId: EnvironmentId): WorkflowApi {
             : never
         >("subscribeMockSlackThread", input, callback, options),
     };
+    return api;
   }, [registry, environmentId]);
 }
 

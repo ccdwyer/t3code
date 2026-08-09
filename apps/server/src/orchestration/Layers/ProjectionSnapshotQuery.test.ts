@@ -591,6 +591,28 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [ThreadId.make("thread-archived")],
       );
       assert.equal(archivedShellSnapshot.threads[0]?.archivedAt, "2026-04-06T00:00:06.000Z");
+
+      const archivedLifecycle = yield* snapshotQuery.getThreadLifecycleShellById!(
+        ThreadId.make("thread-archived"),
+      );
+      assert.equal(archivedLifecycle._tag, "Some");
+      if (archivedLifecycle._tag === "Some") {
+        assert.equal(archivedLifecycle.value.thread.archivedAt, "2026-04-06T00:00:06.000Z");
+        assert.equal(archivedLifecycle.value.deletedAt, null);
+      }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET deleted_at = '2026-04-06T00:00:08.000Z'
+        WHERE thread_id = 'thread-archived'
+      `;
+      const deletedLifecycle = yield* snapshotQuery.getThreadLifecycleShellById!(
+        ThreadId.make("thread-archived"),
+      );
+      assert.equal(deletedLifecycle._tag, "Some");
+      if (deletedLifecycle._tag === "Some") {
+        assert.equal(deletedLifecycle.value.deletedAt, "2026-04-06T00:00:08.000Z");
+      }
     }),
   );
 

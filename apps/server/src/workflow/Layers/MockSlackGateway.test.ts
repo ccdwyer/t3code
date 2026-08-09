@@ -240,6 +240,17 @@ layer("MockSlackGateway", (it) => {
           text: "Accepted by @t3_taylor",
           now: "2026-08-07T00:00:02.000Z",
         });
+        const standalone = yield* gateway.postOrUpdateStatus({
+          workspaceId: "T123",
+          channelId: "C123",
+          channelName: "eng",
+          threadTs: "1000.000000",
+          runId: "run-1",
+          deliveryId: "delivery-standalone",
+          text: "Continuation failed",
+          forceNewMessage: true,
+          now: "2026-08-07T00:00:02.500Z",
+        });
         const updated = yield* gateway.postOrUpdateStatus({
           workspaceId: "T123",
           channelId: "C123",
@@ -247,13 +258,13 @@ layer("MockSlackGateway", (it) => {
           threadTs: "1000.000000",
           runId: "run-1",
           deliveryId: "delivery-3",
-          statusMessageId: first.statusMessageId,
           text: "PR ready",
           now: "2026-08-07T00:00:03.000Z",
         });
 
         assert.equal(duplicate.statusMessageId, first.statusMessageId);
         assert.equal(second.statusMessageId === first.statusMessageId, false);
+        assert.equal(standalone.statusMessageId === first.statusMessageId, false);
         assert.equal(updated.statusMessageId, first.statusMessageId);
 
         const thread = yield* gateway.subscribeMockThread({
@@ -262,10 +273,12 @@ layer("MockSlackGateway", (it) => {
           threadTs: "1000.000000",
         });
         assert.ok(thread);
-        assert.equal(Object.keys(thread.statusReplies).length, 2);
+        assert.equal(Object.keys(thread.statusReplies).length, 3);
         assert.equal(thread.statusReplies[first.statusMessageId]?.text, "PR ready");
         assert.equal(thread.statusReplies[first.statusMessageId]?.history.length, 2);
         assert.equal(thread.statusReplies[second.statusMessageId]?.text, "Accepted by @t3_taylor");
+        assert.equal(thread.statusReplies[standalone.statusMessageId]?.text, "Continuation failed");
+        assert.isTrue(thread.statusReplies[standalone.statusMessageId]?.standalone);
       }),
   );
 
@@ -381,6 +394,8 @@ layer("MockSlackGateway", (it) => {
           snapshot_json,
           snapshot_sha256,
           snapshot_bytes,
+          mode,
+          t3_thread_id,
           ticket_id,
           status,
           created_at,
@@ -399,6 +414,8 @@ layer("MockSlackGateway", (it) => {
           '{}',
           'sha',
           2,
+          'workflow',
+          NULL,
           'ticket-linked',
           'accepted',
           '2026-01-01T00:00:00.000Z',

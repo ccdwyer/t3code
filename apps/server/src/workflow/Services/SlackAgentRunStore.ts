@@ -3,10 +3,13 @@ import type {
   SlackAgentDeliveryState,
   SlackAgentDeliveryView,
   SlackAgentInstanceId,
+  SlackAgentInvocationMode,
   SlackAgentRunDetailView,
   SlackAgentRunId,
   SlackAgentRunSummaryView,
+  ProjectId,
   TicketId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -30,6 +33,7 @@ export interface SlackAgentRunStoreShape {
   readonly createRunWithAcceptedDelivery: (input: {
     readonly runId?: SlackAgentRunId | string | undefined;
     readonly instanceId: SlackAgentInstanceId | string;
+    readonly projectId?: ProjectId | string | null | undefined;
     readonly externalEventId: string;
     readonly workspaceId: string;
     readonly channelId: string;
@@ -40,7 +44,9 @@ export interface SlackAgentRunStoreShape {
     readonly snapshotJson: string;
     readonly snapshotSha256: string;
     readonly snapshotBytes: number;
-    readonly ticketId: TicketId;
+    readonly mode: SlackAgentInvocationMode;
+    readonly threadId?: ThreadId | string | null | undefined;
+    readonly ticketId?: TicketId | string | null | undefined;
     readonly status: SlackAgentRunStatus;
     readonly acceptedPayloadJson: string;
     readonly nextAttemptAt?: string | null | undefined;
@@ -58,6 +64,10 @@ export interface SlackAgentRunStoreShape {
     ticketId: TicketId,
   ) => Effect.Effect<SlackAgentRunSummaryView | null, SlackAgentRunStoreError>;
 
+  readonly getRunByDeliveryId: (
+    deliveryId: SlackAgentDeliveryId | string,
+  ) => Effect.Effect<SlackAgentRunSummaryView | null, SlackAgentRunStoreError>;
+
   readonly findByExternalEvent: (
     instanceId: SlackAgentInstanceId | string,
     externalEventId: string,
@@ -69,6 +79,43 @@ export interface SlackAgentRunStoreShape {
     channelId: string,
     threadTs: string,
   ) => Effect.Effect<SlackAgentRunSummaryView | null, SlackAgentRunStoreError>;
+
+  readonly findRootChatByChannel: (
+    instanceId: SlackAgentInstanceId | string,
+    workspaceId: string,
+    channelId: string,
+  ) => Effect.Effect<SlackAgentRunSummaryView | null, SlackAgentRunStoreError>;
+
+  readonly findChatByThreadId: (
+    threadId: ThreadId | string,
+  ) => Effect.Effect<SlackAgentRunSummaryView | null, SlackAgentRunStoreError>;
+
+  readonly relinkChatThread: (input: {
+    readonly runId: SlackAgentRunId | string;
+    readonly threadId: ThreadId | string;
+  }) => Effect.Effect<SlackAgentRunSummaryView, SlackAgentRunStoreError>;
+
+  readonly reserveIngestedEvent: (input: {
+    readonly runId: SlackAgentRunId | string;
+    readonly externalEventId: string;
+    readonly triggerMessageId: string;
+    readonly messageId: string;
+  }) => Effect.Effect<boolean, SlackAgentRunStoreError>;
+
+  readonly markIngestedEventDelivered: (input: {
+    readonly runId: SlackAgentRunId | string;
+    readonly externalEventId: string;
+    readonly triggerMessageId: string;
+  }) => Effect.Effect<void, SlackAgentRunStoreError>;
+
+  readonly seedDeliveredIngestedEvents: (input: {
+    readonly runId: SlackAgentRunId | string;
+    readonly events: ReadonlyArray<{
+      readonly externalEventId: string;
+      readonly triggerMessageId: string;
+      readonly messageId: string;
+    }>;
+  }) => Effect.Effect<void, SlackAgentRunStoreError>;
 
   readonly enqueueDelivery: (input: {
     readonly runId: SlackAgentRunId | string;
@@ -100,7 +147,7 @@ export interface SlackAgentRunStoreShape {
 
   readonly updateRunStatus: (input: {
     readonly runId: SlackAgentRunId | string;
-    readonly status: SlackAgentRunStatus;
+    readonly status?: SlackAgentRunStatus | undefined;
     readonly prUrl?: string | null | undefined;
     readonly statusMessageId?: string | null | undefined;
     readonly lastAppliedSequence?: number | undefined;

@@ -11,12 +11,10 @@ import * as Result from "effect/Result";
 import { detectSourceControlProviderFromRemoteUrl } from "./sourceControl.ts";
 
 export const WORKTREE_BRANCH_PREFIX = "t3code";
-// Canonical form is `t3code/<8 hex>`. Older mobile builds generated `t3code/<uuid>`
-// via Crypto.randomUUID() (always RFC 4122 v4), so the matcher also accepts exactly
-// that shape — version nibble `4`, variant nibble `[89ab]` — to keep those threads
-// eligible for branch regeneration without loosening beyond what was ever generated.
+// Canonical form is `t3code/<16 hex>`. Earlier builds generated 8-hex or UUID refs, so the matcher
+// keeps those exact forms eligible for worktree cleanup without accepting arbitrary branches.
 const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(
-  `^${WORKTREE_BRANCH_PREFIX}\\/(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`,
+  `^${WORKTREE_BRANCH_PREFIX}\\/(?:[0-9a-f]{8}|[0-9a-f]{16}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`,
 );
 
 /**
@@ -95,12 +93,12 @@ export function deriveLocalBranchNameFromRemoteRef(branchName: string): string {
 export function buildTemporaryWorktreeBranchName(
   randomHex: (byteLength: number) => string,
 ): string {
-  // Normalize to exactly 8 lowercase hex chars so a UUID-shaped callback
+  // Normalize to exactly 16 lowercase hex chars so a UUID-shaped callback
   // still produces the canonical temporary branch form.
-  const token = randomHex(4)
+  const token = randomHex(8)
     .toLowerCase()
     .replace(/[^0-9a-f]/g, "")
-    .slice(0, 8);
+    .slice(0, 16);
   return `${WORKTREE_BRANCH_PREFIX}/${token}`;
 }
 

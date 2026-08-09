@@ -30,6 +30,7 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { SlackChatWorktreePromotion } from "../../slack/Services/SlackChatWorktreePromotion.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
@@ -879,6 +880,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const slackWorktreePromotion = yield* Effect.serviceOption(SlackChatWorktreePromotion);
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
@@ -2023,6 +2025,24 @@ const make = Effect.gen(function* () {
           ),
         ),
       ).pipe(Effect.asVoid);
+
+      if (Option.isSome(slackWorktreePromotion)) {
+        if (event.type === "turn.completed" && eventTurnId !== undefined) {
+          yield* slackWorktreePromotion.value.settleTurn(thread.id, {
+            type: "completed",
+            turnId: eventTurnId,
+          });
+        } else if (event.type === "turn.aborted" && eventTurnId !== undefined) {
+          yield* slackWorktreePromotion.value.settleTurn(thread.id, {
+            type: "aborted",
+            turnId: eventTurnId,
+          });
+        } else if (event.type === "session.exited") {
+          yield* slackWorktreePromotion.value.settleTurn(thread.id, {
+            type: "session-exited",
+          });
+        }
+      }
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;

@@ -1,5 +1,6 @@
 // @effect-diagnostics globalTimers:off
 import { assert, it } from "@effect/vitest";
+import { MessageId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -2273,12 +2274,20 @@ it.effect("editTicketMessage edits a free-standing user comment and rejects ever
       });
 
       // Answer the awaiting step — this posts a user message that carries a stepRunId.
+      const answerMessageId = MessageId.make("message-answer-idempotent");
       yield* engine.answerTicketStep({
         stepRunId: stepRunId as never,
+        messageId: answerMessageId,
         text: "Use the sandbox endpoint.",
         attachments: [],
       });
       yield* awaitLane(ticketId as string, "done");
+      yield* engine.answerTicketStep({
+        stepRunId: stepRunId as never,
+        messageId: answerMessageId,
+        text: "Use the sandbox endpoint.",
+        attachments: [],
+      });
 
       const detailAfter = yield* read.getTicketDetail(ticketId);
       const freeStanding = detailAfter?.messages.find(
@@ -2286,6 +2295,10 @@ it.effect("editTicketMessage edits a free-standing user comment and rejects ever
       );
       const stepBound = detailAfter?.messages.find(
         (m) => m.author === "user" && m.stepRunId != null,
+      );
+      assert.equal(
+        detailAfter?.messages.filter((message) => message.messageId === answerMessageId).length,
+        1,
       );
       assert.isString(freeStanding?.messageId);
       assert.isString(stepBound?.messageId);

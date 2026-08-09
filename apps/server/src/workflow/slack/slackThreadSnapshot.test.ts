@@ -152,6 +152,31 @@ it.effect("rejects oversize snapshots instead of truncating", () =>
   }),
 );
 
+it.effect("trims oldest context until a real Slack snapshot fits the byte budget", () =>
+  Effect.gen(function* () {
+    const triggerOnly = yield* buildSlackThreadSnapshot({
+      ...baseInput,
+      messages: [msg("trigger", "1000.000003", "trigger")],
+    });
+    const snapshot = yield* buildSlackThreadSnapshot({
+      ...baseInput,
+      trimToFit: true,
+      maxBytes: triggerOnly.byteLength,
+      messages: [
+        msg("root", "1000.000000", "x".repeat(4_000)),
+        msg("reply", "1000.000002", "y".repeat(4_000)),
+        msg("trigger", "1000.000003", "trigger"),
+      ],
+    });
+
+    assert.deepEqual(
+      snapshot.messages.map((message) => message.messageId),
+      ["trigger"],
+    );
+    assert.equal(snapshot.byteLength, triggerOnly.byteLength);
+  }),
+);
+
 it.effect("keeps the first duplicate message id in the winning snapshot", () =>
   Effect.gen(function* () {
     const snapshot = yield* buildSlackThreadSnapshot({

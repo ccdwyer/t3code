@@ -231,6 +231,21 @@ describe("ServerSettings worktree defaults", () => {
       decodeServerSettingsPatch({ newWorktreesStartFromOrigin: false }).newWorktreesStartFromOrigin,
     ).toBe(false);
   });
+
+  it("defaults Slack worktree checkout retention to 14 days", () => {
+    expect(decodeServerSettings({}).slackWorktreeRetentionDays).toBe(14);
+  });
+
+  it("allows Slack worktree checkout cleanup to be disabled", () => {
+    expect(
+      decodeServerSettingsPatch({ slackWorktreeRetentionDays: null }).slackWorktreeRetentionDays,
+    ).toBeNull();
+  });
+
+  it.each([0, 366, 14.5])("rejects an invalid Slack worktree retention: %s", (value) => {
+    expect(() => decodeServerSettings({ slackWorktreeRetentionDays: value })).toThrow();
+    expect(() => decodeServerSettingsPatch({ slackWorktreeRetentionDays: value })).toThrow();
+  });
 });
 
 describe("ServerSettings.sourceControlWritingStyle", () => {

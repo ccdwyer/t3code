@@ -553,6 +553,17 @@ export type SourceControlWritingStyleSettings = typeof SourceControlWritingStyle
 
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 export const DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.minutes(5);
+export const DEFAULT_SLACK_WORKTREE_RETENTION_DAYS = 14;
+export const MIN_SLACK_WORKTREE_RETENTION_DAYS = 1;
+export const MAX_SLACK_WORKTREE_RETENTION_DAYS = 365;
+
+export const SlackWorktreeRetentionDays = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_SLACK_WORKTREE_RETENTION_DAYS,
+    maximum: MAX_SLACK_WORKTREE_RETENTION_DAYS,
+  }),
+);
+export type SlackWorktreeRetentionDays = typeof SlackWorktreeRetentionDays.Type;
 
 export const BackgroundActivityProfile = Schema.Literals([
   "balanced",
@@ -622,6 +633,9 @@ export const ServerSettings = Schema.Struct({
   ),
   newWorktreesStartFromOrigin: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  slackWorktreeRetentionDays: Schema.NullOr(SlackWorktreeRetentionDays).pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SLACK_WORKTREE_RETENTION_DAYS)),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   textGenerationModelSelection: ModelSelection.pipe(
@@ -777,6 +791,7 @@ export const ServerSettingsPatch = Schema.Struct({
   backgroundActivityProfile: Schema.optionalKey(BackgroundActivityProfile),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
+  slackWorktreeRetentionDays: Schema.optionalKey(Schema.NullOr(SlackWorktreeRetentionDays)),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sourceControlWritingStyle: Schema.optionalKey(

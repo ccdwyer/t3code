@@ -40,7 +40,7 @@ describe("renderSlackAgentStatus", () => {
       payload: {
         stepRunId: "step-run-1" as never,
         waitingReason:
-          "token xoxb-secret should not leak and neither should https://hooks.slack.com/services/T/B/C",
+          "tokens xoxb-secret and xapp-secret should not leak and neither should https://hooks.slack.com/services/T/B/C",
       } satisfies Extract<WorkflowEvent, { type: "StepAwaitingUser" }>["payload"],
     } as unknown as WorkflowEvent;
 
@@ -58,6 +58,7 @@ describe("renderSlackAgentStatus", () => {
     assert.include(payload.body, "[redacted]");
     assert.include(payload.body, "[redacted-slack-url]");
     assert.include(payload.text, "[redacted]");
+    assert.notInclude(payload.body, "xapp-secret");
     assert.include(payload.text, "Ticket: t3://ticket/ticket-1");
   });
 

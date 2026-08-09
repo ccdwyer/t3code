@@ -1,5 +1,6 @@
 import {
-  AuthWorkflowOperateScope,
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   AuthWorkflowReadScope,
   WORKFLOW_WS_METHODS,
   WsRpcGroup,
@@ -46,7 +47,7 @@ it("the timeline reads require the workflow read scope specifically", () => {
   );
 });
 
-it("Slack agent reads and streams require read scope while mutations require operate scope", () => {
+it("Slack agent chat uses orchestration scopes instead of requiring workflow access", () => {
   const reads = [
     WORKFLOW_WS_METHODS.listSlackAgentInstances,
     WORKFLOW_WS_METHODS.getSlackAgentRun,
@@ -55,6 +56,10 @@ it("Slack agent reads and streams require read scope while mutations require ope
   ];
   const mutations = [
     WORKFLOW_WS_METHODS.createSlackAgentInstance,
+    WORKFLOW_WS_METHODS.createMockSlackAgentInstance,
+    WORKFLOW_WS_METHODS.connectSlackAgentInstance,
+    WORKFLOW_WS_METHODS.disconnectSlackAgentInstance,
+    WORKFLOW_WS_METHODS.testSlackAgentConnection,
     WORKFLOW_WS_METHODS.updateSlackAgentInstance,
     WORKFLOW_WS_METHODS.disableSlackAgentInstance,
     WORKFLOW_WS_METHODS.enableSlackAgentInstance,
@@ -64,9 +69,9 @@ it("Slack agent reads and streams require read scope while mutations require ope
   ];
 
   for (const method of reads) {
-    assert.strictEqual(RPC_REQUIRED_SCOPE.get(method), AuthWorkflowReadScope, method);
+    assert.strictEqual(RPC_REQUIRED_SCOPE.get(method), AuthOrchestrationReadScope, method);
   }
   for (const method of mutations) {
-    assert.strictEqual(RPC_REQUIRED_SCOPE.get(method), AuthWorkflowOperateScope, method);
+    assert.strictEqual(RPC_REQUIRED_SCOPE.get(method), AuthOrchestrationOperateScope, method);
   }
 });

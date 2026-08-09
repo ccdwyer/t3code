@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -5,8 +6,10 @@ import {
   NonNegativeInt,
   PositiveInt,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { ModelSelection } from "./orchestration.ts";
 import { BoardId, LaneKey, TicketId } from "./workflow.ts";
 
 export const MOCK_SLACK_WORKSPACE_ID = "mock";
@@ -29,6 +32,9 @@ export type MockSlackThreadId = typeof MockSlackThreadId.Type;
 export const MockSlackWorkspaceId = makeId("MockSlackWorkspaceId");
 export type MockSlackWorkspaceId = typeof MockSlackWorkspaceId.Type;
 
+export const SlackAgentWorkspaceId = makeId("SlackAgentWorkspaceId");
+export type SlackAgentWorkspaceId = typeof SlackAgentWorkspaceId.Type;
+
 export const MockSlackChannelId = makeId("MockSlackChannelId");
 export type MockSlackChannelId = typeof MockSlackChannelId.Type;
 
@@ -40,6 +46,27 @@ export type MockSlackUserId = typeof MockSlackUserId.Type;
 
 export const SlackAgentBotUserId = makeId("SlackAgentBotUserId");
 export type SlackAgentBotUserId = typeof SlackAgentBotUserId.Type;
+
+export const SlackAgentAppId = makeId("SlackAgentAppId");
+export type SlackAgentAppId = typeof SlackAgentAppId.Type;
+
+export const SlackAgentBotId = makeId("SlackAgentBotId");
+export type SlackAgentBotId = typeof SlackAgentBotId.Type;
+
+export const SlackAgentWorkspaceName = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
+export type SlackAgentWorkspaceName = typeof SlackAgentWorkspaceName.Type;
+
+export const SlackAgentAppToken = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^xapp-/),
+  Schema.isMaxLength(4096),
+);
+export type SlackAgentAppToken = typeof SlackAgentAppToken.Type;
+
+export const SlackAgentBotToken = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^xoxb-/),
+  Schema.isMaxLength(4096),
+);
+export type SlackAgentBotToken = typeof SlackAgentBotToken.Type;
 
 export const SlackAgentExternalEventId = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 export type SlackAgentExternalEventId = typeof SlackAgentExternalEventId.Type;
@@ -59,12 +86,72 @@ export type SlackAgentHandle = typeof SlackAgentHandle.Type;
 export const SlackAgentOwnerLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
 export type SlackAgentOwnerLabel = typeof SlackAgentOwnerLabel.Type;
 
+export const SlackAgentProjectSelector = TrimmedNonEmptyString.check(
+  Schema.isPattern(/^[a-z0-9][a-z0-9_-]*$/),
+  Schema.isMaxLength(64),
+);
+export type SlackAgentProjectSelector = typeof SlackAgentProjectSelector.Type;
+export const SLACK_AGENT_DEFAULT_PROJECT_SELECTOR = "project" as SlackAgentProjectSelector;
+
+export const SlackAgentProjectBinding = Schema.Struct({
+  projectId: ProjectId,
+  selector: SlackAgentProjectSelector,
+});
+export type SlackAgentProjectBinding = typeof SlackAgentProjectBinding.Type;
+
 export const SlackAgentTarget = Schema.Struct({
   projectId: ProjectId,
+  projects: Schema.optional(Schema.Array(SlackAgentProjectBinding).check(Schema.isMaxLength(100))),
+});
+export type SlackAgentTarget = typeof SlackAgentTarget.Type;
+
+export const normalizeSlackAgentTargetProjects = (
+  target: SlackAgentTarget,
+): ReadonlyArray<SlackAgentProjectBinding> => {
+  const bindings: Array<SlackAgentProjectBinding> = [];
+  const seenProjects = new Set<string>();
+  const seenSelectors = new Set<string>();
+  const add = (binding: SlackAgentProjectBinding) => {
+    const projectId = String(binding.projectId);
+    const selector = String(binding.selector);
+    if (seenProjects.has(projectId) || seenSelectors.has(selector)) return;
+    seenProjects.add(projectId);
+    seenSelectors.add(selector);
+    bindings.push(binding);
+  };
+  for (const binding of target.projects ?? []) {
+    add(binding);
+  }
+  if (!seenProjects.has(String(target.projectId))) {
+    add({
+      projectId: target.projectId,
+      selector: SLACK_AGENT_DEFAULT_PROJECT_SELECTOR,
+    });
+  }
+  return bindings;
+};
+
+export const SlackAgentWorkflowTarget = Schema.Struct({
   boardId: BoardId,
   initialLane: LaneKey,
 });
-export type SlackAgentTarget = typeof SlackAgentTarget.Type;
+export type SlackAgentWorkflowTarget = typeof SlackAgentWorkflowTarget.Type;
+
+export const SlackAgentInvocationMode = Schema.Literals(["chat", "workflow"]);
+export type SlackAgentInvocationMode = typeof SlackAgentInvocationMode.Type;
+
+export const SlackAgentInvocation = Schema.Union([
+  Schema.Struct({
+    mode: Schema.Literal("chat"),
+    projectSelector: Schema.optional(SlackAgentProjectSelector),
+  }),
+  Schema.Struct({
+    mode: Schema.Literal("workflow"),
+    target: SlackAgentWorkflowTarget,
+    projectSelector: Schema.optional(SlackAgentProjectSelector),
+  }),
+]);
+export type SlackAgentInvocation = typeof SlackAgentInvocation.Type;
 
 export const SlackAgentTargetValidation = Schema.Struct({
   valid: Schema.Boolean,
@@ -76,11 +163,38 @@ export type SlackAgentTargetValidation = typeof SlackAgentTargetValidation.Type;
 export const SlackAgentInstanceState = Schema.Literals(["enabled", "disabled", "needs_setup"]);
 export type SlackAgentInstanceState = typeof SlackAgentInstanceState.Type;
 
+export const SlackAgentInstanceKind = Schema.Literals(["mock", "slack"]);
+export type SlackAgentInstanceKind = typeof SlackAgentInstanceKind.Type;
+
+export const SlackAgentConnectionState = Schema.Literals([
+  "disconnected",
+  "connecting",
+  "connected",
+  "error",
+]);
+export type SlackAgentConnectionState = typeof SlackAgentConnectionState.Type;
+
+export const SlackAgentWorkspaceMetadata = Schema.Struct({
+  workspaceId: SlackAgentWorkspaceId,
+  name: Schema.optional(SlackAgentWorkspaceName),
+});
+export type SlackAgentWorkspaceMetadata = typeof SlackAgentWorkspaceMetadata.Type;
+
+export const SlackAgentConnectionStatus = Schema.Struct({
+  state: SlackAgentConnectionState,
+  connectedAt: Schema.optional(IsoDateTime),
+  lastError: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+});
+export type SlackAgentConnectionStatus = typeof SlackAgentConnectionStatus.Type;
+
 export const SlackAgentLatestRunSummary = Schema.Struct({
   runId: SlackAgentRunId,
-  ticketId: TicketId,
+  mode: SlackAgentInvocationMode.pipe(Schema.withDecodingDefaultKey(Effect.succeed("workflow"))),
+  threadId: Schema.optional(ThreadId),
+  ticketId: Schema.optional(TicketId),
   state: Schema.Literals([
     "accepted",
+    "connected",
     "queued",
     "running",
     "waiting",
@@ -96,13 +210,34 @@ export type SlackAgentLatestRunSummary = typeof SlackAgentLatestRunSummary.Type;
 
 export const SlackAgentInstanceView = Schema.Struct({
   instanceId: SlackAgentInstanceId,
+  kind: SlackAgentInstanceKind.pipe(Schema.withDecodingDefaultKey(Effect.succeed("mock"))),
+  workspace: SlackAgentWorkspaceMetadata.pipe(
+    Schema.withDecodingDefaultKey(
+      Effect.succeed({
+        workspaceId: MOCK_SLACK_WORKSPACE_ID,
+      }),
+    ),
+  ),
+  appId: Schema.optional(SlackAgentAppId),
+  botId: Schema.optional(SlackAgentBotId),
   handle: SlackAgentHandle,
   ownerLabel: SlackAgentOwnerLabel,
   botUserId: SlackAgentBotUserId,
   target: SlackAgentTarget,
+  defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   enabled: Schema.Boolean,
   state: SlackAgentInstanceState,
   validation: SlackAgentTargetValidation,
+  credentialsConfigured: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  connection: SlackAgentConnectionStatus.pipe(
+    Schema.withDecodingDefaultKey(
+      Effect.succeed({
+        state: "connected",
+      }),
+    ),
+  ),
   activeRunCount: NonNegativeInt,
   latestRun: Schema.optional(SlackAgentLatestRunSummary),
   createdAt: IsoDateTime,
@@ -119,9 +254,21 @@ export const SlackAgentCreateInstanceInput = Schema.Struct({
   ownerLabel: SlackAgentOwnerLabel,
   handleSuffix: SlackAgentHandleSuffix,
   target: SlackAgentTarget,
+  appToken: SlackAgentAppToken,
+  botToken: SlackAgentBotToken,
+  defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   acknowledged: Schema.Literal(true),
 });
 export type SlackAgentCreateInstanceInput = typeof SlackAgentCreateInstanceInput.Type;
+
+export const SlackAgentCreateMockInstanceInput = Schema.Struct({
+  ownerLabel: SlackAgentOwnerLabel,
+  handleSuffix: SlackAgentHandleSuffix,
+  target: SlackAgentTarget,
+  defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  acknowledged: Schema.Literal(true),
+});
+export type SlackAgentCreateMockInstanceInput = typeof SlackAgentCreateMockInstanceInput.Type;
 
 export const SlackAgentCreateInstanceResult = Schema.Struct({
   instance: SlackAgentInstanceView,
@@ -133,8 +280,28 @@ export const SlackAgentUpdateInstanceInput = Schema.Struct({
   ownerLabel: Schema.optional(SlackAgentOwnerLabel),
   handleSuffix: Schema.optional(SlackAgentHandleSuffix),
   target: Schema.optional(SlackAgentTarget),
+  defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
 });
 export type SlackAgentUpdateInstanceInput = typeof SlackAgentUpdateInstanceInput.Type;
+
+export const SlackAgentConnectInstanceInput = Schema.Struct({
+  instanceId: SlackAgentInstanceId,
+  appToken: SlackAgentAppToken,
+  botToken: SlackAgentBotToken,
+});
+export type SlackAgentConnectInstanceInput = typeof SlackAgentConnectInstanceInput.Type;
+
+export const SlackAgentTestConnectionInput = Schema.Struct({
+  instanceId: SlackAgentInstanceId,
+});
+export type SlackAgentTestConnectionInput = typeof SlackAgentTestConnectionInput.Type;
+
+export const SlackAgentTestConnectionResult = Schema.Struct({
+  instance: SlackAgentInstanceView,
+  ok: Schema.Boolean,
+  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+});
+export type SlackAgentTestConnectionResult = typeof SlackAgentTestConnectionResult.Type;
 
 export const SlackAgentInstanceIdInput = Schema.Struct({
   instanceId: SlackAgentInstanceId,
@@ -203,14 +370,18 @@ export const SlackAgentSimulateMentionInput = Schema.Struct({
   messages: Schema.Array(MockSlackSourceMessage),
   triggerMessageId: MockSlackMessageId,
   externalEventId: Schema.optional(SlackAgentExternalEventId),
+  invocation: Schema.optional(SlackAgentInvocation),
 });
 export type SlackAgentSimulateMentionInput = typeof SlackAgentSimulateMentionInput.Type;
 
 export const SlackAgentSimulateMentionResult = Schema.Struct({
   runId: SlackAgentRunId,
-  ticketId: TicketId,
+  mode: SlackAgentInvocationMode.pipe(Schema.withDecodingDefaultKey(Effect.succeed("workflow"))),
+  threadId: Schema.optional(ThreadId),
+  ticketId: Schema.optional(TicketId),
   statusMessageId: MockSlackMessageId,
   duplicate: Schema.Boolean,
+  createdThread: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   state: SlackAgentLatestRunSummary.fields.state,
   message: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
 });
@@ -242,9 +413,12 @@ export type SlackAgentDeliveryView = typeof SlackAgentDeliveryView.Type;
 export const SlackAgentRunSummaryView = Schema.Struct({
   runId: SlackAgentRunId,
   instanceId: SlackAgentInstanceId,
+  projectId: Schema.optional(ProjectId),
   handle: SlackAgentHandle,
   botUserId: SlackAgentBotUserId,
-  ticketId: TicketId,
+  mode: SlackAgentInvocationMode.pipe(Schema.withDecodingDefaultKey(Effect.succeed("workflow"))),
+  threadId: Schema.optional(ThreadId),
+  ticketId: Schema.optional(TicketId),
   thread: MockSlackThreadRef,
   state: SlackAgentLatestRunSummary.fields.state,
   statusMessageId: Schema.optional(MockSlackMessageId),
@@ -339,7 +513,8 @@ export class SlackAgentDuplicateSourceThreadError extends Schema.TaggedErrorClas
   "SlackAgentDuplicateSourceThreadError",
   {
     runId: SlackAgentRunId,
-    ticketId: TicketId,
+    threadId: Schema.optional(ThreadId),
+    ticketId: Schema.optional(TicketId),
     message: TrimmedNonEmptyString,
   },
 ) {}

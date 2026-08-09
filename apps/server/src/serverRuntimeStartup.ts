@@ -33,6 +33,9 @@ import { WorkflowTerminalRetentionSweeper } from "./workflow/Services/WorkflowTe
 import { WorkflowSlaSweeper } from "./workflow/Services/WorkflowSlaSweeper.ts";
 import { WorkflowWebhook } from "./workflow/Services/WorkflowWebhook.ts";
 import { SlackAgentDeliveryDispatcher } from "./workflow/Services/SlackAgentDeliveryDispatcher.ts";
+import { SlackConnectionManager } from "./slack/Services/SlackConnectionManager.ts";
+import { SlackChatReplyRelay } from "./slack/Services/SlackChatReplyRelay.ts";
+import { SlackChatWorktreeJanitor } from "./slack/Services/SlackChatWorktreeJanitor.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -335,7 +338,6 @@ export const make = (options?: StartupOptions) =>
     const keybindings = yield* Keybindings.Keybindings;
     const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
     const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
-    const workflowReady = yield* Deferred.make<void, ServerRuntimeStartupError>();
     const workflowTerminalRetentionSweeper = yield* WorkflowTerminalRetentionSweeper;
     const workflowSlaSweeper = yield* WorkflowSlaSweeper;
     const workflowWebhook = yield* WorkflowWebhook;
@@ -345,6 +347,9 @@ export const make = (options?: StartupOptions) =>
     const workflowSourceSyncer = yield* WorkflowSourceSyncer;
     const workflowOutboundDispatcher = yield* WorkflowOutboundDispatcher;
     const slackAgentDeliveryDispatcher = yield* Effect.serviceOption(SlackAgentDeliveryDispatcher);
+    const slackConnectionManager = yield* Effect.serviceOption(SlackConnectionManager);
+    const slackChatReplyRelay = yield* Effect.serviceOption(SlackChatReplyRelay);
+    const slackChatWorktreeJanitor = yield* Effect.serviceOption(SlackChatWorktreeJanitor);
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -512,18 +517,53 @@ export const make = (options?: StartupOptions) =>
         yield* Effect.logWarning("skipping outbound dispatcher start: workflow recovery failed");
       }
 
-      // Mock Slack status delivery is another durable workflow outbox. Start it
-      // only after recovery so accepted/progress rows cannot overtake projection
-      // repair, and retain the same startup scope/finalization behavior.
-      if (recovered && Option.isSome(slackAgentDeliveryDispatcher)) {
+      // Subscribe before opening Socket Mode connections so even a very fast
+      // Slack-triggered turn cannot complete before outbound reply relay is ready.
+      if (Option.isSome(slackChatWorktreeJanitor)) {
+        yield* Effect.logDebug("startup phase: starting Slack worktree retention sweeper");
+        yield* runStartupPhase(
+          "workflow.slack-worktree-retention.start",
+          slackChatWorktreeJanitor.value.start().pipe(Scope.provide(reactorScope)),
+        );
+      }
+
+      if (Option.isSome(slackChatReplyRelay)) {
+        yield* Effect.logDebug("startup phase: starting Slack chat reply relay");
+        yield* runStartupPhase(
+          "workflow.slack-chat-replies.start",
+          slackChatReplyRelay.value.start().pipe(Scope.provide(reactorScope)),
+        );
+      }
+
+      // Restore every enabled per-developer Socket Mode connection after the
+      // recovery attempt. Ordinary Slack-linked chats depend only on core
+      // orchestration, so they remain available if workflow recovery failed;
+      // the manager passes `recovered` through to reject explicit workflow
+      // invocations in that degraded state.
+      if (Option.isSome(slackConnectionManager)) {
+        yield* Effect.logDebug("startup phase: starting Slack connections");
+        yield* runStartupPhase(
+          "workflow.slack-connections.start",
+          slackConnectionManager.value.startAll(recovered).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("failed to restore one or more Slack connections", {
+                cause: cause.message,
+              }),
+            ),
+          ),
+        );
+      }
+
+      // Slack-linked chat statuses do not depend on workflow recovery. Keep the
+      // dispatcher alive in degraded startup mode, but restrict it to chat runs
+      // so workflow progress rows cannot overtake projection repair.
+      if (Option.isSome(slackAgentDeliveryDispatcher)) {
         yield* Effect.logDebug("startup phase: starting Slack agent delivery dispatcher");
         yield* runStartupPhase(
           "workflow.slack-agent-delivery.start",
-          slackAgentDeliveryDispatcher.value.start().pipe(Scope.provide(reactorScope)),
-        );
-      } else if (!recovered) {
-        yield* Effect.logWarning(
-          "skipping Slack agent delivery dispatcher start: workflow recovery failed",
+          slackAgentDeliveryDispatcher.value
+            .start(recovered ? undefined : { chatOnly: true })
+            .pipe(Scope.provide(reactorScope)),
         );
       }
 

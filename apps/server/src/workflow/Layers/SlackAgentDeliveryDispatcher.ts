@@ -260,6 +260,16 @@ const makeSlackAgentDeliveryDispatcher = (options: SlackAgentDeliveryDispatcherL
           return;
         }
 
+        // A direct status post may win the race against the initial accepted
+        // delivery (for example, a very fast Slack follow-up). Once the run has
+        // an editable Slack message, replaying the older operation="post" row
+        // would overwrite that newer text. Treat the stale post as superseded;
+        // later sequenced update rows can still edit the existing message.
+        if (currentRow.operation === "post" && currentRow.statusMessageId !== null) {
+          yield* markSuperseded(currentRow.deliveryId);
+          return;
+        }
+
         if (currentRow.operation === "update" && currentRow.statusMessageId === null) {
           yield* sql`
             UPDATE slack_agent_delivery
@@ -367,16 +377,19 @@ const makeSlackAgentDeliveryDispatcher = (options: SlackAgentDeliveryDispatcherL
         }
       });
 
-    const sweep: SlackAgentDeliveryDispatcherShape["sweep"] = () =>
+    const sweep: SlackAgentDeliveryDispatcherShape["sweep"] = (options) =>
       Effect.gen(function* () {
         const nowIso = DateTime.formatIso(yield* DateTime.now);
+        const chatOnly = options?.chatOnly === true ? 1 : 0;
         const runRows = yield* sql<{ readonly runId: string; readonly minSequence: number }>`
-          SELECT run_id AS "runId", MIN(workflow_sequence) AS "minSequence"
-          FROM slack_agent_delivery
-          WHERE delivery_state IN ('pending', 'retrying')
-            AND (next_attempt_at IS NULL OR next_attempt_at <= ${nowIso})
-          GROUP BY run_id
-          ORDER BY MIN(created_at) ASC
+          SELECT delivery.run_id AS "runId", MIN(delivery.workflow_sequence) AS "minSequence"
+          FROM slack_agent_delivery AS delivery
+          JOIN slack_agent_run AS run ON run.run_id = delivery.run_id
+          WHERE delivery.delivery_state IN ('pending', 'retrying')
+            AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= ${nowIso})
+            AND (${chatOnly} = 0 OR run.mode = 'chat')
+          GROUP BY delivery.run_id
+          ORDER BY MIN(delivery.created_at) ASC
           LIMIT ${drainLimit}
         `.pipe(
           Effect.catchCause((cause) =>
@@ -474,18 +487,21 @@ const makeSlackAgentDeliveryDispatcher = (options: SlackAgentDeliveryDispatcherL
         ),
       );
 
-    const start: SlackAgentDeliveryDispatcherShape["start"] = () =>
+    const start: SlackAgentDeliveryDispatcherShape["start"] = (options) =>
       Effect.gen(function* () {
         yield* recoverStaleClaims();
         yield* Effect.forkScoped(
-          sweep().pipe(
+          sweep(options).pipe(
             Effect.catchDefect((defect: unknown) =>
               Effect.logWarning("workflow.slack-agent.sweep-defect", { defect }),
             ),
             Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
           ),
         );
-        yield* Effect.logInfo("workflow.slack-agent.started", { sweepIntervalMs });
+        yield* Effect.logInfo("workflow.slack-agent.started", {
+          sweepIntervalMs,
+          chatOnly: options?.chatOnly === true,
+        });
       });
 
     return {

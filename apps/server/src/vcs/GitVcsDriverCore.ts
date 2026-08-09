@@ -1270,6 +1270,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     );
 
+  const resolveRemoteDefaultBranch: GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteDefaultBranch"] =
+    Effect.fn("resolveRemoteDefaultBranch")(function* (input) {
+      const args = ["ls-remote", "--symref", input.remoteName, "HEAD"] as const;
+      const stdout = yield* runGitStdout(
+        "GitVcsDriver.resolveRemoteDefaultBranch",
+        input.cwd,
+        args,
+      );
+      for (const line of stdout.split("\n")) {
+        const match = /^ref: refs\/heads\/(.+)\tHEAD$/.exec(line.trim());
+        if (match?.[1]) {
+          return match[1];
+        }
+      }
+      return yield* new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.resolveRemoteDefaultBranch",
+          cwd: input.cwd,
+          args,
+        }),
+        detail: `Could not resolve the default branch for git remote '${input.remoteName}'.`,
+      });
+    });
+
   const remoteBranchExists = (
     cwd: string,
     remoteName: string,
@@ -2775,6 +2799,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
   });
 
+  const pruneWorktrees: GitVcsDriver.GitVcsDriver["Service"]["pruneWorktrees"] = Effect.fn(
+    "pruneWorktrees",
+  )(function* (input) {
+    yield* executeGit("GitVcsDriver.pruneWorktrees", input.cwd, ["worktree", "prune"], {
+      fallbackErrorDetail: "git worktree prune failed",
+    });
+  });
+
   const fetchPullRequestBranch: GitVcsDriver.GitVcsDriver["Service"]["fetchPullRequestBranch"] =
     Effect.fn("fetchPullRequestBranch")(function* (input) {
       const remoteName = yield* resolvePrimaryRemoteName(input.cwd);
@@ -3069,10 +3101,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readConfigValue,
     listRefs,
     createWorktree: (input) => withListRefsInvalidation(input.cwd, createWorktree(input)),
+    pruneWorktrees: (input) => withListRefsInvalidation(input.cwd, pruneWorktrees(input)),
     fetchPullRequestBranch: (input) =>
       withListRefsInvalidation(input.cwd, fetchPullRequestBranch(input)),
     ensureRemote: (input) => withListRefsInvalidation(input.cwd, ensureRemote(input)),
     resolvePrimaryRemoteName,
+    resolveRemoteDefaultBranch,
     fetchRemote: (input) => withListRefsInvalidation(input.cwd, fetchRemote(input)),
     remoteExists,
     resolveRemoteTrackingCommit,

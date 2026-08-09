@@ -21,8 +21,11 @@ import {
   WorkflowRpcError,
   MockSlackThreadStreamEvent,
   SlackAgentRunStreamEvent,
+  WsWorkflowConnectSlackAgentInstanceRpc,
   WsWorkflowCreateSlackAgentInstanceRpc,
+  WsWorkflowCreateMockSlackAgentInstanceRpc,
   WsWorkflowAnswerTicketStepRpc,
+  WsWorkflowDisconnectSlackAgentInstanceRpc,
   WsWorkflowSteerTicketStepRpc,
   WsWorkflowCreateTicketRpc,
   WsWorkflowDeleteBoardRpc,
@@ -43,6 +46,7 @@ import {
   WsWorkflowSubscribeBoardRpc,
   WsWorkflowSubscribeMockSlackThreadRpc,
   WsWorkflowSubscribeSlackAgentRunRpc,
+  WsWorkflowTestSlackAgentConnectionRpc,
   WsWorkflowUpdateSlackAgentInstanceRpc,
   WsWorkflowListOutboundConnectionsRpc,
   WsWorkflowCreateOutboundConnectionRpc,
@@ -395,6 +399,19 @@ describe("workflow RPC contracts", () => {
   it("declares Slack-agent websocket method names", () => {
     assert.equal(WORKFLOW_WS_METHODS.listSlackAgentInstances, "workflow.listSlackAgentInstances");
     assert.equal(WORKFLOW_WS_METHODS.createSlackAgentInstance, "workflow.createSlackAgentInstance");
+    assert.equal(
+      WORKFLOW_WS_METHODS.createMockSlackAgentInstance,
+      "workflow.createMockSlackAgentInstance",
+    );
+    assert.equal(
+      WORKFLOW_WS_METHODS.connectSlackAgentInstance,
+      "workflow.connectSlackAgentInstance",
+    );
+    assert.equal(
+      WORKFLOW_WS_METHODS.disconnectSlackAgentInstance,
+      "workflow.disconnectSlackAgentInstance",
+    );
+    assert.equal(WORKFLOW_WS_METHODS.testSlackAgentConnection, "workflow.testSlackAgentConnection");
     assert.equal(WORKFLOW_WS_METHODS.updateSlackAgentInstance, "workflow.updateSlackAgentInstance");
     assert.equal(
       WORKFLOW_WS_METHODS.disableSlackAgentInstance,
@@ -412,6 +429,10 @@ describe("workflow RPC contracts", () => {
   it("exports Slack-agent RPC definitions", () => {
     assert.isDefined(WsWorkflowListSlackAgentInstancesRpc);
     assert.isDefined(WsWorkflowCreateSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowCreateMockSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowConnectSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowDisconnectSlackAgentInstanceRpc);
+    assert.isDefined(WsWorkflowTestSlackAgentConnectionRpc);
     assert.isDefined(WsWorkflowUpdateSlackAgentInstanceRpc);
     assert.isDefined(WsWorkflowDisableSlackAgentInstanceRpc);
     assert.isDefined(WsWorkflowEnableSlackAgentInstanceRpc);
@@ -427,6 +448,9 @@ describe("workflow RPC contracts", () => {
     Effect.gen(function* () {
       const decodeCreate = Schema.decodeUnknownEffect(
         WsWorkflowCreateSlackAgentInstanceRpc.payloadSchema,
+      );
+      const decodeMockCreate = Schema.decodeUnknownEffect(
+        WsWorkflowCreateMockSlackAgentInstanceRpc.payloadSchema,
       );
       const decodeList = Schema.decodeUnknownEffect(
         WsWorkflowListSlackAgentInstancesRpc.successSchema,
@@ -446,26 +470,43 @@ describe("workflow RPC contracts", () => {
         handleSuffix: "chris",
         target: {
           projectId: "project-1",
-          boardId: "board-1",
-          initialLane: "implement",
         },
+        appToken: "xapp-valid",
+        botToken: "xoxb-valid",
         acknowledged: true,
       });
       assert.equal(create.handleSuffix, "chris");
 
+      const mockCreate = yield* decodeMockCreate({
+        ownerLabel: "Chris",
+        handleSuffix: "chris",
+        target: {
+          projectId: "project-1",
+        },
+        acknowledged: true,
+      });
+      assert.equal(mockCreate.handleSuffix, "chris");
+
       const instance = {
         instanceId: "inst-1",
+        kind: "mock",
+        workspace: {
+          workspaceId: "workspace-1",
+        },
         handle: "t3_chris",
         ownerLabel: "Chris",
         botUserId: "bot-1",
         target: {
           projectId: "project-1",
-          boardId: "board-1",
-          initialLane: "implement",
         },
         enabled: true,
         state: "enabled",
         validation: { valid: true },
+        credentialsConfigured: false,
+        connection: {
+          state: "connected",
+          connectedAt: "2026-08-07T11:00:00.000Z",
+        },
         activeRunCount: 0,
         createdAt: "2026-08-07T11:00:00.000Z",
         updatedAt: "2026-08-07T11:00:00.000Z",
@@ -512,6 +553,7 @@ describe("workflow RPC contracts", () => {
         instanceId: "inst-1",
         handle: "t3_chris",
         botUserId: "bot-1",
+        mode: "workflow",
         ticketId: "ticket-1",
         thread,
         state: "accepted",

@@ -38,6 +38,7 @@ const MAX_BODY = 700;
 const redact = (value: string): string =>
   value
     .replace(/xox[baprs]-[A-Za-z0-9-]+/g, "[redacted]")
+    .replace(/xapp-[A-Za-z0-9-]+/g, "[redacted]")
     .replace(/https:\/\/hooks\.slack\.com\/services\/[^\s)]+/g, "[redacted-slack-url]");
 
 const clip = (value: string, max: number): string => {

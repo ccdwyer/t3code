@@ -21,11 +21,13 @@ describe("T3ProjectFile", () => {
         },
         { name: "Test", command: "pnpm test" },
       ],
+      worktreeSeedPaths: ["node_modules", "apps/web/node_modules"],
     });
 
     expect(decoded.iconPath).toBe("assets/logo.svg");
     expect(decoded.scripts).toHaveLength(2);
     expect(decoded.scripts?.[1]).toEqual({ name: "Test", command: "pnpm test" });
+    expect(decoded.worktreeSeedPaths).toEqual(["node_modules", "apps/web/node_modules"]);
   });
 
   it("decodes an empty object and ignores unknown fields", () => {
@@ -37,10 +39,12 @@ describe("T3ProjectFile", () => {
     const decoded = decode({
       iconPath: " assets/logo.svg ",
       scripts: [{ name: " Dev ", command: " pnpm dev " }],
+      worktreeSeedPaths: [" node_modules "],
     });
 
     expect(decoded.iconPath).toBe("assets/logo.svg");
     expect(decoded.scripts?.[0]).toEqual({ name: "Dev", command: "pnpm dev" });
+    expect(decoded.worktreeSeedPaths).toEqual(["node_modules"]);
   });
 
   it("rejects scripts without a command", () => {
@@ -52,4 +56,11 @@ describe("T3ProjectFile", () => {
       decode({ scripts: [{ name: "Dev", command: "pnpm dev", icon: "rocket" }] }),
     ).toThrow();
   });
+
+  it.each(["/tmp/cache", "../cache", "apps/../cache", ".git", "C:\\cache"])(
+    "rejects unsafe worktree seed path %s",
+    (seedPath) => {
+      expect(() => decode({ worktreeSeedPaths: [seedPath] })).toThrow();
+    },
+  );
 });

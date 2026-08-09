@@ -219,6 +219,7 @@ export interface WorkflowEngineShape {
   ) => Effect.Effect<void, WorkflowEventStoreError>;
   readonly answerTicketStep: (input: {
     readonly stepRunId: StepRunId;
+    readonly messageId?: MessageId | undefined;
     readonly text?: string | undefined;
     readonly attachments?: ReadonlyArray<TicketAttachment> | undefined;
   }) => Effect.Effect<void, WorkflowEventStoreError>;
@@ -235,6 +236,7 @@ export interface WorkflowEngineShape {
   }) => Effect.Effect<{ readonly accepted: true }, WorkflowEventStoreError>;
   readonly postTicketMessage: (input: {
     readonly ticketId: TicketId;
+    readonly messageId?: MessageId | undefined;
     readonly text?: string | undefined;
     readonly attachments?: ReadonlyArray<TicketAttachment> | undefined;
   }) => Effect.Effect<void, WorkflowEventStoreError>;
